@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Transcript Collector</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #e6edf3; --text-muted: #8b949e; --accent: #58a6ff;
+    --accent-hover: #79c0ff; --green: #3fb950; --red: #f85149;
+    --yellow: #d29922;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.5;
+    max-width: 1100px; margin: 0 auto; padding: 24px;
+  }
+  h1 { font-size: 1.5rem; margin-bottom: 4px; }
+  .subtitle { color: var(--text-muted); margin-bottom: 24px; font-size: 0.9rem; }
+
+  .controls {
+    display: flex; gap: 12px; align-items: center; margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+  .controls label { font-size: 0.85rem; display: flex; align-items: center; gap: 6px; }
+  .controls input[type="text"] {
+    background: var(--surface); border: 1px solid var(--border); color: var(--text);
+    padding: 6px 10px; border-radius: 6px; font-size: 0.85rem;
+  }
+  button {
+    background: var(--accent); color: #000; border: none; padding: 8px 16px;
+    border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.85rem;
+  }
+  button:hover { background: var(--accent-hover); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+  button.secondary:hover { border-color: var(--accent); }
+
+  .project {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    margin-bottom: 12px; overflow: hidden;
+  }
+  .project-header {
+    display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+    cursor: pointer; user-select: none;
+  }
+  .project-header:hover { background: rgba(88,166,255,0.04); }
+  .project-path {
+    font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.85rem;
+    flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .project-meta { color: var(--text-muted); font-size: 0.8rem; white-space: nowrap; }
+  .arrow { color: var(--text-muted); transition: transform 0.15s; font-size: 0.7rem; }
+  .arrow.open { transform: rotate(90deg); }
+
+  .sessions { display: none; border-top: 1px solid var(--border); }
+  .sessions.open { display: block; }
+
+  .session {
+    display: flex; align-items: flex-start; gap: 10px; padding: 10px 16px 10px 42px;
+    border-bottom: 1px solid var(--border); font-size: 0.83rem;
+  }
+  .session:last-child { border-bottom: none; }
+  .session-summary {
+    flex: 1; color: var(--text-muted); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+  }
+  .session-summary:hover { color: var(--text); }
+  .session-meta { color: var(--text-muted); font-size: 0.78rem; white-space: nowrap; }
+
+  .preview-pane {
+    position: fixed; top: 0; right: 0; width: 480px; height: 100vh;
+    background: var(--surface); border-left: 1px solid var(--border);
+    display: none; flex-direction: column; z-index: 100;
+    box-shadow: -4px 0 20px rgba(0,0,0,0.4);
+  }
+  .preview-pane.open { display: flex; }
+  .preview-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+  }
+  .preview-body {
+    flex: 1; overflow-y: auto; padding: 16px;
+  }
+  .preview-msg {
+    margin-bottom: 12px; padding: 10px; border-radius: 6px;
+    font-size: 0.82rem; white-space: pre-wrap; word-break: break-word;
+  }
+  .preview-msg.user { background: rgba(88,166,255,0.08); border-left: 3px solid var(--accent); }
+  .preview-msg.assistant { background: rgba(63,185,80,0.06); border-left: 3px solid var(--green); }
+  .preview-msg .role { font-weight: 600; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 4px; }
+  .redacted { background: rgba(248,81,73,0.15); color: var(--red); padding: 1px 4px; border-radius: 3px; }
+
+  .status-bar {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: var(--surface); border-top: 1px solid var(--border);
+    padding: 10px 24px; display: flex; justify-content: space-between; align-items: center;
+    z-index: 101;
+  }
+  .status-left { font-size: 0.85rem; }
+  .status-count { color: var(--accent); font-weight: 600; }
+
+  .toast {
+    position: fixed; top: 24px; right: 24px; background: var(--green);
+    color: #000; padding: 12px 20px; border-radius: 8px; font-weight: 600;
+    z-index: 200; display: none; font-size: 0.9rem;
+  }
+  .toast.error { background: var(--red); color: #fff; }
+  .toast.show { display: block; }
+
+  input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
+  .spacer { flex: 1; }
+  .body-pad { padding-bottom: 60px; }
+</style>
+</head>
+<body class="body-pad">
+
+<h1>Claude Transcript Collector</h1>
+<p class="subtitle">Select the transcripts you'd like to share. Preview any session before deciding. Secrets are automatically redacted.</p>
+
+<div class="controls">
+  <label>
+    Your name:
+    <input type="text" id="contributor-name" placeholder="anonymous" value="">
+  </label>
+  <label>
+    <input type="checkbox" id="redact-toggle" checked>
+    Redact secrets
+  </label>
+  <div class="spacer"></div>
+  <button class="secondary" onclick="selectAll()">Select All</button>
+  <button class="secondary" onclick="deselectAll()">Deselect All</button>
+</div>
+
+{% for project in projects %}
+<div class="project" data-project="{{ project.encoded_name }}">
+  <div class="project-header" onclick="toggleProject(this)">
+    <input type="checkbox" class="project-checkbox"
+           onclick="event.stopPropagation(); toggleProjectCheckbox(this, '{{ project.encoded_name }}')"
+           data-project="{{ project.encoded_name }}">
+    <span class="arrow">&#9654;</span>
+    <span class="project-path" title="{{ project.decoded_path }}">{{ project.decoded_path }}</span>
+    <span class="project-meta">{{ project.session_count }} session{{ 's' if project.session_count != 1 else '' }} &middot; {{ project.total_size_human }}</span>
+  </div>
+  <div class="sessions" data-project="{{ project.encoded_name }}">
+    {% for session in project.sessions %}
+    <div class="session">
+      <input type="checkbox" class="session-checkbox"
+             data-project="{{ project.encoded_name }}"
+             data-session="{{ session.id }}"
+             onchange="updateCounts()">
+      <span class="session-summary"
+            onclick="previewSession('{{ project.encoded_name }}', '{{ session.id }}')"
+            title="Click to preview">
+        {{ session.first_message }}
+      </span>
+      <span class="session-meta">
+        {{ session.message_count }} msgs &middot; {{ session.size_human }}
+        {% if session.modified %}&middot; {{ session.modified.strftime('%b %d') }}{% endif %}
+      </span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endfor %}
+
+<div class="preview-pane" id="preview-pane">
+  <div class="preview-header">
+    <span id="preview-title">Preview</span>
+    <span id="preview-redaction-count" style="color: var(--yellow); font-size: 0.8rem;"></span>
+    <button class="secondary" onclick="closePreview()">Close</button>
+  </div>
+  <div class="preview-body" id="preview-body"></div>
+</div>
+
+<div class="status-bar">
+  <div class="status-left">
+    <span class="status-count" id="selected-count">0</span> sessions selected
+    (<span id="selected-size">0 B</span>)
+  </div>
+  <button id="upload-btn" onclick="uploadSelected()" disabled>Upload Selected</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const sessionSizes = {};
+{% for project in projects %}
+  {% for session in project.sessions %}
+    sessionSizes["{{ project.encoded_name }}:{{ session.id }}"] = {{ session.size_bytes }};
+  {% endfor %}
+{% endfor %}
+
+function toggleProject(header) {
+  const arrow = header.querySelector('.arrow');
+  const project = header.closest('.project');
+  const sessions = project.querySelector('.sessions');
+  arrow.classList.toggle('open');
+  sessions.classList.toggle('open');
+}
+
+function toggleProjectCheckbox(cb, projectName) {
+  const sessions = document.querySelector(`.sessions[data-project="${projectName}"]`);
+  sessions.querySelectorAll('.session-checkbox').forEach(s => s.checked = cb.checked);
+  updateCounts();
+}
+
+function selectAll() {
+  document.querySelectorAll('.session-checkbox, .project-checkbox').forEach(cb => cb.checked = true);
+  updateCounts();
+}
+
+function deselectAll() {
+  document.querySelectorAll('.session-checkbox, .project-checkbox').forEach(cb => cb.checked = false);
+  updateCounts();
+}
+
+function updateCounts() {
+  const checked = document.querySelectorAll('.session-checkbox:checked');
+  let totalSize = 0;
+  checked.forEach(cb => {
+    const key = cb.dataset.project + ':' + cb.dataset.session;
+    totalSize += sessionSizes[key] || 0;
+  });
+  document.getElementById('selected-count').textContent = checked.length;
+  document.getElementById('selected-size').textContent = humanSize(totalSize);
+  document.getElementById('upload-btn').disabled = checked.length === 0;
+
+  // Update project-level checkboxes
+  document.querySelectorAll('.project-checkbox').forEach(pcb => {
+    const pName = pcb.dataset.project;
+    const all = document.querySelectorAll(`.session-checkbox[data-project="${pName}"]`);
+    const allChecked = document.querySelectorAll(`.session-checkbox[data-project="${pName}"]:checked`);
+    pcb.checked = all.length > 0 && all.length === allChecked.length;
+    pcb.indeterminate = allChecked.length > 0 && allChecked.length < all.length;
+  });
+}
+
+function humanSize(bytes) {
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  let size = bytes;
+  while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
+  return size.toFixed(1) + ' ' + units[i];
+}
+
+async function previewSession(project, sessionId) {
+  const pane = document.getElementById('preview-pane');
+  const body = document.getElementById('preview-body');
+  const title = document.getElementById('preview-title');
+  const redactCount = document.getElementById('preview-redaction-count');
+  const redact = document.getElementById('redact-toggle').checked;
+
+  body.innerHTML = '<p style="color: var(--text-muted)">Loading...</p>';
+  pane.classList.add('open');
+  title.textContent = sessionId.substring(0, 8) + '...';
+
+  try {
+    const resp = await fetch(`/api/preview/${project}/${sessionId}?redact=${redact}`);
+    const data = await resp.json();
+
+    if (data.redaction_count > 0) {
+      redactCount.textContent = `${data.redaction_count} redaction${data.redaction_count !== 1 ? 's' : ''}`;
+    } else {
+      redactCount.textContent = '';
+    }
+
+    if (data.messages.length === 0) {
+      body.innerHTML = '<p style="color: var(--text-muted)">(no messages)</p>';
+      return;
+    }
+
+    body.innerHTML = data.messages.map(m => {
+      let text = escapeHtml(m.text);
+      text = text.replace(/\[REDACTED\]/g, '<span class="redacted">[REDACTED]</span>');
+      return `<div class="preview-msg ${m.role}"><div class="role">${m.role}</div>${text}</div>`;
+    }).join('');
+  } catch (e) {
+    body.innerHTML = `<p style="color: var(--red)">Error loading preview: ${e.message}</p>`;
+  }
+}
+
+function closePreview() {
+  document.getElementById('preview-pane').classList.remove('open');
+}
+
+function escapeHtml(text) {
+  const d = document.createElement('div');
+  d.textContent = text;
+  return d.innerHTML;
+}
+
+function showToast(msg, isError) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (isError ? ' error' : '');
+  setTimeout(() => t.className = 'toast', 4000);
+}
+
+async function uploadSelected() {
+  const btn = document.getElementById('upload-btn');
+  btn.disabled = true;
+  btn.textContent = 'Uploading...';
+
+  const checked = document.querySelectorAll('.session-checkbox:checked');
+  const selected = Array.from(checked).map(cb => ({
+    project: cb.dataset.project,
+    session: cb.dataset.session,
+  }));
+
+  const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
+  const redactSecrets = document.getElementById('redact-toggle').checked;
+
+  try {
+    const resp = await fetch('/api/upload', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ selected, contributor_name: contributorName, redact_secrets: redactSecrets }),
+    });
+    const data = await resp.json();
+    if (resp.ok) {
+      showToast(`Uploaded ${data.session_count} sessions (${humanSize(data.zip_size_bytes)}, ${data.total_redactions} redactions)`);
+      deselectAll();
+    } else {
+      showToast(data.error || 'Upload failed', true);
+    }
+  } catch (e) {
+    showToast('Upload failed: ' + e.message, true);
+  }
+  btn.textContent = 'Upload Selected';
+  btn.disabled = document.querySelectorAll('.session-checkbox:checked').length === 0;
+}
+</script>
+</body>
+</html>
