@@ -168,12 +168,89 @@ async def upload(request: Request):
     }
 
 
+def headless_upload(contributor_name: str = "anonymous"):
+    """Upload all transcripts immediately without UI."""
+    from .scanner import scan_projects, get_projects_dir
+
+    projects = scan_projects()
+    if not projects:
+        print("No transcripts found.")
+        return
+
+    projects_dir = get_projects_dir()
+    buf = io.BytesIO()
+    manifest = []
+    total_redactions = 0
+    total_sessions = 0
+
+    print(f"Found {sum(p['session_count'] for p in projects)} sessions across {len(projects)} projects.")
+    print("Redacting secrets and zipping...")
+
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for project in projects:
+            for session in project["sessions"]:
+                session_path = projects_dir / project["encoded_name"] / f"{session['id']}.jsonl"
+                if not session_path.exists():
+                    continue
+
+                raw = session_path.read_text(encoding="utf-8", errors="replace")
+                raw, redaction_count = redact_jsonl_content(raw)
+                total_redactions += redaction_count
+                total_sessions += 1
+
+                archive_path = f"{project['encoded_name']}/{session['id']}.jsonl"
+                zf.writestr(archive_path, raw)
+                manifest.append({
+                    "project": project["encoded_name"],
+                    "session": session["id"],
+                    "size_bytes": len(raw.encode("utf-8")),
+                    "redactions": redaction_count,
+                })
+
+        zf.writestr("manifest.json", json.dumps({
+            "contributor": contributor_name,
+            "uploaded_at": datetime.utcnow().isoformat(),
+            "sessions": manifest,
+            "total_redactions": total_redactions,
+        }, indent=2))
+
+    zip_bytes = buf.getvalue()
+    timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    s3_key = f"{contributor_name}/{timestamp}-{uuid.uuid4().hex[:8]}.zip"
+
+    print(f"Uploading {total_sessions} sessions ({len(zip_bytes) / 1024 / 1024:.1f} MB, {total_redactions} secrets redacted)...")
+
+    s3 = boto3.client(
+        "s3",
+        region_name=S3_REGION,
+        aws_access_key_id=AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    )
+    s3.put_object(
+        Bucket=S3_BUCKET,
+        Key=s3_key,
+        Body=zip_bytes,
+        ContentType="application/zip",
+    )
+
+    print(f"Done! Uploaded to {s3_key}")
+
+
 def main():
-    port = int(os.environ.get("PORT", 8899))
-    Timer(1.0, lambda: webbrowser.open(f"http://localhost:{port}")).start()
-    print(f"Opening browser at http://localhost:{port}")
-    print("Press Ctrl+C to stop.")
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    headless = "--all" in sys.argv
+    contributor_name = "anonymous"
+    for i, arg in enumerate(sys.argv):
+        if arg == "--name" and i + 1 < len(sys.argv):
+            contributor_name = sys.argv[i + 1]
+
+    if headless:
+        headless_upload(contributor_name)
+    else:
+        port = int(os.environ.get("PORT", 8899))
+        Timer(1.0, lambda: webbrowser.open(f"http://localhost:{port}")).start()
+        print(f"Opening browser at http://localhost:{port}")
+        print("Press Ctrl+C to stop.")
+        uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
 
 if __name__ == "__main__":
