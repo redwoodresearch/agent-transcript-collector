@@ -24,7 +24,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Environment, PackageLoader
 
-from .redactor import redact_jsonl_content
+from .redactor import redact_identity, redact_jsonl_content, redact_path_token
 from .sources import SOURCES, detect_all, find_session, get_source
 
 S3_BUCKET = os.environ.get("CTC_S3_BUCKET", "rr-agent-transcripts")
@@ -71,7 +71,8 @@ async def index():
 
 
 @app.get("/api/preview")
-async def preview_session(source: str, group: str, session: str, redact: bool = True):
+async def preview_session(source: str, group: str, session: str,
+                          redact: bool = True, identity: bool = True):
     """Preview a session's messages, optionally redacted."""
     sess = find_session(source, group, session)
     src = get_source(source)
@@ -82,7 +83,11 @@ async def preview_session(source: str, group: str, session: str, redact: bool = 
 
     redaction_count = 0
     if redact:
-        raw, redaction_count = redact_jsonl_content(raw)
+        raw, n = redact_jsonl_content(raw)
+        redaction_count += n
+    if identity:
+        raw, n = redact_identity(raw)
+        redaction_count += n
 
     messages = []
     for m in src.parse_messages(raw):
@@ -99,7 +104,7 @@ async def preview_session(source: str, group: str, session: str, redact: bool = 
     }
 
 
-def _zip_and_upload(s3, source, sessions, contributor, redact_secrets):
+def _zip_and_upload(s3, source, sessions, contributor, redact_secrets, redact_id=True):
     """Zip one source's sessions (with redaction) and upload to S3.
 
     Returns a per-source result dict. Sessions are pre-resolved Session objects,
@@ -117,13 +122,25 @@ def _zip_and_upload(s3, source, sessions, contributor, redact_secrets):
                 continue
             redaction_count = 0
             if redact_secrets:
-                raw, redaction_count = redact_jsonl_content(raw)
-                total_redactions += redaction_count
+                raw, n = redact_jsonl_content(raw)
+                redaction_count += n
+            # Identity redaction must also cover the archive path and the manifest
+            # group fields, which encode the home path / username (e.g.
+            # -home-<user>-code, /home/<user>/code) and would otherwise leak.
+            group_key, group_label = sess.group_key, sess.group_label
+            if redact_id:
+                raw, n = redact_identity(raw)
+                redaction_count += n
+                group_key, n = redact_path_token(group_key)
+                redaction_count += n
+                group_label, n = redact_path_token(group_label)
+                redaction_count += n
+            total_redactions += redaction_count
 
-            zf.writestr(f"{sess.group_key}/{sess.id}.jsonl", raw)
+            zf.writestr(f"{group_key}/{sess.id}.jsonl", raw)
             manifest_sessions.append({
-                "group": sess.group_key,
-                "group_label": sess.group_label,
+                "group": group_key,
+                "group_label": group_label,
                 "session": sess.id,
                 "size_bytes": len(raw.encode("utf-8")),
                 "redactions": redaction_count,
@@ -164,6 +181,7 @@ async def upload(request: Request):
     selected = body.get("selected", [])
     contributor = _safe_name(body.get("contributor_name", "anonymous"))
     redact_secrets = body.get("redact_secrets", True)
+    redact_id = body.get("redact_identity", True)
 
     if not selected:
         return JSONResponse({"error": "Nothing selected"}, status_code=400)
@@ -200,7 +218,7 @@ async def upload(request: Request):
     errors = []
     for source, sessions in to_upload:
         try:
-            uploads.append(_zip_and_upload(s3, source, sessions, contributor, redact_secrets))
+            uploads.append(_zip_and_upload(s3, source, sessions, contributor, redact_secrets, redact_id))
         except Exception as e:
             errors.append({"source": source.id, "error": f"{type(e).__name__}: {e}"})
 
@@ -237,7 +255,7 @@ def headless_upload(contributor_name: str = "anonymous"):
         print(
             f"[{source.label}] uploaded {res['session_count']} sessions "
             f"({res['zip_size_bytes'] / 1024 / 1024:.1f} MB, "
-            f"{res['total_redactions']} secrets redacted) -> {res['s3_key']}"
+            f"{res['total_redactions']} redactions) -> {res['s3_key']}"
         )
 
     if not any_uploaded:

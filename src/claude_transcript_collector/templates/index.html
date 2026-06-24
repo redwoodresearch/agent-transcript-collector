@@ -139,6 +139,10 @@
     <input type="checkbox" id="redact-toggle" checked>
     Redact secrets
   </label>
+  <label>
+    <input type="checkbox" id="identity-toggle" checked>
+    Redact my username &amp; paths
+  </label>
   <div class="spacer"></div>
   <button class="secondary" onclick="selectAll()">Select All</button>
   <button class="secondary" onclick="deselectAll()">Deselect All</button>
@@ -295,13 +299,14 @@ async function previewSession(el) {
   const title = document.getElementById('preview-title');
   const redactCount = document.getElementById('preview-redaction-count');
   const redact = document.getElementById('redact-toggle').checked;
+  const identity = document.getElementById('identity-toggle').checked;
 
   body.innerHTML = '<p style="color: var(--text-muted)">Loading...</p>';
   pane.classList.add('open');
   title.textContent = session.substring(0, 8) + '...';
 
   try {
-    const q = new URLSearchParams({ source, group, session, redact });
+    const q = new URLSearchParams({ source, group, session, redact, identity });
     const resp = await fetch('/api/preview?' + q.toString());
     const data = await resp.json();
 
@@ -357,12 +362,13 @@ async function uploadSelected() {
 
   const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
   const redactSecrets = document.getElementById('redact-toggle').checked;
+  const redactIdentity = document.getElementById('identity-toggle').checked;
 
   try {
     const resp = await fetch('/api/upload', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ selected, contributor_name: contributorName, redact_secrets: redactSecrets }),
+      body: JSON.stringify({ selected, contributor_name: contributorName, redact_secrets: redactSecrets, redact_identity: redactIdentity }),
     });
     const data = await resp.json();
     if (resp.ok) {
