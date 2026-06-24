@@ -1,7 +1,7 @@
 [project]
 name = "claude-transcript-collector"
 version = "0.1.0"
-description = "Collect and share Claude Code transcripts with consent"
+description = "Collect and share AI coding-agent transcripts (Claude Code, Codex, Pi) with consent"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.115",

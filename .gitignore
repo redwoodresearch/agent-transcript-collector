@@ -5,3 +5,8 @@ dist/
 *.egg-info/
 .pytest_cache/
 message.md
+
+# Never commit credentials
+.env
+.env.*
+.env_*

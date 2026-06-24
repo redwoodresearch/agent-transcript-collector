@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Claude Transcript Collector</title>
+<title>Agent Transcript Collector</title>
 <style>
   :root {
     --bg: #0d1117; --surface: #161b22; --border: #30363d;
@@ -37,6 +37,14 @@
   button:disabled { opacity: 0.4; cursor: not-allowed; }
   button.secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
   button.secondary:hover { border-color: var(--accent); }
+
+  .source { margin-bottom: 28px; }
+  .source-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
+    padding-bottom: 6px; border-bottom: 2px solid var(--border);
+  }
+  .source-label { font-size: 1.05rem; font-weight: 600; }
+  .source-meta { color: var(--text-muted); font-size: 0.8rem; }
 
   .project {
     background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
@@ -81,15 +89,16 @@
     display: flex; justify-content: space-between; align-items: center;
     padding: 12px 16px; border-bottom: 1px solid var(--border);
   }
-  .preview-body {
-    flex: 1; overflow-y: auto; padding: 16px;
-  }
+  .preview-body { flex: 1; overflow-y: auto; padding: 16px; }
   .preview-msg {
     margin-bottom: 12px; padding: 10px; border-radius: 6px;
     font-size: 0.82rem; white-space: pre-wrap; word-break: break-word;
   }
   .preview-msg.user { background: rgba(88,166,255,0.08); border-left: 3px solid var(--accent); }
   .preview-msg.assistant { background: rgba(63,185,80,0.06); border-left: 3px solid var(--green); }
+  .preview-msg.toolResult, .preview-msg.bashExecution, .preview-msg.system {
+    background: rgba(210,153,34,0.06); border-left: 3px solid var(--yellow);
+  }
   .preview-msg .role { font-weight: 600; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 4px; }
   .redacted { background: rgba(248,81,73,0.15); color: var(--red); padding: 1px 4px; border-radius: 3px; }
 
@@ -110,6 +119,7 @@
   .toast.error { background: var(--red); color: #fff; }
   .toast.show { display: block; }
 
+  .empty { color: var(--text-muted); padding: 40px 0; text-align: center; }
   input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
   .spacer { flex: 1; }
   .body-pad { padding-bottom: 60px; }
@@ -117,7 +127,7 @@
 </head>
 <body class="body-pad">
 
-<h1>Claude Transcript Collector</h1>
+<h1>Agent Transcript Collector</h1>
 <p class="subtitle">Select the transcripts you'd like to share. Preview any session before deciding. Secrets are automatically redacted.</p>
 
 <div class="controls">
@@ -134,35 +144,47 @@
   <button class="secondary" onclick="deselectAll()">Deselect All</button>
 </div>
 
-{% for project in projects %}
-<div class="project" data-project="{{ project.encoded_name }}">
-  <div class="project-header" onclick="toggleProject(this)">
-    <input type="checkbox" class="project-checkbox"
-           onclick="event.stopPropagation(); toggleProjectCheckbox(this, '{{ project.encoded_name }}')"
-           data-project="{{ project.encoded_name }}">
-    <span class="arrow">&#9654;</span>
-    <span class="project-path" title="{{ project.decoded_path }}">{{ project.decoded_path }}</span>
-    <span class="project-meta">{{ project.session_count }} session{{ 's' if project.session_count != 1 else '' }} &middot; {{ project.total_size_human }}</span>
+{% if not sources %}
+<p class="empty">No transcripts found for any supported agent (Claude Code, Codex, Pi) on this machine.</p>
+{% endif %}
+
+{% for source in sources %}
+<div class="source" data-source="{{ source.id }}">
+  <div class="source-header">
+    <input type="checkbox" class="source-checkbox" data-source="{{ source.id }}"
+           onclick="toggleSourceCheckbox(this)" title="Select all in {{ source.label }}">
+    <span class="source-label">{{ source.label }}</span>
+    <span class="source-meta">{{ source.session_count }} session{{ 's' if source.session_count != 1 else '' }} &middot; {{ source.total_size_human }}</span>
   </div>
-  <div class="sessions" data-project="{{ project.encoded_name }}">
-    {% for session in project.sessions %}
-    <div class="session">
-      <input type="checkbox" class="session-checkbox"
-             data-project="{{ project.encoded_name }}"
-             data-session="{{ session.id }}"
-             onchange="updateCounts()">
-      <span class="session-summary"
-            onclick="previewSession('{{ project.encoded_name }}', '{{ session.id }}')"
-            title="Click to preview">
-        {{ session.first_message }}
-      </span>
-      <span class="session-meta">
-        {{ session.message_count }} msgs &middot; {{ session.size_human }}
-        {% if session.modified %}&middot; {{ session.modified.strftime('%b %d') }}{% endif %}
-      </span>
+
+  {% for group in source.groups %}
+  <div class="project" data-source="{{ source.id }}" data-group="{{ group.key }}">
+    <div class="project-header" onclick="toggleProject(this)">
+      <input type="checkbox" class="group-checkbox"
+             onclick="event.stopPropagation(); toggleGroupCheckbox(this)">
+      <span class="arrow">&#9654;</span>
+      <span class="project-path" title="{{ group.label }}">{{ group.label }}</span>
+      <span class="project-meta">{{ group.session_count }} session{{ 's' if group.session_count != 1 else '' }} &middot; {{ group.total_size_human }}</span>
     </div>
-    {% endfor %}
+    <div class="sessions">
+      {% for session in group.sessions %}
+      <div class="session"
+           data-source="{{ source.id }}"
+           data-group="{{ group.key }}"
+           data-session="{{ session.id }}">
+        <input type="checkbox" class="session-checkbox" onchange="updateCounts()">
+        <span class="session-summary" onclick="previewSession(this)" title="Click to preview">
+          {{ session.first_message }}
+        </span>
+        <span class="session-meta">
+          {{ session.message_count }} msgs &middot; {{ session.size_human }}
+          {% if session.modified %}&middot; {{ session.modified.strftime('%b %d') }}{% endif %}
+        </span>
+      </div>
+      {% endfor %}
+    </div>
   </div>
+  {% endfor %}
 </div>
 {% endfor %}
 
@@ -187,54 +209,73 @@
 
 <script>
 const sessionSizes = {};
-{% for project in projects %}
-  {% for session in project.sessions %}
-    sessionSizes["{{ project.encoded_name }}:{{ session.id }}"] = {{ session.size_bytes }};
+{% for source in sources %}
+  {% for group in source.groups %}
+    {% for session in group.sessions %}
+      sessionSizes["{{ source.id }}|{{ group.key }}|{{ session.id }}"] = {{ session.size_bytes }};
+    {% endfor %}
   {% endfor %}
 {% endfor %}
+
+function sessionKey(row) {
+  return row.dataset.source + '|' + row.dataset.group + '|' + row.dataset.session;
+}
 
 function toggleProject(header) {
   const arrow = header.querySelector('.arrow');
   const project = header.closest('.project');
-  const sessions = project.querySelector('.sessions');
   arrow.classList.toggle('open');
-  sessions.classList.toggle('open');
+  project.querySelector('.sessions').classList.toggle('open');
 }
 
-function toggleProjectCheckbox(cb, projectName) {
-  const sessions = document.querySelector(`.sessions[data-project="${projectName}"]`);
-  sessions.querySelectorAll('.session-checkbox').forEach(s => s.checked = cb.checked);
+function toggleGroupCheckbox(cb) {
+  const project = cb.closest('.project');
+  project.querySelectorAll('.session-checkbox').forEach(s => s.checked = cb.checked);
+  updateCounts();
+}
+
+function toggleSourceCheckbox(cb) {
+  const source = cb.closest('.source');
+  source.querySelectorAll('.session-checkbox').forEach(s => s.checked = cb.checked);
   updateCounts();
 }
 
 function selectAll() {
-  document.querySelectorAll('.session-checkbox, .project-checkbox').forEach(cb => cb.checked = true);
+  document.querySelectorAll('.session-checkbox, .group-checkbox, .source-checkbox')
+    .forEach(cb => cb.checked = true);
   updateCounts();
 }
 
 function deselectAll() {
-  document.querySelectorAll('.session-checkbox, .project-checkbox').forEach(cb => cb.checked = false);
+  document.querySelectorAll('.session-checkbox, .group-checkbox, .source-checkbox')
+    .forEach(cb => { cb.checked = false; cb.indeterminate = false; });
   updateCounts();
 }
 
 function updateCounts() {
   const checked = document.querySelectorAll('.session-checkbox:checked');
   let totalSize = 0;
-  checked.forEach(cb => {
-    const key = cb.dataset.project + ':' + cb.dataset.session;
-    totalSize += sessionSizes[key] || 0;
-  });
+  checked.forEach(cb => { totalSize += sessionSizes[sessionKey(cb.closest('.session'))] || 0; });
   document.getElementById('selected-count').textContent = checked.length;
   document.getElementById('selected-size').textContent = humanSize(totalSize);
   document.getElementById('upload-btn').disabled = checked.length === 0;
 
-  // Update project-level checkboxes
-  document.querySelectorAll('.project-checkbox').forEach(pcb => {
-    const pName = pcb.dataset.project;
-    const all = document.querySelectorAll(`.session-checkbox[data-project="${pName}"]`);
-    const allChecked = document.querySelectorAll(`.session-checkbox[data-project="${pName}"]:checked`);
-    pcb.checked = all.length > 0 && all.length === allChecked.length;
-    pcb.indeterminate = allChecked.length > 0 && allChecked.length < all.length;
+  // Roll up group checkboxes
+  document.querySelectorAll('.project').forEach(project => {
+    const gcb = project.querySelector('.group-checkbox');
+    const all = project.querySelectorAll('.session-checkbox');
+    const on = project.querySelectorAll('.session-checkbox:checked');
+    gcb.checked = all.length > 0 && all.length === on.length;
+    gcb.indeterminate = on.length > 0 && on.length < all.length;
+  });
+
+  // Roll up source checkboxes
+  document.querySelectorAll('.source').forEach(source => {
+    const scb = source.querySelector('.source-checkbox');
+    const all = source.querySelectorAll('.session-checkbox');
+    const on = source.querySelectorAll('.session-checkbox:checked');
+    scb.checked = all.length > 0 && all.length === on.length;
+    scb.indeterminate = on.length > 0 && on.length < all.length;
   });
 }
 
@@ -246,7 +287,9 @@ function humanSize(bytes) {
   return size.toFixed(1) + ' ' + units[i];
 }
 
-async function previewSession(project, sessionId) {
+async function previewSession(el) {
+  const row = el.closest('.session');
+  const source = row.dataset.source, group = row.dataset.group, session = row.dataset.session;
   const pane = document.getElementById('preview-pane');
   const body = document.getElementById('preview-body');
   const title = document.getElementById('preview-title');
@@ -255,17 +298,20 @@ async function previewSession(project, sessionId) {
 
   body.innerHTML = '<p style="color: var(--text-muted)">Loading...</p>';
   pane.classList.add('open');
-  title.textContent = sessionId.substring(0, 8) + '...';
+  title.textContent = session.substring(0, 8) + '...';
 
   try {
-    const resp = await fetch(`/api/preview/${project}/${sessionId}?redact=${redact}`);
+    const q = new URLSearchParams({ source, group, session, redact });
+    const resp = await fetch('/api/preview?' + q.toString());
     const data = await resp.json();
 
-    if (data.redaction_count > 0) {
-      redactCount.textContent = `${data.redaction_count} redaction${data.redaction_count !== 1 ? 's' : ''}`;
-    } else {
-      redactCount.textContent = '';
+    if (!resp.ok) {
+      body.innerHTML = `<p style="color: var(--red)">${data.error || 'Failed to load preview'}</p>`;
+      return;
     }
+
+    redactCount.textContent = data.redaction_count > 0
+      ? `${data.redaction_count} redaction${data.redaction_count !== 1 ? 's' : ''}` : '';
 
     if (data.messages.length === 0) {
       body.innerHTML = '<p style="color: var(--text-muted)">(no messages)</p>';
@@ -275,7 +321,7 @@ async function previewSession(project, sessionId) {
     body.innerHTML = data.messages.map(m => {
       let text = escapeHtml(m.text);
       text = text.replace(/\[REDACTED\]/g, '<span class="redacted">[REDACTED]</span>');
-      return `<div class="preview-msg ${m.role}"><div class="role">${m.role}</div>${text}</div>`;
+      return `<div class="preview-msg ${escapeHtml(m.role)}"><div class="role">${escapeHtml(m.role)}</div>${text}</div>`;
     }).join('');
   } catch (e) {
     body.innerHTML = `<p style="color: var(--red)">Error loading preview: ${e.message}</p>`;
@@ -304,11 +350,10 @@ async function uploadSelected() {
   btn.disabled = true;
   btn.textContent = 'Uploading...';
 
-  const checked = document.querySelectorAll('.session-checkbox:checked');
-  const selected = Array.from(checked).map(cb => ({
-    project: cb.dataset.project,
-    session: cb.dataset.session,
-  }));
+  const selected = Array.from(document.querySelectorAll('.session-checkbox:checked')).map(cb => {
+    const row = cb.closest('.session');
+    return { source: row.dataset.source, group: row.dataset.group, session: row.dataset.session };
+  });
 
   const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
   const redactSecrets = document.getElementById('redact-toggle').checked;
@@ -321,7 +366,11 @@ async function uploadSelected() {
     });
     const data = await resp.json();
     if (resp.ok) {
-      showToast(`Uploaded ${data.session_count} sessions (${humanSize(data.zip_size_bytes)}, ${data.total_redactions} redactions)`);
+      const zips = data.uploads.length;
+      const failed = (data.errors || []).length;
+      let msg = `Uploaded ${data.session_count} sessions in ${zips} zip${zips !== 1 ? 's' : ''} (${humanSize(data.zip_size_bytes)}, ${data.total_redactions} redactions)`;
+      if (failed) msg += ` — ${failed} source${failed !== 1 ? 's' : ''} failed`;
+      showToast(msg, failed > 0);
       deselectAll();
     } else {
       showToast(data.error || 'Upload failed', true);
