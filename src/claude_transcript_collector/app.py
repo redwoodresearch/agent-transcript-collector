@@ -72,8 +72,9 @@ async def index():
 
 @app.get("/api/preview")
 async def preview_session(source: str, group: str, session: str, parent: str = "",
-                          redact: bool = True, identity: bool = True):
-    """Preview a session's messages, optionally redacted."""
+                          identity: bool = True):
+    """Preview a session's messages. Secrets are always redacted; identity is
+    the only optional pass."""
     sess = find_session(source, group, session, parent or None)
     src = get_source(source)
     if sess is None or src is None:
@@ -81,10 +82,7 @@ async def preview_session(source: str, group: str, session: str, parent: str = "
 
     raw = Path(sess.path).read_text(encoding="utf-8", errors="replace")
 
-    redaction_count = 0
-    if redact:
-        raw, n = redact_jsonl_content(raw)
-        redaction_count += n
+    raw, redaction_count = redact_jsonl_content(raw)   # always — secrets/credentials
     if identity:
         raw, n = redact_identity(raw)
         redaction_count += n
@@ -104,11 +102,13 @@ async def preview_session(source: str, group: str, session: str, parent: str = "
     }
 
 
-def _zip_and_upload(s3, source, sessions, contributor, redact_secrets, redact_id=True):
+def _zip_and_upload(s3, source, sessions, contributor, redact_id=True):
     """Zip one source's sessions (with redaction) and upload to S3.
 
-    Returns a per-source result dict. Sessions are pre-resolved Session objects,
-    so the file paths come from discovery, never from user input.
+    Secrets/credentials are ALWAYS redacted (not toggleable) so their removal
+    never depends on the optional identity pass. Returns a per-source result
+    dict. Sessions are pre-resolved Session objects, so the file paths come from
+    discovery, never from user input.
     """
     buf = io.BytesIO()
     manifest_sessions = []
@@ -120,10 +120,7 @@ def _zip_and_upload(s3, source, sessions, contributor, redact_secrets, redact_id
                 raw = Path(sess.path).read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            redaction_count = 0
-            if redact_secrets:
-                raw, n = redact_jsonl_content(raw)
-                redaction_count += n
+            raw, redaction_count = redact_jsonl_content(raw)   # always — secrets/credentials
             # Identity redaction must also cover the archive path and the manifest
             # group fields, which encode the home path / username (e.g.
             # -home-<user>-code, /home/<user>/code) and would otherwise leak.
@@ -190,7 +187,6 @@ async def upload(request: Request):
     body = await request.json()
     selected = body.get("selected", [])
     contributor = _safe_name(body.get("contributor_name", "anonymous"))
-    redact_secrets = body.get("redact_secrets", True)
     redact_id = body.get("redact_identity", True)
 
     if not selected:
@@ -230,7 +226,7 @@ async def upload(request: Request):
     errors = []
     for source, sessions in to_upload:
         try:
-            uploads.append(_zip_and_upload(s3, source, sessions, contributor, redact_secrets, redact_id))
+            uploads.append(_zip_and_upload(s3, source, sessions, contributor, redact_id))
         except Exception as e:
             errors.append({"source": source.id, "error": f"{type(e).__name__}: {e}"})
 
@@ -260,7 +256,7 @@ def headless_upload(contributor_name: str = "anonymous"):
         any_uploaded = True
         print(f"[{source.label}] redacting and zipping {len(sessions)} sessions...")
         try:
-            res = _zip_and_upload(s3, source, sessions, contributor, redact_secrets=True)
+            res = _zip_and_upload(s3, source, sessions, contributor)
         except Exception as e:
             print(f"[{source.label}] upload failed: {type(e).__name__}: {e}")
             continue

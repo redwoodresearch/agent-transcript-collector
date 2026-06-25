@@ -90,6 +90,19 @@ PATTERNS: list[tuple[str, re.Pattern]] = [
         r"(://[^:/?#\s]+):([^@/?#\s]{3,})(@)"
     )),
 
+    # DB/messaging connection URIs with userinfo — covers the password-LESS /
+    # token-as-user form (scheme://token@host) the URL Password pattern misses.
+    ("DB Connection URI", re.compile(
+        r"(?i)\b(?:postgres|postgresql|mysql|mongodb(?:\+srv)?|redis|rediss|amqp|amqps)"
+        r"://[^/\s@]+@"
+    )),
+
+    # Neon Postgres role/password token (distinctive npg_ prefix)
+    ("Neon Credential", re.compile(r"\bnpg_[A-Za-z0-9]{8,}\b")),
+
+    # RunPod SSH target: <pod-id>-<hex>@ssh.runpod.io (hex case-insensitive — insurance)
+    ("RunPod SSH", re.compile(r"\b[A-Za-z0-9]{8,}-[a-fA-F0-9]{6,}@ssh\.runpod\.io\b")),
+
     # Generic secret/password/token assignments (key = "value" or key: "value")
     ("Secret Assignment", re.compile(
         r'(?i)(?:password|passwd|secret|token|api_key|apikey|access_key)'

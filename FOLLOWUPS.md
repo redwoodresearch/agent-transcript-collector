@@ -31,8 +31,23 @@ sessions via their `parentSession` header; skip `events.jsonl` /
 `subagent-artifacts/`. Add synthetic-fixture tests. Confirm against one real
 `pi-subagents` run before finalizing.
 
+## Durable secret scanning — open
+
+The per-provider credential patterns (Neon `npg_`, RunPod, DB connection URIs)
+are a stopgap. Durable direction:
+- Replace hand-rolled provider/entropy patterns with a maintained scanner
+  (e.g. `detect-secrets`, pure-Python) + a structural URI/DSN pass + recall-tuned
+  entropy, benchmarked against the chippy corpus.
+- **GitHub handle redaction** — not covered by `redact_identity` (needs an
+  account lookup, not a pure regex); deferred.
+- **Third-party names in free text** — only the local machine's own identity is
+  redacted as a bare token; documented limitation.
+
 ## Done
 
+- Credential redaction decoupled from the PII toggle: Neon/RunPod/DB-URI
+  patterns added to the secret pass, and secret/credential redaction made
+  always-on (not toggleable) in UI, preview, upload, and headless.
 - Codex subagent classification aligned to the real `SessionSource` schema
   (drop review/compact/memory_consolidation/internal; keep+mark thread_spawn
   with `parent_thread_id`, and the `other` catch-all).

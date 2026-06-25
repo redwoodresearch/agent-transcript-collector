@@ -125,9 +125,14 @@ that, on the one bucket:
 - A key embedded in a command handed to many contributors is effectively a
   shared, exposed credential. Scope it to `s3:PutObject` only (above) so a leak
   can't read, delete, or enumerate, and rotate it if it leaves trusted hands.
+- **Secret/credential redaction is always on** (not toggleable) so it can never
+  be disabled by accident; only the identity/PII pass is optional.
 - Redaction is best-effort and regex-based (see `redactor.py`): it catches
-  well-formatted secrets (AWS keys, `sk-`/token patterns, JWTs, PEM keys, etc.)
-  but **not** proprietary source, internal paths, or PII embedded in prose.
+  well-formatted secrets and credentials — AWS keys, `sk-`/token patterns, JWTs,
+  PEM keys, DB/messaging connection URIs (`postgres://…@`, etc.), Neon (`npg_…`)
+  and RunPod (`…@ssh.runpod.io`) credentials — but **not** proprietary source,
+  internal paths, or PII embedded in prose. Per-provider patterns are a stopgap;
+  a maintained secret-scanner is the durable direction (see `FOLLOWUPS.md`).
   Contributors should understand what a transcript contains before sharing it.
 
 ## Adding a new source

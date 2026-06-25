@@ -25,6 +25,7 @@
     flex-wrap: wrap;
   }
   .controls label { font-size: 0.85rem; display: flex; align-items: center; gap: 6px; }
+  .controls label.always-on { color: var(--text-muted); cursor: default; }
   .controls input[type="text"] {
     background: var(--surface); border: 1px solid var(--border); color: var(--text);
     padding: 6px 10px; border-radius: 6px; font-size: 0.85rem;
@@ -140,9 +141,9 @@
     Your name:
     <input type="text" id="contributor-name" placeholder="anonymous" value="">
   </label>
-  <label>
-    <input type="checkbox" id="redact-toggle" checked>
-    Redact secrets
+  <label class="always-on" title="Secrets and credentials are always redacted">
+    <input type="checkbox" checked disabled>
+    Redact secrets &amp; credentials (always on)
   </label>
   <label>
     <input type="checkbox" id="identity-toggle" checked>
@@ -306,7 +307,6 @@ async function previewSession(el) {
   const body = document.getElementById('preview-body');
   const title = document.getElementById('preview-title');
   const redactCount = document.getElementById('preview-redaction-count');
-  const redact = document.getElementById('redact-toggle').checked;
   const identity = document.getElementById('identity-toggle').checked;
 
   body.innerHTML = '<p style="color: var(--text-muted)">Loading...</p>';
@@ -314,7 +314,7 @@ async function previewSession(el) {
   title.textContent = session.substring(0, 8) + '...';
 
   try {
-    const q = new URLSearchParams({ source, group, session, parent, redact, identity });
+    const q = new URLSearchParams({ source, group, session, parent, identity });
     const resp = await fetch('/api/preview?' + q.toString());
     const data = await resp.json();
 
@@ -369,14 +369,13 @@ async function uploadSelected() {
   });
 
   const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
-  const redactSecrets = document.getElementById('redact-toggle').checked;
   const redactIdentity = document.getElementById('identity-toggle').checked;
 
   try {
     const resp = await fetch('/api/upload', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ selected, contributor_name: contributorName, redact_secrets: redactSecrets, redact_identity: redactIdentity }),
+      body: JSON.stringify({ selected, contributor_name: contributorName, redact_identity: redactIdentity }),
     });
     const data = await resp.json();
     if (resp.ok) {

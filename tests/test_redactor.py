@@ -316,3 +316,33 @@ class TestRedactsIdentity:
     def test_guest_is_default_username(self):
         from claude_transcript_collector.redactor import redact_path_token
         assert redact_path_token("/home/guest/x", usernames=())[0] == "/home/guest/x"
+
+
+class TestRedactsCredentials:
+    # Credentials must be caught by the SECRET pass (redact_jsonl_content),
+    # independent of the identity/PII pass.
+    def test_neon_token(self):
+        out, n = redact_jsonl_content("db role npg_Ab12Cd34Ef56 here")
+        assert "npg_Ab12Cd34Ef56" not in out and "[REDACTED]" in out
+
+    def test_neon_token_as_user_dsn(self):
+        out, n = redact_jsonl_content("postgresql://npg_Ab12Cd34Ef56@ep-cool-1.neon.tech/db")
+        assert "npg_Ab12Cd34Ef56" not in out
+
+    def test_runpod_ssh(self):
+        out, n = redact_jsonl_content("ssh abc12345-f0a1b2@ssh.runpod.io")
+        assert "abc12345-f0a1b2@ssh.runpod.io" not in out and "[REDACTED]" in out
+
+    def test_runpod_ssh_uppercase_hex(self):
+        out, n = redact_jsonl_content("ssh abc12345-F0A1B2@ssh.runpod.io")
+        assert "abc12345-F0A1B2@ssh.runpod.io" not in out and "[REDACTED]" in out
+
+    def test_db_connection_uri_passwordless(self):
+        out, n = redact_jsonl_content("redis://h7sometoken@cache.example/0")
+        assert "h7sometoken" not in out
+
+    def test_plain_text_not_over_redacted(self):
+        # control: ordinary prose/code is untouched by the new patterns
+        out, n = redact_jsonl_content("we ran postgres locally and it worked")
+        assert out == "we ran postgres locally and it worked"
+        assert n == 0
