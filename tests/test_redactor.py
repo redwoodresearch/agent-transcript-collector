@@ -7,7 +7,7 @@ the `_MOCK_TAG` marker (hex of "MOCK").
 
 import re
 
-from claude_transcript_collector.redactor import _MOCK_TAG, redact, redact_jsonl_content
+from agent_transcript_collector.redactor import _MOCK_TAG, redact, redact_jsonl_content
 
 MOCK = re.compile(_MOCK_TAG, re.IGNORECASE)
 
@@ -269,34 +269,34 @@ class TestOverlappingRedactions:
 
 class TestRedactsIdentity:
     def test_default_user_path_preserved(self):
-        from claude_transcript_collector.redactor import redact_identity
+        from agent_transcript_collector.redactor import redact_identity
         out, n = redact_identity("ran in /home/ubuntu/proj and /Users/Administrator/x", usernames=())
         assert "/home/ubuntu/proj" in out
         assert "/Users/Administrator/x" in out
         assert n == 0
 
     def test_real_user_path_redacted(self):
-        from claude_transcript_collector.redactor import redact_identity
+        from agent_transcript_collector.redactor import redact_identity
         out, n = redact_identity("cwd /home/nikolaskuhn/code", usernames=())
         assert "/home/nikolaskuhn/code" not in out
         assert "/home/[USER]/code" in out
         assert n == 1
 
     def test_bare_username_token_redacted(self):
-        from claude_transcript_collector.redactor import redact_identity
+        from agent_transcript_collector.redactor import redact_identity
         out, n = redact_identity("author: nikolaskuhn committed", usernames=("nikolaskuhn",))
         assert "nikolaskuhn" not in out
         assert "[USER]" in out
 
     def test_email_real_tld_redacted_decorator_preserved(self):
-        from claude_transcript_collector.redactor import redact_identity
+        from agent_transcript_collector.redactor import redact_identity
         out, n = redact_identity("mail me@anthropic.com via @dataclasses.dataclass", usernames=())
         assert "me@anthropic.com" not in out
         assert "[EMAIL]" in out
         assert "@dataclasses.dataclass" in out
 
     def test_stoplist_env_extension(self, monkeypatch):
-        from claude_transcript_collector import redactor
+        from agent_transcript_collector import redactor
         monkeypatch.setenv("CTC_USERNAME_STOPLIST", "buildbot")
         out, n = redactor.redact_identity("/home/buildbot/x", usernames=())
         assert "/home/buildbot/x" in out
@@ -304,26 +304,26 @@ class TestRedactsIdentity:
 
     def test_uncommon_cctld_email_redacted(self):
         # Finding 2: fail safe — uncommon ccTLDs must not leak.
-        from claude_transcript_collector.redactor import redact_identity
+        from agent_transcript_collector.redactor import redact_identity
         out, n = redact_identity("ping colleague@firma.it now", usernames=())
         assert "colleague@firma.it" not in out
         assert "[EMAIL]" in out
 
     def test_decorator_at_escaped_newline_preserved(self):
         # Finding 2: `\n@module.attr` decorators in JSONL stay intact.
-        from claude_transcript_collector.redactor import redact_identity
+        from agent_transcript_collector.redactor import redact_identity
         out, _ = redact_identity("code\\n@dataclasses.dataclass and a@b.io", usernames=())
         assert "@dataclasses.dataclass" in out
         assert "a@b.io" not in out and "[EMAIL]" in out
 
     def test_internal_host_not_treated_as_email(self):
-        from claude_transcript_collector.redactor import redact_identity
+        from agent_transcript_collector.redactor import redact_identity
         out, _ = redact_identity("svc@ip-10-0-0-1.ec2.internal", usernames=())
         assert "ec2.internal" in out  # host-suffix denylist -> left alone
 
     def test_email_before_bare_token_ordering(self):
         # Finding 3: address whose local part is the username -> [EMAIL], not [USER]@...
-        from claude_transcript_collector.redactor import redact_identity
+        from agent_transcript_collector.redactor import redact_identity
         out, _ = redact_identity("reach nikolaskuhn@gmx.de", usernames=("nikolaskuhn",))
         assert "[EMAIL]" in out
         assert "[USER]@" not in out
@@ -331,7 +331,7 @@ class TestRedactsIdentity:
 
     def test_path_fields_redacted_encoded_and_decoded(self):
         # Finding 1: the encoded group_key and decoded group_label both scrub.
-        from claude_transcript_collector.redactor import redact_identity
+        from agent_transcript_collector.redactor import redact_identity
         enc, _ = redact_identity("-home-nikolaskuhn-code", usernames=("nikolaskuhn",))
         assert "nikolaskuhn" not in enc and "[USER]" in enc
         dec, _ = redact_identity("/home/nikolaskuhn/code", usernames=())
@@ -339,7 +339,7 @@ class TestRedactsIdentity:
 
     def test_encoded_path_key_redacted_any_username(self):
         # Finding 1: dash-encoded project keys scrub regardless of bare-token min length.
-        from claude_transcript_collector.redactor import redact_path_token
+        from agent_transcript_collector.redactor import redact_path_token
         assert redact_path_token("-home-jo-proj", usernames=())[0] == "-home-[USER]-proj"
         assert redact_path_token("home-nikolaskuhn-code", usernames=())[0] == "home-[USER]-code"
         assert redact_path_token("-home-ubuntu-proj", usernames=())[0] == "-home-ubuntu-proj"
@@ -347,18 +347,18 @@ class TestRedactsIdentity:
 
     def test_decorator_in_diff_preserved(self):
         # Over-eager fix: @app.get/@app.post in diff/code lines are not emails.
-        from claude_transcript_collector.redactor import redact_identity
+        from agent_transcript_collector.redactor import redact_identity
         out, _ = redact_identity("-@app.get and +@app.post and x\\n@app.route", usernames=())
         assert "@app.get" in out and "@app.post" in out and "@app.route" in out
         assert "[EMAIL]" not in out
 
     def test_real_email_plus_localpart_still_redacted(self):
-        from claude_transcript_collector.redactor import redact_identity
+        from agent_transcript_collector.redactor import redact_identity
         out, _ = redact_identity("from 97564335+metatrot@users.noreply.github.com", usernames=())
         assert "metatrot" not in out and "[EMAIL]" in out
 
     def test_guest_is_default_username(self):
-        from claude_transcript_collector.redactor import redact_path_token
+        from agent_transcript_collector.redactor import redact_path_token
         assert redact_path_token("/home/guest/x", usernames=())[0] == "/home/guest/x"
 
 

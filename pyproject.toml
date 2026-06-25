@@ -11,17 +11,11 @@ dependencies = [
 ]
 
 [project.scripts]
-agent-transcript-collector = "claude_transcript_collector.app:main"
+agent-transcript-collector = "agent_transcript_collector.app:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
-
-# The distribution is `agent-transcript-collector` but the import package is still
-# `claude_transcript_collector`, so point hatchling at it explicitly (it would
-# otherwise look for a module matching the dist name).
-[tool.hatch.build.targets.wheel]
-packages = ["src/claude_transcript_collector"]
 
 [dependency-groups]
 dev = [
