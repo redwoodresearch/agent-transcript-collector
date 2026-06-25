@@ -111,6 +111,11 @@
   }
   .status-left { font-size: 0.85rem; }
   .status-count { color: var(--accent); font-weight: 600; }
+  .progress { display: none; align-items: center; gap: 8px; flex: 1; margin: 0 16px; }
+  .progress.show { display: flex; }
+  .bar { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+  .bar-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.3s; }
+  #progress-text { font-size: 0.8rem; color: var(--text-muted); white-space: nowrap; }
 
   .toast {
     position: fixed; top: 24px; right: 24px; background: var(--green);
@@ -210,6 +215,10 @@
   <div class="status-left">
     <span class="status-count" id="selected-count">0</span> sessions selected
     (<span id="selected-size">0 B</span>)
+  </div>
+  <div class="progress" id="upload-progress">
+    <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
+    <span id="progress-text"></span>
   </div>
   <button id="upload-btn" onclick="uploadSelected()" disabled>Upload Selected</button>
 </div>
@@ -364,10 +373,18 @@ function showToast(msg, isError) {
   setTimeout(() => t.className = 'toast', 4000);
 }
 
+// Upload runs as a background job on the server; the page starts it, then polls
+// for progress. Closing the tab doesn't abort it — reopening re-attaches.
+let pollTimer = null;
+
+function saveJob(id) { try { localStorage.setItem('ctc_job', id); } catch (e) {} }
+function clearJob() { try { localStorage.removeItem('ctc_job'); } catch (e) {} }
+function loadJob() { try { return localStorage.getItem('ctc_job'); } catch (e) { return null; } }
+
 async function uploadSelected() {
   const btn = document.getElementById('upload-btn');
   btn.disabled = true;
-  btn.textContent = 'Uploading...';
+  btn.textContent = 'Starting…';
 
   const selected = Array.from(document.querySelectorAll('.session-checkbox:checked')).map(cb => {
     const row = cb.closest('.session');
@@ -395,28 +412,83 @@ async function uploadSelected() {
       body: JSON.stringify({ selected, contributor_name: contributorName, redact_identity: redactIdentity }),
     });
     const data = await resp.json();
-    if (resp.ok) {
-      const zips = data.uploads.length;
-      const failed = (data.errors || []).length;
-      let msg = `Uploaded ${data.session_count} sessions in ${zips} zip${zips !== 1 ? 's' : ''} (${humanSize(data.zip_size_bytes)}, ${data.total_redactions} redactions)`;
-      if (failed) msg += ` — ${failed} source${failed !== 1 ? 's' : ''} failed`;
-      showToast(msg, failed > 0);
-      deselectAll();
-    } else {
-      showToast(data.error || 'Upload failed', true);
+    if (resp.status === 409) {            // already running — attach to it
+      showToast('An upload is already running', true);
+      trackJob(data.job_id);
+      return;
     }
+    if (!resp.ok) { showToast(data.error || 'Upload failed', true); resetUploadBtn(); return; }
+    saveJob(data.job_id);
+    trackJob(data.job_id);
   } catch (e) {
     showToast('Upload failed: ' + e.message, true);
+    resetUploadBtn();
   }
-  btn.textContent = 'Upload Selected';
+}
+
+function trackJob(jobId) {
+  document.getElementById('upload-btn').disabled = true;
+  showProgress(true);
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    let j;
+    try {
+      const r = await fetch('/api/upload/' + jobId);
+      if (r.status === 404) { stopTracking(); clearJob(); resetUploadBtn(); return; }
+      j = await r.json();
+    } catch (e) { return; }              // transient — keep polling
+    renderProgress(j);
+    if (['completed', 'partial', 'failed'].includes(j.status)) {
+      stopTracking();
+      clearJob();
+      finishToast(j);
+      if (j.status !== 'failed') deselectAll();
+      resetUploadBtn();
+    }
+  }, 1000);
+}
+
+function renderProgress(j) {
+  const fill = document.getElementById('bar-fill');
+  const text = document.getElementById('progress-text');
+  if (j.total) {
+    fill.style.width = Math.round((j.done / j.total) * 100) + '%';
+    text.textContent = `Uploading ${j.done}/${j.total}…`;
+  } else {
+    text.textContent = 'Preparing…';
+  }
+  document.getElementById('upload-btn').textContent = 'Uploading…';
+}
+
+function finishToast(j) {
+  const up = j.uploads.length, failed = (j.errors || []).length;
+  if (!up && failed) { showToast((j.errors[0] && j.errors[0].error) || 'Upload failed', true); return; }
+  const sessions = j.uploads.reduce((a, u) => a + u.session_count, 0);
+  const bytes = j.uploads.reduce((a, u) => a + u.zip_size_bytes, 0);
+  const red = j.uploads.reduce((a, u) => a + u.total_redactions, 0);
+  let msg = `Uploaded ${sessions} sessions in ${up} part${up !== 1 ? 's' : ''} (${humanSize(bytes)}, ${red} redactions)`;
+  if (failed) msg += ` — ${failed} failed`;
+  showToast(msg, failed > 0);
+}
+
+function showProgress(on) {
+  document.getElementById('upload-progress').classList.toggle('show', on);
+  if (!on) document.getElementById('bar-fill').style.width = '0';
+}
+function stopTracking() { clearInterval(pollTimer); pollTimer = null; showProgress(false); }
+function resetUploadBtn() {
+  document.getElementById('upload-btn').textContent = 'Upload Selected';
   updateCounts();
 }
 
-// Restore a remembered name and set the initial button state.
+// Restore a remembered name, set the initial button state, and re-attach to an
+// upload that's still running (e.g. after a tab reopen).
 (function init() {
   const saved = loadName();
   if (saved) document.getElementById('contributor-name').value = saved;
   updateCounts();
+  const job = loadJob();
+  if (job) trackJob(job);
 })();
 </script>
 </body>
