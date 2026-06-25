@@ -28,10 +28,14 @@ stored.
 subagents are included and flagged `is_subagent` in the manifest (with their
 `parent` session id), and shown with a "subagent" badge in the UI:
 - **Claude Code** — `<session-id>/subagents/agent-*.jsonl`.
-- **Codex** — rollouts whose `session_meta.source` is `{"subagent": …}`, except
-  review/**monitor** subagents (the `guardian`), which are dropped: their
-  transcript is reviewer scaffolding that quotes other transcripts, not a real
-  user↔agent conversation.
+- **Codex** — classified by `session_meta.source` (per the upstream
+  `SessionSource`/`SubAgentSource` schema): genuine task subagents
+  (`{"subagent": {"thread_spawn": …}}`, with `parent` taken from
+  `parent_thread_id`, plus the catch-all `{"subagent": {"other": …}}`) are kept
+  and marked; **automated scaffolding is dropped** —
+  `{"subagent": "review"|"compact"|"memory_consolidation"}` and
+  `{"internal": …}`. (Top-level `"cli"`/`"vscode"`/`{"custom": …}` sessions are
+  kept, unmarked.)
 
 Not yet collected: **Pi** subagents from the `pi-subagents` package. They are
 standard Pi session JSONL, but written under

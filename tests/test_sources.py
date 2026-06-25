@@ -59,19 +59,15 @@ def _seed_codex(iso):
     return uuid
 
 
-def _seed_codex_guardian(iso):
-    """A monitor/subagent rollout that must be excluded from discovery."""
-    uuid = "99999999-8888-7777-6666-555555555555"
+def _seed_codex_source(iso, source, uuid, ts="11-00-00"):
+    """A rollout with an arbitrary session_meta `source` value (real Codex schema)."""
     _write_jsonl(
-        iso["codex_sessions"] / "2026" / "06" / "24" / f"rollout-2026-06-24T11-00-00-{uuid}.jsonl",
+        iso["codex_sessions"] / "2026" / "06" / "24" / f"rollout-2026-06-24T{ts}-{uuid}.jsonl",
         [
-            {"type": "session_meta", "payload": {
-                "cwd": "/home/u/proj", "id": uuid,
-                "source": {"subagent": {"other": "guardian"}}}},
-            {"type": "message", "role": "user",
-             "content": [{"type": "input_text", "text": "assess this action"}]},
+            {"type": "session_meta", "payload": {"cwd": "/home/u/proj", "id": uuid, "source": source}},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
             {"type": "response_item", "payload": {
-                "role": "assistant", "content": [{"type": "output_text", "text": "{\"outcome\":\"allow\"}"}]}},
+                "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]}},
         ],
     )
     return uuid
@@ -125,17 +121,20 @@ def test_codex_discover_tolerant(iso):
     assert s.message_count == 2  # user + assistant
 
 
-def test_codex_excludes_guardian_subagent(iso):
-    _seed_codex(iso)            # source: "cli"  -> kept
-    _seed_codex_guardian(iso)   # source: {subagent: guardian} -> dropped
-    groups = CodexSource().discover()
-    sessions = [s for g in groups for s in g.sessions]
+def test_codex_excludes_scaffolding(iso):
+    # review / compact / memory_consolidation / internal are dropped; cli kept.
+    _seed_codex(iso)  # source: "cli" -> kept
+    _seed_codex_source(iso, {"subagent": "review"}, "99999999-0000-0000-0000-000000000001", "11-01-00")
+    _seed_codex_source(iso, {"subagent": "compact"}, "99999999-0000-0000-0000-000000000002", "11-02-00")
+    _seed_codex_source(iso, {"subagent": "memory_consolidation"}, "99999999-0000-0000-0000-000000000003", "11-03-00")
+    _seed_codex_source(iso, {"internal": "memory_consolidation"}, "99999999-0000-0000-0000-000000000004", "11-04-00")
+    sessions = [s for g in CodexSource().discover() for s in g.sessions]
     assert len(sessions) == 1
     assert sessions[0].first_message == "hello codex"
 
 
-def test_codex_only_subagents_yields_nothing(iso):
-    _seed_codex_guardian(iso)
+def test_codex_only_scaffolding_yields_nothing(iso):
+    _seed_codex_source(iso, {"subagent": "review"}, "99999999-0000-0000-0000-000000000005", "11-05-00")
     assert CodexSource().discover() == []
 
 
@@ -217,41 +216,31 @@ def test_claude_discovers_subagents_marked(iso):
     assert sessions["agent-x1"].parent == "sess-uuid"
 
 
-def _seed_codex_task_subagent(iso):
-    uuid = "22222222-3333-4444-5555-666666666666"
-    _write_jsonl(iso["codex_sessions"] / "2026" / "06" / "24" / f"rollout-2026-06-24T12-00-00-{uuid}.jsonl", [
-        {"type": "session_meta", "payload": {"cwd": "/home/u/proj", "id": uuid, "source": {"subagent": {"name": "explorer"}}}},
-        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "explore"}]},
-        {"type": "response_item", "payload": {"role": "assistant", "content": [{"type": "output_text", "text": "ok"}]}},
-    ])
-    return uuid
-
-
-def test_codex_keeps_task_subagent_drops_monitor(iso):
-    _seed_codex(iso)               # cli -> kept, not subagent
-    _seed_codex_task_subagent(iso) # task subagent -> kept, marked
-    _seed_codex_guardian(iso)      # monitor -> dropped
+def test_codex_thread_spawn_kept_and_marked_with_parent(iso):
+    # Genuine task subagent: thread_spawn -> kept, marked, parent from parent_thread_id.
+    src = {"subagent": {"thread_spawn": {
+        "parent_thread_id": "ad7f0408-99b8-4f6e-a46f-bd0eec433370",
+        "depth": 1, "agent_nickname": "atlas", "agent_role": "explorer"}}}
+    uuid = _seed_codex_source(iso, src, "22222222-3333-4444-5555-666666666666", "12-00-00")
     sessions = {s.id: s for g in CodexSource().discover() for s in g.sessions}
-    assert len(sessions) == 2
-    assert sessions["11111111-2222-3333-4444-555555555555"].is_subagent is False
-    assert sessions["22222222-3333-4444-5555-666666666666"].is_subagent is True
+    assert sessions[uuid].is_subagent is True
+    assert sessions[uuid].parent == "ad7f0408-99b8-4f6e-a46f-bd0eec433370"
 
 
-def _seed_codex_named_subagent(iso, name, uuid):
-    _write_jsonl(iso["codex_sessions"] / "2026" / "06" / "24" / f"rollout-2026-06-24T13-{uuid[:2]}-00-{uuid}.jsonl", [
-        {"type": "session_meta", "payload": {"cwd": "/home/u/proj", "id": uuid, "source": {"subagent": {"other": name}}}},
-        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
-    ])
-    return uuid
-
-
-def test_codex_monitor_match_is_exact_not_substring(iso):
-    # 'db-monitor' contains 'monitor' but is a real task subagent -> must be kept.
-    _seed_codex_named_subagent(iso, "db-monitor", "33333333-0000-0000-0000-000000000001")
-    _seed_codex_named_subagent(iso, "monitor", "33333333-0000-0000-0000-000000000002")
+def test_codex_other_subagent_kept_and_marked(iso):
+    # catch-all {"subagent": {"other": ...}} -> kept + marked (unknown subagent type).
+    uuid = _seed_codex_source(iso, {"subagent": {"other": "atlas"}}, "44444444-0000-0000-0000-000000000001", "12-10-00")
     sessions = {s.id: s for g in CodexSource().discover() for s in g.sessions}
-    assert sessions["33333333-0000-0000-0000-000000000001"].is_subagent is True  # db-monitor kept
-    assert "33333333-0000-0000-0000-000000000002" not in sessions               # exact monitor dropped
+    assert sessions[uuid].is_subagent is True
+    assert sessions[uuid].parent is None
+
+
+def test_codex_cli_and_custom_are_top_level(iso):
+    u1 = _seed_codex_source(iso, "cli", "55555555-0000-0000-0000-000000000001", "12-20-00")
+    u2 = _seed_codex_source(iso, {"custom": "atlas"}, "55555555-0000-0000-0000-000000000002", "12-21-00")
+    sessions = {s.id: s for g in CodexSource().discover() for s in g.sessions}
+    assert sessions[u1].is_subagent is False
+    assert sessions[u2].is_subagent is False
 
 
 def test_find_session_disambiguates_subagents_by_parent(iso):

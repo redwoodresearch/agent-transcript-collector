@@ -86,38 +86,49 @@ def _payload(obj: dict) -> dict:
     return p if isinstance(p, dict) else obj
 
 
-# Subagent names that are review/monitor scaffolding (not real agent work).
-_MONITOR_NAMES = {"guardian", "monitor"}
+def _classify_source(source) -> str:
+    """Classify a rollout's session_meta `source` (Codex `SessionSource`).
 
+    Returns:
+      - 'top'  : interactive/normal session — keep, unmarked.
+      - 'task' : a genuine spawned subagent — keep, mark is_subagent.
+      - 'drop' : automated scaffolding (review/compact/memory_consolidation,
+                 or an internal session) — exclude.
 
-def _subagent_kind(path) -> str:
-    """Classify a rollout from its session_meta `source`.
-
-    Returns 'top' (interactive `source: "cli"`), 'task' (a real spawned
-    subagent), or 'monitor' (a review subagent like guardian). Reads only the
-    first object, so it stays cheap.
+    Schema (externally tagged) from openai/codex
+    `codex-rs/protocol/src/protocol.rs` (SessionSource / SubAgentSource):
+      "cli"|"vscode"|"exec"|"mcp"|"unknown"     -> top-level (bare strings)
+      {"custom": "..."}                          -> top-level
+      {"internal": ...}                          -> scaffolding
+      {"subagent": "review"|"compact"|"memory_consolidation"}  -> scaffolding
+      {"subagent": {"thread_spawn": {...}}}      -> genuine task subagent
+      {"subagent": {"other": "..."}}             -> catch-all subagent
     """
-    first = next(iter_jsonl(path), None)
-    if first is None:
+    if not isinstance(source, dict):
+        return "top"                       # cli / vscode / exec / mcp / unknown
+    if "custom" in source:
         return "top"
-    src = _payload(first).get("source")
-    if not isinstance(src, dict) or "subagent" not in src:
-        return "top"
-    # Match monitor names against the descriptor's string VALUES exactly — not a
-    # substring over the serialized blob, which would drop legitimate task
-    # subagents named e.g. "db-monitor" or working under a path containing
-    # "guardian". Observed shape is {"subagent": {"other": "guardian"}}.
-    names: set[str] = set()
+    if "internal" in source:
+        return "drop"                      # internal scaffolding (memory_consolidation)
+    if "subagent" in source:
+        sub = source["subagent"]
+        if isinstance(sub, str):
+            return "drop"                  # review / compact / memory_consolidation
+        return "task"                      # thread_spawn or other -> real subagent
+    return "top"                           # unknown shape: keep rather than drop
 
-    def _collect(v):
-        if isinstance(v, str):
-            names.add(v.lower())
-        elif isinstance(v, dict):
-            for x in v.values():
-                _collect(x)
 
-    _collect(src["subagent"])
-    return "monitor" if names & _MONITOR_NAMES else "task"
+def _parent_thread_id(first_obj: dict, source) -> str | None:
+    """Recover a subagent's parent id: thread_spawn.parent_thread_id, else the
+    top-level session_meta.parent_thread_id."""
+    if isinstance(source, dict):
+        sub = source.get("subagent")
+        if isinstance(sub, dict):
+            ts = sub.get("thread_spawn")
+            if isinstance(ts, dict) and isinstance(ts.get("parent_thread_id"), str):
+                return ts["parent_thread_id"]
+    pid = _payload(first_obj).get("parent_thread_id")
+    return pid if isinstance(pid, str) else None
 
 
 class CodexSource:
@@ -132,9 +143,11 @@ class CodexSource:
 
         by_group: dict[str, Group] = {}
         for f in sorted(sessions_dir.rglob("rollout-*.jsonl")):
-            kind = _subagent_kind(f)
-            if kind == "monitor":
-                continue  # drop guardian/monitor review scaffolding
+            first_obj = next(iter_jsonl(f), None)
+            source = _payload(first_obj).get("source") if first_obj else None
+            kind = _classify_source(source)
+            if kind == "drop":
+                continue  # review/compact/memory_consolidation/internal scaffolding
             cwd, first, count = self._summary(f)
             key = _encode_cwd(cwd) if cwd else "_ungrouped"
             label = cwd or "(unknown working dir)"
@@ -149,6 +162,7 @@ class CodexSource:
                 path=f,
                 size_bytes=f.stat().st_size,
                 is_subagent=(kind == "task"),
+                parent=_parent_thread_id(first_obj, source) if kind == "task" else None,
                 first_message=first,
                 message_count=count,
                 modified=mtime(f),
