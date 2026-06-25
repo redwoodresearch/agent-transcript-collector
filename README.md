@@ -47,8 +47,8 @@ subagents are included and flagged `is_subagent` in the manifest (with their
 ```bash
 CTC_AWS_ACCESS_KEY_ID=AKIA... \
 CTC_AWS_SECRET_ACCESS_KEY='...' \
-  uvx --from 'git+https://github.com/nick-kuhn/claude-transcript-collector' \
-  claude-transcript-collector
+  uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
+  agent-transcript-collector
 ```
 
 The destination bucket defaults to `rr-agent-transcripts` (in `us-east-1`), so
@@ -63,7 +63,7 @@ Selected**.
 ### Headless / no-UI mode
 
 ```bash
-... claude-transcript-collector --all --name <contributor>
+... agent-transcript-collector --all --name <contributor>
 ```
 
 `--all` skips the UI entirely and uploads **every** transcript from **every**
