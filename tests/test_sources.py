@@ -197,3 +197,69 @@ def test_source_metadata():
     assert get_source("codex").source_format == "codex-rollout-jsonl"
     assert get_source("pi").source_format == "pi-session-jsonl-v3"
     assert get_source("claude_code").label == "Claude Code"
+
+
+def _seed_claude_subagent(iso):
+    base = iso["claude_projects"] / "-home-u-proj" / "sess-uuid" / "subagents"
+    _write_jsonl(base / "agent-x1.jsonl", [
+        {"type": "user", "message": {"content": "do a subtask"}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "done"}]}},
+    ])
+
+
+def test_claude_discovers_subagents_marked(iso):
+    _seed_claude(iso)
+    _seed_claude_subagent(iso)
+    sessions = {s.id: s for g in ClaudeCodeSource().discover() for s in g.sessions}
+    assert sessions["sess-uuid"].is_subagent is False
+    assert "agent-x1" in sessions
+    assert sessions["agent-x1"].is_subagent is True
+    assert sessions["agent-x1"].parent == "sess-uuid"
+
+
+def _seed_codex_task_subagent(iso):
+    uuid = "22222222-3333-4444-5555-666666666666"
+    _write_jsonl(iso["codex_sessions"] / "2026" / "06" / "24" / f"rollout-2026-06-24T12-00-00-{uuid}.jsonl", [
+        {"type": "session_meta", "payload": {"cwd": "/home/u/proj", "id": uuid, "source": {"subagent": {"name": "explorer"}}}},
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "explore"}]},
+        {"type": "response_item", "payload": {"role": "assistant", "content": [{"type": "output_text", "text": "ok"}]}},
+    ])
+    return uuid
+
+
+def test_codex_keeps_task_subagent_drops_monitor(iso):
+    _seed_codex(iso)               # cli -> kept, not subagent
+    _seed_codex_task_subagent(iso) # task subagent -> kept, marked
+    _seed_codex_guardian(iso)      # monitor -> dropped
+    sessions = {s.id: s for g in CodexSource().discover() for s in g.sessions}
+    assert len(sessions) == 2
+    assert sessions["11111111-2222-3333-4444-555555555555"].is_subagent is False
+    assert sessions["22222222-3333-4444-5555-666666666666"].is_subagent is True
+
+
+def _seed_codex_named_subagent(iso, name, uuid):
+    _write_jsonl(iso["codex_sessions"] / "2026" / "06" / "24" / f"rollout-2026-06-24T13-{uuid[:2]}-00-{uuid}.jsonl", [
+        {"type": "session_meta", "payload": {"cwd": "/home/u/proj", "id": uuid, "source": {"subagent": {"other": name}}}},
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+    ])
+    return uuid
+
+
+def test_codex_monitor_match_is_exact_not_substring(iso):
+    # 'db-monitor' contains 'monitor' but is a real task subagent -> must be kept.
+    _seed_codex_named_subagent(iso, "db-monitor", "33333333-0000-0000-0000-000000000001")
+    _seed_codex_named_subagent(iso, "monitor", "33333333-0000-0000-0000-000000000002")
+    sessions = {s.id: s for g in CodexSource().discover() for s in g.sessions}
+    assert sessions["33333333-0000-0000-0000-000000000001"].is_subagent is True  # db-monitor kept
+    assert "33333333-0000-0000-0000-000000000002" not in sessions               # exact monitor dropped
+
+
+def test_find_session_disambiguates_subagents_by_parent(iso):
+    from claude_transcript_collector.sources import find_session
+    proj = iso["claude_projects"] / "-home-u-proj"
+    _write_jsonl(proj / "sessA" / "subagents" / "agent-dup.jsonl", [{"type": "user", "message": {"content": "A"}}])
+    _write_jsonl(proj / "sessB" / "subagents" / "agent-dup.jsonl", [{"type": "user", "message": {"content": "B"}}])
+    a = find_session("claude_code", "-home-u-proj", "agent-dup", parent="sessA")
+    b = find_session("claude_code", "-home-u-proj", "agent-dup", parent="sessB")
+    assert a is not None and b is not None and a.path != b.path
+    assert a.parent == "sessA" and b.parent == "sessB"

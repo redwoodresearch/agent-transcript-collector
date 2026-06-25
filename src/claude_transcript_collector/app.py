@@ -71,10 +71,10 @@ async def index():
 
 
 @app.get("/api/preview")
-async def preview_session(source: str, group: str, session: str,
+async def preview_session(source: str, group: str, session: str, parent: str = "",
                           redact: bool = True, identity: bool = True):
     """Preview a session's messages, optionally redacted."""
-    sess = find_session(source, group, session)
+    sess = find_session(source, group, session, parent or None)
     src = get_source(source)
     if sess is None or src is None:
         return JSONResponse({"error": "Session not found"}, status_code=404)
@@ -137,11 +137,20 @@ def _zip_and_upload(s3, source, sessions, contributor, redact_secrets, redact_id
                 redaction_count += n
             total_redactions += redaction_count
 
-            zf.writestr(f"{group_key}/{sess.id}.jsonl", raw)
+            # Subagents with a known parent nest under subagents/ for provenance.
+            # Codex task subagents have parent=None (no parent id in metadata), so
+            # they fall back to the flat path — marked via is_subagent regardless.
+            if sess.is_subagent and sess.parent:
+                arc = f"{group_key}/{sess.parent}/subagents/{sess.id}.jsonl"
+            else:
+                arc = f"{group_key}/{sess.id}.jsonl"
+            zf.writestr(arc, raw)
             manifest_sessions.append({
                 "group": group_key,
                 "group_label": group_label,
                 "session": sess.id,
+                "is_subagent": sess.is_subagent,
+                "parent": sess.parent,
                 "size_bytes": len(raw.encode("utf-8")),
                 "redactions": redaction_count,
             })
@@ -151,6 +160,7 @@ def _zip_and_upload(s3, source, sessions, contributor, redact_secrets, redact_id
             "source_format": source.source_format,
             "contributor": contributor,
             "uploaded_at": datetime.utcnow().isoformat(),
+            "subagent_count": sum(1 for s in manifest_sessions if s["is_subagent"]),
             "sessions": manifest_sessions,
             "total_redactions": total_redactions,
         }, indent=2))
@@ -190,17 +200,19 @@ async def upload(request: Request):
     picks_by_source: dict[str, set] = defaultdict(set)
     for item in selected:
         picks_by_source[item.get("source", "")].add(
-            (item.get("group", ""), item.get("session", ""))
+            (item.get("group", ""), item.get("parent") or None, item.get("session", ""))
         )
 
     # Resolve selections to discovered sessions first (no network calls).
+    # Key on (group, parent, id): subagents share their parent's group, so id
+    # alone is not unique — must match the archive-path disambiguation.
     to_upload = []  # list of (source, [Session])
     for source_id, picks in picks_by_source.items():
         source = get_source(source_id)
         if source is None:
             continue
         resolved = {
-            (g.key, s.id): s
+            (g.key, s.parent or None, s.id): s
             for g in source.discover()
             for s in g.sessions
         }

@@ -69,19 +69,26 @@ class ClaudeCodeSource:
         for project_dir in sorted(projects_dir.iterdir()):
             if not project_dir.is_dir():
                 continue
+            label = decode_project_name(project_dir.name)
             sessions: list[Session] = []
+            # Top-level sessions.
             for f in sorted(project_dir.glob("*.jsonl")):
                 first, count = self._summary(f)
                 sessions.append(Session(
-                    source=self.id,
-                    id=f.stem,
-                    group_key=project_dir.name,
-                    group_label=decode_project_name(project_dir.name),
-                    path=f,
-                    size_bytes=f.stat().st_size,
-                    first_message=first,
-                    message_count=count,
-                    modified=mtime(f),
+                    source=self.id, id=f.stem,
+                    group_key=project_dir.name, group_label=label,
+                    path=f, size_bytes=f.stat().st_size,
+                    first_message=first, message_count=count, modified=mtime(f),
+                ))
+            # Task subagents, stored as <session-id>/subagents/agent-*.jsonl.
+            for f in sorted(project_dir.glob("*/subagents/*.jsonl")):
+                first, count = self._summary(f)
+                sessions.append(Session(
+                    source=self.id, id=f.stem,
+                    group_key=project_dir.name, group_label=label,
+                    path=f, size_bytes=f.stat().st_size,
+                    first_message=first, message_count=count, modified=mtime(f),
+                    is_subagent=True, parent=f.parent.parent.name,
                 ))
             if sessions:
                 groups.append(Group(

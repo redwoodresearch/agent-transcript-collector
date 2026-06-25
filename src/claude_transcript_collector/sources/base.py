@@ -67,6 +67,8 @@ class Session:
     first_message: str
     message_count: int
     modified: datetime | None = None
+    is_subagent: bool = False      # spawned task subagent, not a top-level session
+    parent: str | None = None      # parent session id, when is_subagent
 
     @property
     def size_human(self) -> str:
@@ -81,6 +83,8 @@ class Session:
             "size_bytes": self.size_bytes,
             "size_human": self.size_human,
             "modified": self.modified,
+            "is_subagent": self.is_subagent,
+            "parent": self.parent,
         }
 
 

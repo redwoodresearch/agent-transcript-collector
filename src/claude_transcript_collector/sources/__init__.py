@@ -54,15 +54,19 @@ def detect_all() -> list[dict]:
     return detected
 
 
-def find_session(source_id: str, group_key: str, session_id: str) -> Session | None:
+def find_session(source_id: str, group_key: str, session_id: str,
+                 parent: str | None = None) -> Session | None:
+    # Subagents share their parent's group, so id is unique only within
+    # (source, group, parent) — match on parent too to avoid collisions.
     source = get_source(source_id)
     if source is None:
         return None
+    parent = parent or None
     for group in source.discover():
         if group.key != group_key:
             continue
         for session in group.sessions:
-            if session.id == session_id:
+            if session.id == session_id and (session.parent or None) == parent:
                 return session
     return None
 

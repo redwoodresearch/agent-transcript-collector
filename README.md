@@ -24,11 +24,21 @@ artifact collected is the **raw (redacted) transcript** in its native format;
 previews are best-effort, so harness-version schema drift never affects what is
 stored.
 
-**Codex subagent sessions are excluded.** Codex records `source: "cli"` for
-top-level interactive sessions and `source: {"subagent": …}` for spawned
-subagents (e.g. the `guardian` approval monitor, whose transcript is reviewer
-scaffolding rather than a real user↔agent conversation). Only top-level sessions
-are collected.
+**Subagents are collected and marked; monitors are excluded.** Spawned task
+subagents are included and flagged `is_subagent` in the manifest (with their
+`parent` session id), and shown with a "subagent" badge in the UI:
+- **Claude Code** — `<session-id>/subagents/agent-*.jsonl`.
+- **Codex** — rollouts whose `session_meta.source` is `{"subagent": …}`, except
+  review/**monitor** subagents (the `guardian`), which are dropped: their
+  transcript is reviewer scaffolding that quotes other transcripts, not a real
+  user↔agent conversation.
+
+Not yet collected: **Pi** subagents from the `pi-subagents` package. They are
+standard Pi session JSONL, but written under
+`~/.pi/agent/sessions/<parent>/<runId>/run-N/session.jsonl` (or a forked session
+file), which the Pi adapter's globs don't yet cover. (Note: `events.jsonl` and
+`subagent-artifacts/*.jsonl` in those run dirs are different schemas, not
+sessions.)
 
 ## How a contributor runs it
 

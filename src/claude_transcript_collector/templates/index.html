@@ -120,6 +120,11 @@
   .toast.show { display: block; }
 
   .empty { color: var(--text-muted); padding: 40px 0; text-align: center; }
+  .badge {
+    font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.03em;
+    background: rgba(210,153,34,0.15); color: var(--yellow);
+    border: 1px solid var(--yellow); border-radius: 4px; padding: 1px 5px; flex-shrink: 0;
+  }
   input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
   .spacer { flex: 1; }
   .body-pad { padding-bottom: 60px; }
@@ -175,8 +180,10 @@
       <div class="session"
            data-source="{{ source.id }}"
            data-group="{{ group.key }}"
-           data-session="{{ session.id }}">
+           data-session="{{ session.id }}"
+           data-parent="{{ session.parent or '' }}">
         <input type="checkbox" class="session-checkbox" onchange="updateCounts()">
+        {% if session.is_subagent %}<span class="badge" title="Spawned task subagent">subagent</span>{% endif %}
         <span class="session-summary" onclick="previewSession(this)" title="Click to preview">
           {{ session.first_message }}
         </span>
@@ -216,13 +223,13 @@ const sessionSizes = {};
 {% for source in sources %}
   {% for group in source.groups %}
     {% for session in group.sessions %}
-      sessionSizes["{{ source.id }}|{{ group.key }}|{{ session.id }}"] = {{ session.size_bytes }};
+      sessionSizes["{{ source.id }}|{{ group.key }}|{{ session.parent or '' }}|{{ session.id }}"] = {{ session.size_bytes }};
     {% endfor %}
   {% endfor %}
 {% endfor %}
 
 function sessionKey(row) {
-  return row.dataset.source + '|' + row.dataset.group + '|' + row.dataset.session;
+  return [row.dataset.source, row.dataset.group, row.dataset.parent || '', row.dataset.session].join('|');
 }
 
 function toggleProject(header) {
@@ -294,6 +301,7 @@ function humanSize(bytes) {
 async function previewSession(el) {
   const row = el.closest('.session');
   const source = row.dataset.source, group = row.dataset.group, session = row.dataset.session;
+  const parent = row.dataset.parent || '';
   const pane = document.getElementById('preview-pane');
   const body = document.getElementById('preview-body');
   const title = document.getElementById('preview-title');
@@ -306,7 +314,7 @@ async function previewSession(el) {
   title.textContent = session.substring(0, 8) + '...';
 
   try {
-    const q = new URLSearchParams({ source, group, session, redact, identity });
+    const q = new URLSearchParams({ source, group, session, parent, redact, identity });
     const resp = await fetch('/api/preview?' + q.toString());
     const data = await resp.json();
 
@@ -357,7 +365,7 @@ async function uploadSelected() {
 
   const selected = Array.from(document.querySelectorAll('.session-checkbox:checked')).map(cb => {
     const row = cb.closest('.session');
-    return { source: row.dataset.source, group: row.dataset.group, session: row.dataset.session };
+    return { source: row.dataset.source, group: row.dataset.group, session: row.dataset.session, parent: row.dataset.parent || null };
   });
 
   const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';

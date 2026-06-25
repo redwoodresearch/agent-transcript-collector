@@ -86,19 +86,38 @@ def _payload(obj: dict) -> dict:
     return p if isinstance(p, dict) else obj
 
 
-def _is_subagent_rollout(path) -> bool:
-    """True if this rollout is a Codex subagent (e.g. the 'guardian' monitor).
+# Subagent names that are review/monitor scaffolding (not real agent work).
+_MONITOR_NAMES = {"guardian", "monitor"}
 
-    Top-level interactive sessions record `source: "cli"`; subagents record
-    `source: {"subagent": {...}}` in their session_meta. Subagent rollouts are
-    harness scaffolding, not real user<->agent conversations, so we skip them.
-    The check reads only the first object (session_meta), so it stays cheap.
+
+def _subagent_kind(path) -> str:
+    """Classify a rollout from its session_meta `source`.
+
+    Returns 'top' (interactive `source: "cli"`), 'task' (a real spawned
+    subagent), or 'monitor' (a review subagent like guardian). Reads only the
+    first object, so it stays cheap.
     """
     first = next(iter_jsonl(path), None)
     if first is None:
-        return False
-    return isinstance(_payload(first).get("source"), dict) and \
-        "subagent" in _payload(first)["source"]
+        return "top"
+    src = _payload(first).get("source")
+    if not isinstance(src, dict) or "subagent" not in src:
+        return "top"
+    # Match monitor names against the descriptor's string VALUES exactly — not a
+    # substring over the serialized blob, which would drop legitimate task
+    # subagents named e.g. "db-monitor" or working under a path containing
+    # "guardian". Observed shape is {"subagent": {"other": "guardian"}}.
+    names: set[str] = set()
+
+    def _collect(v):
+        if isinstance(v, str):
+            names.add(v.lower())
+        elif isinstance(v, dict):
+            for x in v.values():
+                _collect(x)
+
+    _collect(src["subagent"])
+    return "monitor" if names & _MONITOR_NAMES else "task"
 
 
 class CodexSource:
@@ -113,8 +132,9 @@ class CodexSource:
 
         by_group: dict[str, Group] = {}
         for f in sorted(sessions_dir.rglob("rollout-*.jsonl")):
-            if _is_subagent_rollout(f):
-                continue
+            kind = _subagent_kind(f)
+            if kind == "monitor":
+                continue  # drop guardian/monitor review scaffolding
             cwd, first, count = self._summary(f)
             key = _encode_cwd(cwd) if cwd else "_ungrouped"
             label = cwd or "(unknown working dir)"
@@ -128,6 +148,7 @@ class CodexSource:
                 group_label=label,
                 path=f,
                 size_bytes=f.stat().st_size,
+                is_subagent=(kind == "task"),
                 first_message=first,
                 message_count=count,
                 modified=mtime(f),
