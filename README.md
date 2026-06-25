@@ -140,6 +140,15 @@ that, on the one bucket:
   and RunPod (`…@ssh.runpod.io`) credentials — but **not** proprietary source,
   internal paths, or PII embedded in prose.
   Contributors should understand what a transcript contains before sharing it.
+- **Secrets are replaced with type-preserving mocks, not a blanket `[REDACTED]`.**
+  A detected secret is swapped for a fake of the same type (an `sk-ant-…` stays
+  an `sk-ant-…`, `postgres://user:pass@host` keeps its scheme and host), so an
+  analyst can see *what kind* of credential was present and trace one secret's
+  flow through a transcript — without ever exposing the real value. The same real
+  secret maps to the same mock everywhere within a single run (the mapping uses a
+  random per-process salt that is never stored, so it is irreversible and a
+  guessed secret can't be confirmed). Every mock embeds the marker `4d4f434b`
+  (hex of `MOCK`); grep `(?i)4d4f434b` to enumerate or confirm synthetic values.
 
 ## Adding a new source
 

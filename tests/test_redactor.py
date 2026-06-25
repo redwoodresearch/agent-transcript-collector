@@ -1,6 +1,15 @@
-"""Tests for the redactor — verify precision (catches secrets) and recall (doesn't over-redact)."""
+"""Tests for the redactor — verify precision (catches secrets) and recall (doesn't over-redact).
 
-from claude_transcript_collector.redactor import redact, redact_jsonl_content
+Secrets are replaced with type-preserving MOCKS (not a blanket [REDACTED]): the
+real value never survives, but the type/structure does, and every mock embeds
+the `_MOCK_TAG` marker (hex of "MOCK").
+"""
+
+import re
+
+from claude_transcript_collector.redactor import _MOCK_TAG, redact, redact_jsonl_content
+
+MOCK = re.compile(_MOCK_TAG, re.IGNORECASE)
 
 
 class TestRedactsSecrets:
@@ -8,75 +17,109 @@ class TestRedactsSecrets:
         text = "key is AKIAIOSFODNN7EXAMPLE"
         result, records = redact(text)
         assert "AKIAIOSFODNN7EXAMPLE" not in result
-        assert "[REDACTED]" in result
+        assert MOCK.search(result)
         assert len(records) == 1
-        assert records[0]["pattern_name"] == "AWS Access Key"
+        assert records[0]["pattern_name"] == "aws_access"
+        # type preserved: still classifies as an AWS access key
+        assert re.search(r"\bAKIA[A-Z0-9]{16}\b", result)
 
     def test_aws_asia_key(self):
         text = "ASIA1234567890ABCDEF"
         result, _ = redact(text)
         assert "ASIA1234567890ABCDEF" not in result
+        assert result.startswith("ASIA")            # ASIA prefix preserved
 
     def test_aws_secret_key(self):
         text = 'aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"'
         result, records = redact(text)
         assert "wJalrXUtnFEMI" not in result
         assert len(records) == 1
+        assert 'aws_secret_access_key = "' in result  # assignment context preserved
 
     def test_sk_api_key(self):
         text = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456"
         result, _ = redact(text)
-        assert "sk-ant-api03" not in result
+        assert "api03-abcdefghijklmnopqrstuvwxyz123456" not in result
+        assert result.startswith("sk-ant-")          # Anthropic type preserved
 
     def test_openai_key(self):
         text = "sk-proj-abc123def456ghi789jkl012mno345"
         result, _ = redact(text)
-        assert "sk-proj" not in result
+        assert "proj-abc123def456" not in result
+        assert result.startswith("sk-")
 
     def test_github_token(self):
         text = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl"
         result, _ = redact(text)
-        assert "ghp_" not in result
+        assert "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl" not in result
+        assert result.startswith("ghp_")             # GitHub token prefix preserved
+        assert re.fullmatch(r"ghp_[a-zA-Z0-9]{36,}", result)
 
     def test_github_fine_grained_pat(self):
         text = "github_pat_abcdefghijklmnopqrstuvwxyz"
         result, _ = redact(text)
-        assert "github_pat_" not in result
+        assert "abcdefghijklmnopqrstuvwxyz" not in result
+        assert result.startswith("github_pat_")
 
     def test_slack_token(self):
         text = "xoxb-123456789012-abcdefghij"
         result, _ = redact(text)
-        assert "xoxb-" not in result
+        assert "123456789012-abcdefghij" not in result
+        assert result.startswith("xoxb-")            # Slack subtype preserved
 
     def test_stripe_key(self):
         text = "sk_live_EXAMPLEKEYDONOTUSE12345"
         result, _ = redact(text)
-        assert "sk_live_" not in result
+        assert "EXAMPLEKEYDONOTUSE12345" not in result
+        assert result.startswith("sk_live_")
 
     def test_jwt(self):
         text = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
         result, _ = redact(text)
-        assert "eyJhbGci" not in result
+        assert "eyJzdWIiOiIxMjM0NTY3ODkwIn0" not in result
+        assert result.count(".") == 2 and result.startswith("eyJ")  # still a JWT shape
 
     def test_pem_private_key(self):
         text = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAK\n-----END RSA PRIVATE KEY-----"
         result, _ = redact(text)
-        assert "BEGIN RSA PRIVATE KEY" not in result
+        assert "MIIEpAIBAAK" not in result
+        assert "BEGIN RSA PRIVATE KEY" in result      # algo/type preserved, body mocked
 
     def test_url_password(self):
         text = "postgres://admin:s3cretP4ss@db.example.com/mydb"
         result, _ = redact(text)
         assert "s3cretP4ss" not in result
+        assert "@db.example.com/mydb" in result       # host preserved
+
+    def test_url_basic_auth_username_also_mocked(self):
+        # Non-DB scheme: the username slot (a token-as-user) must not survive.
+        text = "https://my_secret_token:hunter2@api.example.com"
+        result, _ = redact(text)
+        assert "my_secret_token" not in result and "hunter2" not in result
+        assert "@api.example.com" in result            # host preserved
 
     def test_password_assignment(self):
         text = 'password = "my_super_secret_123"'
         result, _ = redact(text)
         assert "my_super_secret_123" not in result
+        assert 'password = "' in result               # assignment context preserved
 
     def test_token_assignment(self):
         text = "api_key: 'long_token_value_here_abcdef'"
         result, _ = redact(text)
         assert "long_token_value_here" not in result
+
+    def test_same_secret_maps_to_same_mock(self):
+        # Stable within a run -> a secret's flow can be traced across the transcript.
+        text = "export K=AKIAIOSFODNN7EXAMPLE\nlater again AKIAIOSFODNN7EXAMPLE"
+        result, _ = redact(text)
+        mocks = re.findall(r"AKIA[A-Z0-9]{16}", result)
+        assert len(mocks) == 2 and mocks[0] == mocks[1]
+
+    def test_different_secrets_map_to_different_mocks(self):
+        result, _ = redact("AKIAIOSFODNN7EXAMPLE and AKIA1234567890ABCDEF1")
+        mocks = re.findall(r"AKIA[A-Z0-9]{16}", result)
+        assert len(mocks) == 2 and mocks[0] != mocks[1]
 
 
 class TestDoesNotOverRedact:
@@ -219,8 +262,9 @@ class TestOverlappingRedactions:
     def test_overlapping_patterns_merged(self):
         text = 'aws_secret_access_key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456789012"'
         result, records = redact(text)
-        assert "sk-ant" not in result
-        assert result.count("[REDACTED]") >= 1
+        assert "api03-abcdefghijklmnopqrstuvwxyz123456789012" not in result
+        assert len(records) == 1                      # overlapping matches collapse to one mock
+        assert MOCK.search(result)
 
 
 class TestRedactsIdentity:
@@ -323,19 +367,21 @@ class TestRedactsCredentials:
     # independent of the identity/PII pass.
     def test_neon_token(self):
         out, n = redact_jsonl_content("db role npg_Ab12Cd34Ef56 here")
-        assert "npg_Ab12Cd34Ef56" not in out and "[REDACTED]" in out
+        assert "npg_Ab12Cd34Ef56" not in out and MOCK.search(out)
+        assert "npg_" in out                         # Neon type preserved
 
     def test_neon_token_as_user_dsn(self):
         out, n = redact_jsonl_content("postgresql://npg_Ab12Cd34Ef56@ep-cool-1.neon.tech/db")
         assert "npg_Ab12Cd34Ef56" not in out
+        assert "@ep-cool-1.neon.tech/db" in out      # host preserved
 
     def test_runpod_ssh(self):
         out, n = redact_jsonl_content("ssh abc12345-f0a1b2@ssh.runpod.io")
-        assert "abc12345-f0a1b2@ssh.runpod.io" not in out and "[REDACTED]" in out
+        assert "abc12345-f0a1b2" not in out and "@ssh.runpod.io" in out
 
     def test_runpod_ssh_uppercase_hex(self):
         out, n = redact_jsonl_content("ssh abc12345-F0A1B2@ssh.runpod.io")
-        assert "abc12345-F0A1B2@ssh.runpod.io" not in out and "[REDACTED]" in out
+        assert "abc12345-F0A1B2" not in out and "@ssh.runpod.io" in out
 
     def test_db_connection_uri_passwordless(self):
         out, n = redact_jsonl_content("redis://h7sometoken@cache.example/0")
