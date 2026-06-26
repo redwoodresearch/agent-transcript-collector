@@ -10,8 +10,12 @@ dependencies = [
     "boto3>=1.35",
 ]
 
+[project.optional-dependencies]
+tui = ["textual>=0.50"]
+
 [project.scripts]
 agent-transcript-collector = "agent_transcript_collector.app:main"
+agent-transcript-downloader = "agent_transcript_collector.download:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -21,4 +25,5 @@ build-backend = "hatchling.build"
 dev = [
     "pytest>=8",
     "httpx>=0.28",
+    "textual>=0.50",
 ]
