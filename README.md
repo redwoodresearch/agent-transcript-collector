@@ -1,7 +1,9 @@
 # agent-transcript-collector
 
 A small tool for collecting AI coding-agent session transcripts **with consent**
-and uploading them to a shared S3 bucket.
+and uploading them to a shared S3 bucket. It also ships a downloader
+(`agent-transcript-downloader`) for pulling those transcripts back out for
+analysis — see [Downloading transcripts](#downloading-transcripts).
 
 It discovers transcripts from multiple agent harnesses on the contributor's
 machine, lets them preview and select which sessions to share, redacts
@@ -93,6 +95,80 @@ tab doesn't abort them — reopening the page re-attaches to the in-progress job
 (The job still ends if the tool's process is stopped; just re-run it — completed
 units are overwritten in place, not duplicated.)
 
+## Downloading transcripts
+
+`agent-transcript-downloader` is the analysis-side counterpart to the collector:
+it lists the archives in the bucket, lets you choose which to pull, and writes
+them into a local folder (`./transcripts` by default).
+
+```bash
+# See what's in the bucket (read credentials required — see below)
+CTC_AWS_ACCESS_KEY_ID=AKIA... CTC_AWS_SECRET_ACCESS_KEY='...' \
+  uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
+  agent-transcript-downloader --list
+
+# Pull one source into ./transcripts
+agent-transcript-downloader --source claude_code
+
+# Pick sources interactively (needs the 'tui' extra: ...collector[tui])
+agent-transcript-downloader --tui
+```
+
+Reading the bucket needs `s3:GetObject` + `s3:ListBucket` — the distributed
+*upload* key is `s3:PutObject`-only and cannot download, so use a separate read
+key (policy below). Credentials resolve exactly like the collector's (`CTC_AWS_*`,
+then boto3's default chain).
+
+### Choosing what to download
+
+| Flag | Effect |
+|---|---|
+| `--list` | Print available archives grouped by source; add `--verbose` for a per-contributor breakdown. Exits without downloading. |
+| `--source S` | Only source `S` (repeatable), e.g. `--source claude_code --source codex`. |
+| `--contributor N` | Only contributor/collection `N` (repeatable). |
+| `--prefix P` | Only keys under S3 prefix `P`, e.g. `--prefix claude_code/alice/`. |
+| `--all` | Download everything matched, no prompt. |
+| `--tui` | Open a checkbox selector to pick sources interactively. |
+| `--dest DIR` | Destination folder (default `./transcripts`). |
+| `--concurrency N` | Parallel downloads (default 4, `$CTC_DOWNLOAD_CONCURRENCY`). |
+
+With **no** selection flag the tool just prints the catalog and a hint — it never
+downloads ~100 GB by accident.
+
+### Output layout
+
+By default each archive is **extracted** into a clean tree of raw `.jsonl`
+transcripts under `--dest`:
+
+```
+transcripts/<source>/<contributor>/<group>/<session>.jsonl
+transcripts/<source>/<contributor>/_manifests/<unit>.json
+```
+
+Multi-part groups are reassembled (parts share the group dir) and each unit's
+`manifest.json` is preserved under `_manifests/`. Pass `--no-extract` to keep the
+raw `.zip` archives instead, mirrored at their S3 key paths under `--dest`.
+
+Downloads are **idempotent and resumable**: a unit already present on disk is
+skipped, so re-running after an interruption only fetches what's missing. The
+default `transcripts/` destination is gitignored.
+
+### Minimal IAM policy for a read key
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["s3:GetObject", "s3:ListBucket"],
+    "Resource": [
+      "arn:aws:s3:::rr-agent-transcripts",
+      "arn:aws:s3:::rr-agent-transcripts/*"
+    ]
+  }]
+}
+```
+
 ## Configuration
 
 | Env var | Default | Purpose |
@@ -102,7 +178,8 @@ units are overwritten in place, not duplicated.)
 | `CTC_AWS_ACCESS_KEY_ID` | _(unset)_ | Upload key; if unset, boto3's default credential chain is used |
 | `CTC_AWS_SECRET_ACCESS_KEY` | _(unset)_ | Upload secret |
 | `CTC_UNIT_BYTES` | `26214400` (25 MB) | Per-unit upload size budget |
-| `CTC_UPLOAD_CONCURRENCY` | `4` | Units uploaded in parallel |
+| `CTC_UPLOAD_CONCURRENCY` | `4` | Units uploaded in parallel (collector) |
+| `CTC_DOWNLOAD_CONCURRENCY` | `4` | Units downloaded in parallel (downloader) |
 | `PORT` | `8899` | Local UI port |
 
 If the `CTC_AWS_*` variables are not set, the tool falls back to boto3's normal

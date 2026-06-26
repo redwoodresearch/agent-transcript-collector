@@ -6,6 +6,9 @@ dist/
 .pytest_cache/
 message.md
 
+# Downloaded transcripts (default --dest)
+transcripts/
+
 # Never commit credentials
 .env
 .env.*
