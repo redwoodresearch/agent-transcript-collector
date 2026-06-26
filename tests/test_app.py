@@ -2,7 +2,7 @@
 
 import socket
 
-from claude_transcript_collector.app import _find_free_port
+from agent_transcript_collector.app import _find_free_port
 
 
 def test_find_free_port_skips_occupied():
@@ -30,8 +30,8 @@ def test_find_free_port_returns_start_when_free():
 
 
 from pathlib import Path
-from claude_transcript_collector import app as appmod
-from claude_transcript_collector.sources.base import Session
+from agent_transcript_collector import app as appmod
+from agent_transcript_collector.sources.base import Session
 
 
 def _sess(sid, group="-home-u-proj", size=10, parent=None, path=Path("/nonexistent")):

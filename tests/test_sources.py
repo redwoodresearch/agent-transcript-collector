@@ -4,14 +4,14 @@ import json
 
 import pytest
 
-from claude_transcript_collector.sources import (
+from agent_transcript_collector.sources import (
     detect_all,
     find_session,
     get_source,
 )
-from claude_transcript_collector.sources.claude_code import ClaudeCodeSource
-from claude_transcript_collector.sources.codex import CodexSource
-from claude_transcript_collector.sources.pi import PiSource
+from agent_transcript_collector.sources.claude_code import ClaudeCodeSource
+from agent_transcript_collector.sources.codex import CodexSource
+from agent_transcript_collector.sources.pi import PiSource
 
 
 def _write_jsonl(path, objs):
@@ -244,7 +244,7 @@ def test_codex_cli_and_custom_are_top_level(iso):
 
 
 def test_find_session_disambiguates_subagents_by_parent(iso):
-    from claude_transcript_collector.sources import find_session
+    from agent_transcript_collector.sources import find_session
     proj = iso["claude_projects"] / "-home-u-proj"
     _write_jsonl(proj / "sessA" / "subagents" / "agent-dup.jsonl", [{"type": "user", "message": {"content": "A"}}])
     _write_jsonl(proj / "sessB" / "subagents" / "agent-dup.jsonl", [{"type": "user", "message": {"content": "B"}}])

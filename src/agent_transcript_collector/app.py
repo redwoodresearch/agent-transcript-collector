@@ -64,7 +64,7 @@ def _safe_name(name: str) -> str:
 app = FastAPI()
 
 jinja_env = Environment(
-    loader=PackageLoader("claude_transcript_collector", "templates"),
+    loader=PackageLoader("agent_transcript_collector", "templates"),
     autoescape=True,
 )
 
