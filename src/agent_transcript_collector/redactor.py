@@ -148,8 +148,10 @@ PATTERNS: list[tuple[str, re.Pattern, int, str]] = [
     # enough; no leading anchor so embedded tokens are still caught.
     ("HuggingFace Token", re.compile(r"hf_[A-Za-z0-9]{34,}"), 0, "huggingface"),
 
-    # Google API keys (AIza + 35 chars).
-    ("GCP API Key", re.compile(r"AIza[0-9A-Za-z_\-]{35}"), 0, "gcp"),
+    # Google API keys (AIza + 35 chars). {35,} not {35}: the mock is a fixed
+    # length regardless, and a longer contiguous AIza… run is already secret-shaped,
+    # so this closes the over-length tail at no over-redaction cost.
+    ("GCP API Key", re.compile(r"AIza[0-9A-Za-z_\-]{35,}"), 0, "gcp"),
 
     # Slack app-level tokens (xapp-…) — the xox… pattern above does not cover these.
     ("Slack App Token", re.compile(r"xapp-\d-[A-Za-z0-9-]{15,}"), 0, "slack_app"),
@@ -169,7 +171,8 @@ PATTERNS: list[tuple[str, re.Pattern, int, str]] = [
 # kind wins so the mock reflects the most specific type. Unlisted kinds default to 10.
 _RANK = {
     "anthropic": 30, "neon": 25, "aws_secret": 20, "uri_userinfo": 20,
-    "runpod": 18, "github_pat": 15, "password": 10, "generic": 5,
+    "runpod": 18, "github_pat": 15, "huggingface": 15, "gcp": 15,
+    "slack_app": 15, "gitlab": 15, "password": 10, "generic": 5,
 }
 
 

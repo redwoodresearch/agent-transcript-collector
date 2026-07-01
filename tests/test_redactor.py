@@ -210,6 +210,18 @@ class TestDoesNotOverRedact:
         assert result == text
         assert len(records) == 0
 
+    def test_no_overredact_hf_prefix_in_code(self):
+        text = "import hf_hub; model = hf_transformers.load('bert')"
+        result, records = redact(text)
+        assert result == text
+        assert len(records) == 0
+
+    def test_no_overredact_new_prefixes_in_prose(self):
+        text = "The AIza module pairs with a glrt-style config and an xapp-v2 plugin."
+        result, records = redact(text)
+        assert result == text
+        assert len(records) == 0
+
     def test_error_message(self):
         text = "Error: ENOENT: no such file or directory, open '/tmp/test.txt'"
         result, records = redact(text)
