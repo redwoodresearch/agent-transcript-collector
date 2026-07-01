@@ -94,8 +94,11 @@ PATTERNS: list[tuple[str, re.Pattern, int, str]] = [
     # Anthropic keys with prefix
     ("Anthropic Key", re.compile(r"\bsk-ant-[a-zA-Z0-9_-]{20,}\b"), 0, "anthropic"),
 
-    # GitHub tokens
-    ("GitHub Token", re.compile(r"\b(ghp|gho|ghs|ghu|ghr)_[a-zA-Z0-9]{36,}\b"), 0, "github_token"),
+    # GitHub tokens. No leading \b: these tokens are frequently concatenated to
+    # surrounding chars in real transcripts (e.g. inside longer blobs), and a
+    # leading word-boundary would miss those; the distinctive prefix + 36-char
+    # run is specific enough on its own.
+    ("GitHub Token", re.compile(r"(ghp|gho|ghs|ghu|ghr)_[a-zA-Z0-9]{36,}"), 0, "github_token"),
 
     # GitHub fine-grained PATs
     ("GitHub PAT", re.compile(r"\bgithub_pat_[a-zA-Z0-9_]{20,}\b"), 0, "github_pat"),
@@ -141,6 +144,21 @@ PATTERNS: list[tuple[str, re.Pattern, int, str]] = [
     # RunPod SSH target: <pod-id>-<hex>@ssh.runpod.io — replace the id, keep the host.
     ("RunPod SSH", re.compile(r"\b([A-Za-z0-9]{8,}-[a-fA-F0-9]{6,})@ssh\.runpod\.io\b"), 1, "runpod"),
 
+    # HuggingFace access tokens (hf_ + 34+ chars). Prefix + length is specific
+    # enough; no leading anchor so embedded tokens are still caught.
+    ("HuggingFace Token", re.compile(r"hf_[A-Za-z0-9]{34,}"), 0, "huggingface"),
+
+    # Google API keys (AIza + 35 chars). {35,} not {35}: the mock is a fixed
+    # length regardless, and a longer contiguous AIza… run is already secret-shaped,
+    # so this closes the over-length tail at no over-redaction cost.
+    ("GCP API Key", re.compile(r"AIza[0-9A-Za-z_\-]{35,}"), 0, "gcp"),
+
+    # Slack app-level tokens (xapp-…) — the xox… pattern above does not cover these.
+    ("Slack App Token", re.compile(r"xapp-\d-[A-Za-z0-9-]{15,}"), 0, "slack_app"),
+
+    # GitLab tokens: glrt- runner-authentication tokens and glpat- personal tokens.
+    ("GitLab Token", re.compile(r"gl(?:rt|pat)-[A-Za-z0-9_\-]{20,}"), 0, "gitlab"),
+
     # Generic secret/password/token assignments (key = "value" or key: "value")
     ("Secret Assignment", re.compile(
         r'(?i)(?:password|passwd|secret|token|api_key|apikey|access_key)'
@@ -153,7 +171,8 @@ PATTERNS: list[tuple[str, re.Pattern, int, str]] = [
 # kind wins so the mock reflects the most specific type. Unlisted kinds default to 10.
 _RANK = {
     "anthropic": 30, "neon": 25, "aws_secret": 20, "uri_userinfo": 20,
-    "runpod": 18, "github_pat": 15, "password": 10, "generic": 5,
+    "runpod": 18, "github_pat": 15, "huggingface": 15, "gcp": 15,
+    "slack_app": 15, "gitlab": 15, "password": 10, "generic": 5,
 }
 
 
@@ -232,6 +251,15 @@ def _mock(kind: str, original: str) -> str:
         if ":" in original:                                            # user:pass form
             return "mockuser:" + _MOCK_TAG + r.chars(_ALNUM, 6)
         return _MOCK_TAG + r.chars(_ALNUM, 12)                         # token-as-user form
+    if kind == "huggingface":
+        return "hf_" + _MOCK_TAG + r.chars(_ALNUM, 26)                 # hf_ + 34
+    if kind == "gcp":
+        return "AIza" + _MOCK_TAG + r.chars(_ALNUM, 27)                # AIza + 35
+    if kind == "slack_app":
+        return "xapp-1-" + _MOCK_TAG + r.chars(_ALNUM, 12)
+    if kind == "gitlab":
+        prefix = original[:original.index("-") + 1] if "-" in original else "glrt-"
+        return prefix + _MOCK_TAG + r.chars(_ALNUM, 16)
     return _MOCK_TAG + r.chars(_ALNUM, 8)                              # generic
 
 

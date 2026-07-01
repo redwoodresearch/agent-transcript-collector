@@ -67,6 +67,37 @@ class TestRedactsSecrets:
         assert "123456789012-abcdefghij" not in result
         assert result.startswith("xoxb-")            # Slack subtype preserved
 
+    def test_github_token_embedded(self):
+        # concatenated with surrounding chars (no word boundary) — must still catch
+        text = "prevblob6RVghs_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij tail"
+        result, _ = redact(text)
+        assert "ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij" not in result
+        assert MOCK.search(result)
+
+    def test_huggingface_token(self):
+        text = "token hf_abcdefghijklmnopqrstuvwxyz01234567 end"
+        result, _ = redact(text)
+        assert "hf_abcdefghijklmnopqrstuvwxyz01234567" not in result
+        assert "hf_" in result and MOCK.search(result)
+
+    def test_gcp_api_key(self):
+        text = "key=AIzaSyD-aB3cD5eF7gH9iJ1kL3mN5oP7qR9sT1u"
+        result, _ = redact(text)
+        assert "aB3cD5eF7gH9iJ1kL3mN5oP7qR9sT1u" not in result
+        assert "AIza" in result and MOCK.search(result)
+
+    def test_slack_app_token(self):
+        text = "xapp-1-A012B3C4D5E-123456789012-abcdef0123456789abcdef01"
+        result, _ = redact(text)
+        assert "abcdef0123456789abcdef01" not in result
+        assert result.startswith("xapp-1-") and MOCK.search(result)
+
+    def test_gitlab_token(self):
+        text = "glrt-aBcDeF1234567890xyzQwErTyU12"
+        result, _ = redact(text)
+        assert "aBcDeF1234567890xyzQwErTyU12" not in result
+        assert result.startswith("glrt-") and MOCK.search(result)
+
     def test_stripe_key(self):
         text = "sk_live_EXAMPLEKEYDONOTUSE12345"
         result, _ = redact(text)
@@ -175,6 +206,18 @@ class TestDoesNotOverRedact:
 
     def test_python_dict(self):
         text = '{"name": "Alice", "age": 30, "city": "NYC"}'
+        result, records = redact(text)
+        assert result == text
+        assert len(records) == 0
+
+    def test_no_overredact_hf_prefix_in_code(self):
+        text = "import hf_hub; model = hf_transformers.load('bert')"
+        result, records = redact(text)
+        assert result == text
+        assert len(records) == 0
+
+    def test_no_overredact_new_prefixes_in_prose(self):
+        text = "The AIza module pairs with a glrt-style config and an xapp-v2 plugin."
         result, records = redact(text)
         assert result == text
         assert len(records) == 0
