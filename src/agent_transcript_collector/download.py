@@ -224,11 +224,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default=DOWNLOAD_CONCURRENCY,
         help=f"Parallel downloads (default: {DOWNLOAD_CONCURRENCY}, $CTC_DOWNLOAD_CONCURRENCY).",
     )
-    parser.add_argument(
-        "--bucket",
-        default=S3_BUCKET,
-        help=f"Source bucket (default: {S3_BUCKET}, $CTC_S3_BUCKET).",
-    )
     return parser
 
 
@@ -245,8 +240,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
     s3 = make_s3_client()
-    print(f"Listing s3://{args.bucket} ...", file=sys.stderr)
-    units = list_units(s3, args.bucket, prefix=_s3_prefix_hint(args))
+    print(f"Listing s3://{S3_BUCKET} ...", file=sys.stderr)
+    units = list_units(s3, S3_BUCKET, prefix=_s3_prefix_hint(args))
     units = filter_units(units, args.source, args.contributor, args.prefix)
 
     if args.list:
@@ -289,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
         file=sys.stderr,
     )
     ok, skipped, errors = download_units(
-        s3, args.bucket, units, args.dest, args.extract, args.concurrency
+        s3, S3_BUCKET, units, args.dest, args.extract, args.concurrency
     )
     print(f"\nDone: {ok} downloaded, {skipped} already present, {len(errors)} failed.")
     for unit, status in errors:

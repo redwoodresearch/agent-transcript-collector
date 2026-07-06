@@ -1,239 +1,196 @@
 # agent-transcript-collector
 
-A small tool for collecting AI coding-agent session transcripts **with consent**
-and uploading them to a shared S3 bucket. It also ships a downloader
-(`agent-transcript-downloader`) for pulling those transcripts back out for
-analysis — see [Downloading transcripts](#downloading-transcripts).
+Collect AI coding-agent transcripts with consent, redact well-formatted secrets,
+upload them to S3, and download them later for analysis.
 
-It discovers transcripts from multiple agent harnesses on the contributor's
-machine, lets them preview and select which sessions to share, redacts
-well-formatted secrets, zips the selection (one zip per source), and uploads to
-S3 under a source-first key.
+The tool supports Claude Code, Codex, and Pi transcripts. Uploads go to
+`s3://rr-agent-transcripts` in `us-east-1` by default.
 
-## Supported sources
+## Quick Start
 
-Detection runs on each contributor's machine; only harnesses that are actually
-present show up in the UI. Each respects its own config-dir env override.
+### First time: set up AWS SSO
 
-| Source | Default location | Override | Layout |
-|---|---|---|---|
-| **Claude Code** | `~/.claude/projects/` | `CLAUDE_CONFIG_DIR` | `<encoded-cwd>/<uuid>.jsonl` |
-| **Codex** | `~/.codex/sessions/` | `CODEX_HOME` | `YYYY/MM/DD/rollout-*.jsonl` |
-| **Pi** | `~/.pi/agent/sessions/` | `PI_CODING_AGENT_SESSION_DIR`, `PI_CODING_AGENT_DIR` | `--<encoded-cwd>--/<ts>_<id>.jsonl` (+ flat fallback in the agent dir) |
-
-Sessions are grouped by working directory within each source. The canonical
-artifact collected is the **raw (redacted) transcript** in its native format;
-previews are best-effort, so harness-version schema drift never affects what is
-stored.
-
-**Subagents are collected and marked; monitors are excluded.** Spawned task
-subagents are included and flagged `is_subagent` in the manifest (with their
-`parent` session id), and shown with a "subagent" badge in the UI:
-- **Claude Code** — `<session-id>/subagents/agent-*.jsonl`.
-- **Codex** — classified by `session_meta.source` (per the upstream
-  `SessionSource`/`SubAgentSource` schema): genuine task subagents
-  (`{"subagent": {"thread_spawn": …}}`, with `parent` taken from
-  `parent_thread_id`, plus the catch-all `{"subagent": {"other": …}}`) are kept
-  and marked; **automated scaffolding is dropped** —
-  `{"subagent": "review"|"compact"|"memory_consolidation"}` and
-  `{"internal": …}`. (Top-level `"cli"`/`"vscode"`/`{"custom": …}` sessions are
-  kept, unmarked.)
-- **Pi** — `pi-subagents` task runs at
-  `~/.pi/agent/sessions/<parent>/<runId>/run-N/session.jsonl` (parent from the
-  path) and forked sessions (parent from the `parentSession` header). Only
-  `session.jsonl` is collected; `events.jsonl` and `subagent-artifacts/*.jsonl`
-  in those run dirs are different schemas and are skipped.
-
-## How a contributor runs it
+Redwood users should use an AWS SSO profile named `rw-eng`.
 
 ```bash
-CTC_AWS_ACCESS_KEY_ID=AKIA... \
-CTC_AWS_SECRET_ACCESS_KEY='...' \
-  uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
+aws configure sso
+```
+
+When prompted, use:
+
+```text
+SSO start URL: https://d-90662ff878.awsapps.com/start
+SSO region: us-east-1
+Profile name: rw-eng
+```
+
+Choose the Redwood engineering AWS account/role. Then log in:
+
+```bash
+aws sso login --profile rw-eng
+```
+
+If you do not have AWS SSO access, DM Tyler Tracy on Slack.
+
+You only run `aws configure sso` once per machine. When your login expires, rerun
+only:
+
+```bash
+aws sso login --profile rw-eng
+```
+
+The collector and downloader automatically use the local `rw-eng` profile when
+it exists. You can also force it explicitly:
+
+```bash
+export AWS_PROFILE=rw-eng
+```
+
+### Upload Transcripts
+
+Open the local review UI:
+
+```bash
+uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
   agent-transcript-collector
 ```
 
-The destination bucket defaults to `rr-agent-transcripts` (in `us-east-1`), so
-contributors only need to supply the uploader credentials. Override with
-`CTC_S3_BUCKET` / `CTC_S3_REGION` if those change.
+This opens <http://localhost:8899>. Preview the transcripts, select the ones you
+want to share, enter your name, and click **Upload Selected**.
 
-This opens a local web UI at <http://localhost:8899>. The contributor previews
-each session (redacted by default), ticks the ones to share (per session, per
-working directory, or per source), enters their name, and clicks **Upload
-Selected**.
-
-### Headless / no-UI mode
+To upload everything without the UI:
 
 ```bash
-... agent-transcript-collector --all --name <contributor>
+uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
+  agent-transcript-collector --all --name <contributor>
 ```
 
-`--all` skips the UI entirely and uploads **every** transcript from **every**
-detected source after redaction. There is no preview or selection step, so only
-use it when bulk upload without per-session review is intended.
+Use `--all` only when bulk upload without per-session review is intended.
 
-## Storage layout
+### Download Transcripts
 
-Uploads are split into **size-budgeted units** (one working-dir group per unit; a
-group over `CTC_UNIT_BYTES`, default 25 MB, is split into parts of whole sessions
-— transcripts are never split). Each unit is one zip with a **deterministic key**,
-so an aborted upload's completed units stay durable in S3 and re-running
-overwrites the same keys in place (idempotent — no duplicates):
-
-```
-s3://<bucket>/<source>/<contributor>/<group-hash>/part-NNN-<members-hash>.zip
-   e.g.  claude_code/nickkuhn/g1a2b3c4d5e6/part-000-9f8e7d6c.zip
-         codex/nickkuhn/g0f1e2d3c4b5/part-000-aa11bb22.zip
-```
-
-Each unit zip contains `<group>/<session>.jsonl` (redacted, subagents nested
-under `…/<parent>/subagents/`) plus a `manifest.json` recording `source`,
-`source_format`, contributor, timestamp, and per-session group/redaction info.
-
-Uploads run as a **background job** on the local server, so closing the browser
-tab doesn't abort them — reopening the page re-attaches to the in-progress job.
-(The job still ends if the tool's process is stopped; just re-run it — completed
-units are overwritten in place, not duplicated.)
-
-## Downloading transcripts
-
-`agent-transcript-downloader` is the analysis-side counterpart to the collector:
-it lists the archives in the bucket, lets you choose which to pull, and writes
-them into a local folder (`./transcripts` by default).
+List what is available:
 
 ```bash
-# See what's in the bucket (read credentials required — see below)
-CTC_AWS_ACCESS_KEY_ID=AKIA... CTC_AWS_SECRET_ACCESS_KEY='...' \
-  uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
+uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
   agent-transcript-downloader --list
-
-# Pull one source into ./transcripts
-agent-transcript-downloader --source claude_code
-
-# Pick sources interactively (needs the 'tui' extra: ...collector[tui])
-agent-transcript-downloader --tui
 ```
 
-Reading the bucket needs `s3:GetObject` + `s3:ListBucket` — the distributed
-*upload* key is `s3:PutObject`-only and cannot download, so use a separate read
-key (policy below). Credentials resolve exactly like the collector's (`CTC_AWS_*`,
-then boto3's default chain).
+Download one source into `./transcripts`:
 
-### Choosing what to download
+```bash
+uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
+  agent-transcript-downloader --source claude_code
+```
+
+Download everything matched by your filters:
+
+```bash
+uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
+  agent-transcript-downloader --all
+```
+
+With no download filter, the downloader only prints the catalog and a hint. It
+will not accidentally pull the whole bucket.
+
+## What Gets Collected
+
+Detection runs locally on the contributor's machine. Only sources that are
+actually present appear in the UI.
+
+| Source | Default location | Override | Layout |
+|---|---|---|---|
+| Claude Code | `~/.claude/projects/` | `CLAUDE_CONFIG_DIR` | `<encoded-cwd>/<uuid>.jsonl` |
+| Codex | `~/.codex/sessions/` | `CODEX_HOME` | `YYYY/MM/DD/rollout-*.jsonl` |
+| Pi | `~/.pi/agent/sessions/` | `PI_CODING_AGENT_SESSION_DIR`, `PI_CODING_AGENT_DIR` | `--<encoded-cwd>--/<ts>_<id>.jsonl` |
+
+The collected artifact is the raw transcript in its native format after
+redaction. Preview rendering is best-effort, so harness-version schema drift
+does not affect what is uploaded.
+
+Subagents are collected and marked in the manifest. Monitor/scaffolding sessions
+are excluded where the source schema makes that distinction possible.
+
+## Download Options
 
 | Flag | Effect |
 |---|---|
-| `--list` | Print available archives grouped by source; add `--verbose` for a per-contributor breakdown. Exits without downloading. |
-| `--source S` | Only source `S` (repeatable), e.g. `--source claude_code --source codex`. |
-| `--contributor N` | Only contributor/collection `N` (repeatable). |
-| `--prefix P` | Only keys under S3 prefix `P`, e.g. `--prefix claude_code/alice/`. |
-| `--all` | Download everything matched, no prompt. |
-| `--tui` | Open a checkbox selector to pick sources interactively. |
-| `--dest DIR` | Destination folder (default `./transcripts`). |
-| `--concurrency N` | Parallel downloads (default 4, `$CTC_DOWNLOAD_CONCURRENCY`). |
+| `--list` | Print available archives grouped by source. Add `--verbose` for contributor breakdowns. |
+| `--source S` | Download only source `S`; repeatable, e.g. `--source claude_code --source codex`. |
+| `--contributor N` | Download only contributor/collection `N`; repeatable. |
+| `--prefix P` | Download only keys under S3 prefix `P`, e.g. `--prefix claude_code/alice/`. |
+| `--all` | Download everything matched by the filters. |
+| `--tui` | Open a checkbox selector; install with `agent-transcript-collector[tui]`. |
+| `--dest DIR` | Destination folder, default `./transcripts`. |
+| `--no-extract` | Keep raw `.zip` archives instead of extracting `.jsonl` files. |
 
-With **no** selection flag the tool just prints the catalog and a hint — it never
-downloads ~100 GB by accident.
+By default, downloads are extracted into:
 
-### Output layout
-
-By default each archive is **extracted** into a clean tree of raw `.jsonl`
-transcripts under `--dest`:
-
-```
+```text
 transcripts/<source>/<contributor>/<group>/<session>.jsonl
 transcripts/<source>/<contributor>/_manifests/<unit>.json
 ```
 
-Multi-part groups are reassembled (parts share the group dir) and each unit's
-`manifest.json` is preserved under `_manifests/`. Pass `--no-extract` to keep the
-raw `.zip` archives instead, mirrored at their S3 key paths under `--dest`.
+Downloads are idempotent and resumable. A unit already present on disk is
+skipped, so rerunning after an interruption only fetches what is missing.
 
-Downloads are **idempotent and resumable**: a unit already present on disk is
-skipped, so re-running after an interruption only fetches what's missing. The
-default `transcripts/` destination is gitignored.
+## Storage Layout
 
-### Minimal IAM policy for a read key
+Uploads are split into size-budgeted zip units. Completed units use
+deterministic keys, so rerunning an upload overwrites the same S3 objects instead
+of creating duplicates:
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": ["s3:GetObject", "s3:ListBucket"],
-    "Resource": [
-      "arn:aws:s3:::rr-agent-transcripts",
-      "arn:aws:s3:::rr-agent-transcripts/*"
-    ]
-  }]
-}
+```text
+s3://rr-agent-transcripts/<source>/<contributor>/<group-hash>/part-NNN-<members-hash>.zip
 ```
+
+Each zip contains redacted transcript files plus a `manifest.json` with source,
+contributor, timestamp, session metadata, and redaction counts.
 
 ## Configuration
 
+Most users only need the `rw-eng` SSO profile. These knobs are available when you
+need to override defaults:
+
 | Env var | Default | Purpose |
 |---|---|---|
-| `CTC_S3_BUCKET` | `rr-agent-transcripts` | Destination bucket |
-| `CTC_S3_REGION` | `us-east-1` | Bucket region (must match the bucket) |
-| `CTC_AWS_ACCESS_KEY_ID` | _(unset)_ | Upload key; if unset, boto3's default credential chain is used |
-| `CTC_AWS_SECRET_ACCESS_KEY` | _(unset)_ | Upload secret |
-| `CTC_UNIT_BYTES` | `26214400` (25 MB) | Per-unit upload size budget |
-| `CTC_UPLOAD_CONCURRENCY` | `4` | Units uploaded in parallel (collector) |
-| `CTC_DOWNLOAD_CONCURRENCY` | `4` | Units downloaded in parallel (downloader) |
-| `PORT` | `8899` | Local UI port |
+| `AWS_PROFILE` | _(unset)_ | Standard AWS profile selector; set to `rw-eng` if you want to be explicit. |
+| `CTC_AWS_PROFILE` | _(unset)_ | Collector-specific profile override. |
+| `CTC_UNIT_BYTES` | `26214400` (25 MB) | Per-unit upload size budget. |
+| `CTC_UPLOAD_CONCURRENCY` | `4` | Units uploaded in parallel. |
+| `CTC_DOWNLOAD_CONCURRENCY` | `4` | Units downloaded in parallel. |
+| `PORT` | `8899` | Local upload UI port. |
 
-If the `CTC_AWS_*` variables are not set, the tool falls back to boto3's normal
-credential resolution (standard AWS env vars, shared config/credentials files,
-SSO, or instance/container roles).
+The tool uses AWS SSO profiles only. It chooses `CTC_AWS_PROFILE`, then
+`AWS_PROFILE`, then `AWS_DEFAULT_PROFILE`, and finally `rw-eng`.
 
-## Minimal IAM policy for the upload key
+The bucket and region are fixed to `rr-agent-transcripts` in `us-east-1`.
 
-The tool only calls `s3:PutObject`. Scope the distributed upload key to exactly
-that, on the one bucket:
+## AWS Permissions
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": "s3:PutObject",
-    "Resource": "arn:aws:s3:::rr-agent-transcripts/*"
-  }]
-}
-```
+Uploading needs `s3:PutObject` on `rr-agent-transcripts/*`.
 
-## Security notes
+Downloading needs `s3:GetObject` on `rr-agent-transcripts/*` and `s3:ListBucket`
+on `rr-agent-transcripts`.
 
-- **Never commit credentials.** The upload key is passed via environment
-  variables at runtime, not stored in the repo.
-- A key embedded in a command handed to many contributors is effectively a
-  shared, exposed credential. Scope it to `s3:PutObject` only (above) so a leak
-  can't read, delete, or enumerate, and rotate it if it leaves trusted hands.
-- **Secret/credential redaction is always on** (not toggleable) so it can never
-  be disabled by accident; only the identity/PII pass is optional.
-- Redaction is best-effort and regex-based (see `redactor.py`): it catches
-  well-formatted secrets and credentials — AWS keys, `sk-`/token patterns, JWTs,
-  PEM keys, DB/messaging connection URIs (`postgres://…@`, etc.), Neon (`npg_…`)
-  and RunPod (`…@ssh.runpod.io`) credentials — but **not** proprietary source,
-  internal paths, or PII embedded in prose.
-  Contributors should understand what a transcript contains before sharing it.
-- **Secrets are replaced with type-preserving mocks, not a blanket `[REDACTED]`.**
-  A detected secret is swapped for a fake of the same type (an `sk-ant-…` stays
-  an `sk-ant-…`, `postgres://user:pass@host` keeps its scheme and host), so an
-  analyst can see *what kind* of credential was present and trace one secret's
-  flow through a transcript — without ever exposing the real value. The same real
-  secret maps to the same mock everywhere within a single run (the mapping uses a
-  random per-process salt that is never stored, so it is irreversible and a
-  guessed secret can't be confirmed). Every mock embeds the marker `4d4f434b`
-  (hex of `MOCK`); grep `(?i)4d4f434b` to enumerate or confirm synthetic values.
+## Security Notes
 
-## Adding a new source
+- The local UI always redacts well-formatted secrets before upload.
+- Redaction is best-effort and regex-based. Contributors should still preview
+  what they are sharing.
+- Identity/PII redaction is optional, but secret/credential redaction is always
+  on.
+- Detected secrets are replaced with type-preserving mocks, not a blanket
+  `[REDACTED]`, so analysts can see what kind of credential was present without
+  seeing the real value.
+- Do not commit credentials. Use AWS SSO for bucket access.
+
+## Adding a New Source
 
 Implement the `Source` protocol in `sources/base.py` as a new module under
-`sources/`, then register it in `sources/__init__.py`. A source needs `discover()`
-(returns groups of `Session`s found on disk) and `parse_messages()` (raw text ->
-`[{role, text}]` for preview). Redaction, zipping, upload, and the UI are all
-source-agnostic and need no changes.
+`sources/`, then register it in `sources/__init__.py`. A source needs
+`discover()` and `parse_messages()`; redaction, zipping, upload, and the UI are
+source-agnostic.
 
 ## Development
 
