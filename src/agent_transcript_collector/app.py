@@ -1,6 +1,6 @@
 """FastAPI app: local web UI for selecting and uploading agent transcripts.
 
-Supports multiple agent harnesses (Claude Code, Codex, Pi) via the source
+Supports multiple agent harnesses (Claude Code, Codex, Cursor, Pi) via the source
 adapters in `.sources`. Uploads run as a background job and are split into
 size-budgeted, resumable units keyed
 <bucket>/<source>/<contributor>/<group-hash>/part-NNN-<members-hash>.zip
