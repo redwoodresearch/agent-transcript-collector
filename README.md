@@ -3,7 +3,7 @@
 Collect AI coding-agent transcripts with consent, redact well-formatted secrets,
 upload them to S3, and download them later for analysis.
 
-The tool supports Claude Code, Codex, and Pi transcripts. Uploads go to
+The tool supports Claude Code, Codex, Cursor, and Pi transcripts. Uploads go to
 `s3://rr-agent-transcripts` in `us-east-1` by default.
 
 ## Quick Start
@@ -102,11 +102,15 @@ actually present appear in the UI.
 |---|---|---|---|
 | Claude Code | `~/.claude/projects/` | `CLAUDE_CONFIG_DIR` | `<encoded-cwd>/<uuid>.jsonl` |
 | Codex | `~/.codex/sessions/` | `CODEX_HOME` | `YYYY/MM/DD/rollout-*.jsonl` |
+| Cursor | `~/.cursor/projects/` | `CURSOR_HOME` | `<encoded-project>/agent-transcripts/<id>/<id>.jsonl` |
 | Pi | `~/.pi/agent/sessions/` | `PI_CODING_AGENT_SESSION_DIR`, `PI_CODING_AGENT_DIR` | `--<encoded-cwd>--/<ts>_<id>.jsonl` |
 
 The collected artifact is the raw transcript in its native format after
 redaction. Preview rendering is best-effort, so harness-version schema drift
 does not affect what is uploaded.
+
+Cursor Agent JSONL transcripts include user messages, assistant text, and
+tool-call inputs. Cursor does not include tool outputs in these native files.
 
 Subagents are collected and marked in the manifest. Monitor/scaffolding sessions
 are excluded where the source schema makes that distinction possible.

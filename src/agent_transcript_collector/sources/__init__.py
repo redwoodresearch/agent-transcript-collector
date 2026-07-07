@@ -11,9 +11,10 @@ from __future__ import annotations
 from .base import Group, Session, Source
 from .claude_code import ClaudeCodeSource
 from .codex import CodexSource
+from .cursor import CursorSource
 from .pi import PiSource
 
-SOURCES: list[Source] = [ClaudeCodeSource(), CodexSource(), PiSource()]
+SOURCES: list[Source] = [ClaudeCodeSource(), CodexSource(), CursorSource(), PiSource()]
 
 _BY_ID = {s.id: s for s in SOURCES}
 

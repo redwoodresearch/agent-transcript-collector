@@ -1,6 +1,7 @@
 """Tests for the multi-source transcript adapters."""
 
 import json
+import sqlite3
 
 import pytest
 
@@ -11,6 +12,7 @@ from agent_transcript_collector.sources import (
 )
 from agent_transcript_collector.sources.claude_code import ClaudeCodeSource
 from agent_transcript_collector.sources.codex import CodexSource
+from agent_transcript_collector.sources.cursor import CursorSource
 from agent_transcript_collector.sources.pi import PiSource
 
 
@@ -24,14 +26,20 @@ def iso(tmp_path, monkeypatch):
     """Point every source at isolated temp dirs so real ~/.* is never scanned."""
     claude = tmp_path / "claude"
     codex = tmp_path / "codex"
+    cursor = tmp_path / "cursor"
+    cursor_user = tmp_path / "cursor-user"
     pi_agent = tmp_path / "pi" / "agent"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude))
     monkeypatch.setenv("CODEX_HOME", str(codex))
+    monkeypatch.setenv("CURSOR_HOME", str(cursor))
+    monkeypatch.setenv("CURSOR_USER_DATA_DIR", str(cursor_user))
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(pi_agent))
     monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR", raising=False)
     return {
         "claude_projects": claude / "projects",
         "codex_sessions": codex / "sessions",
+        "cursor_projects": cursor / "projects",
+        "cursor_user": cursor_user,
         "pi_agent": pi_agent,
         "pi_sessions": pi_agent / "sessions",
     }
@@ -71,6 +79,23 @@ def _seed_codex_source(iso, source, uuid, ts="11-00-00"):
         ],
     )
     return uuid
+
+
+def _seed_cursor(iso):
+    cid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    _write_jsonl(
+        iso["cursor_projects"] / "Users-u-proj" / "agent-transcripts" / cid / f"{cid}.jsonl",
+        [
+            {"role": "user", "message": {"content": [
+                {"type": "text", "text": "<user_query>\nhello cursor\n</user_query>"}
+            ]}},
+            {"role": "assistant", "message": {"content": [
+                {"type": "text", "text": "hi"},
+                {"type": "tool_use", "name": "Shell", "input": {"command": "pwd"}},
+            ]}},
+        ],
+    )
+    return cid
 
 
 def _seed_pi(iso):
@@ -138,6 +163,88 @@ def test_codex_only_scaffolding_yields_nothing(iso):
     assert CodexSource().discover() == []
 
 
+# --- Cursor ---
+
+def test_cursor_discover_jsonl(iso):
+    cid = _seed_cursor(iso)
+    groups = CursorSource().discover()
+    assert len(groups) == 1
+    g = groups[0]
+    assert g.label == "/Users/u/proj"
+    s = g.sessions[0]
+    assert s.id == cid
+    assert s.first_message == "<user_query>\nhello cursor\n</user_query>"
+    assert s.message_count == 2
+    assert s.is_subagent is False
+
+
+def test_cursor_uses_sqlite_project_label_when_available(iso):
+    _seed_cursor(iso)
+    db = iso["cursor_user"] / "globalStorage" / "state.vscdb"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db)
+    conn.execute("create table ItemTable (key TEXT, value BLOB)")
+    conn.execute(
+        "insert into ItemTable values (?, ?)",
+        (
+            "glass.localAgentProjects.v1",
+            json.dumps([{"workspace": {"uri": {"fsPath": "/Users/u/proj-with-dash"}}}]),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    project = iso["cursor_projects"] / "Users-u-proj-with-dash" / "agent-transcripts"
+    cid = "bbbbbbbb-1111-2222-3333-cccccccccccc"
+    _write_jsonl(project / cid / f"{cid}.jsonl", [
+        {"role": "user", "message": {"content": [{"type": "text", "text": "exact path"}]}},
+    ])
+
+    labels = {g.key: g.label for g in CursorSource().discover()}
+    assert labels["Users-u-proj-with-dash"] == "/Users/u/proj-with-dash"
+
+
+def test_cursor_parse_jsonl_blocks(iso):
+    cid = _seed_cursor(iso)
+    raw = (iso["cursor_projects"] / "Users-u-proj" / "agent-transcripts" / cid / f"{cid}.jsonl").read_text()
+    msgs = CursorSource().parse_messages(raw)
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+    assert msgs[0]["text"] == "<user_query>\nhello cursor\n</user_query>"
+    assert msgs[1]["text"] == "hi\n[Tool: Shell]"
+
+
+def test_cursor_discovers_subagents_marked(iso):
+    parent = _seed_cursor(iso)
+    child = "ffffffff-1111-2222-3333-444444444444"
+    _write_jsonl(
+        iso["cursor_projects"] / "Users-u-proj" / "agent-transcripts" / parent
+        / "subagents" / child / f"{child}.jsonl",
+        [
+            {"role": "user", "message": {"content": [{"type": "text", "text": "subtask"}]}},
+            {"role": "assistant", "message": {"content": [{"type": "text", "text": "done"}]}},
+        ],
+    )
+    sessions = {s.id: s for g in CursorSource().discover() for s in g.sessions}
+    assert sessions[parent].is_subagent is False
+    assert sessions[child].is_subagent is True
+    assert sessions[child].parent == parent
+
+
+def test_cursor_legacy_txt_fallback(iso):
+    p = iso["cursor_projects"] / "Users-u-proj" / "agent-transcripts" / "legacy.txt"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("User: old question\nAssistant: old answer\n", encoding="utf-8")
+    sessions = [s for g in CursorSource().discover() for s in g.sessions]
+    assert sessions[0].id == "legacy"
+    assert sessions[0].first_message == "old question"
+    assert sessions[0].message_count == 2
+    msgs = CursorSource().parse_messages(p.read_text())
+    assert msgs == [
+        {"role": "user", "text": "old question"},
+        {"role": "assistant", "text": "old answer"},
+    ]
+
+
 # --- Pi ---
 
 def test_pi_discover_header_and_blocks(iso):
@@ -194,6 +301,7 @@ def test_find_session_resolves_path(iso):
 
 def test_source_metadata():
     assert get_source("codex").source_format == "codex-rollout-jsonl"
+    assert get_source("cursor").source_format == "cursor-agent-transcript"
     assert get_source("pi").source_format == "pi-session-jsonl-v3"
     assert get_source("claude_code").label == "Claude Code"
 
