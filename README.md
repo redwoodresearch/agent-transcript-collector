@@ -156,6 +156,10 @@ contributor, timestamp, session metadata, and redaction counts.
 Most users only need the `rw-eng` SSO profile. These knobs are available when you
 need to override defaults:
 
+Both CLI commands automatically load a `.env` file from the directory where they
+are run. Values explicitly set in your shell take precedence, so `uv run
+agent-transcript-collector` works without `--env-file .env`.
+
 | Env var | Default | Purpose |
 |---|---|---|
 | `AWS_PROFILE` | _(unset)_ | Standard AWS profile selector; set to `rw-eng` if you want to be explicit. |

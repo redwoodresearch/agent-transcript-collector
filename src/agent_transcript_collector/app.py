@@ -30,6 +30,7 @@ from jinja2 import Environment, PackageLoader
 
 from .redactor import (
     local_usernames, redact_identity, redact_jsonl_content, redact_path_token)
+from .env import load_local_env
 from .s3client import S3_BUCKET, make_s3_client as _make_s3_client
 from .sources import SOURCES, detect_all, find_session, get_source
 
@@ -369,6 +370,7 @@ def _find_free_port(start: int, host: str = "127.0.0.1", tries: int = 20) -> int
 
 
 def main():
+    load_local_env()
     headless = "--all" in sys.argv
     contributor_name = "anonymous"
     for i, arg in enumerate(sys.argv):
