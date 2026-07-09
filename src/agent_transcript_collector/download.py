@@ -38,6 +38,7 @@ from .catalog import (
     filter_units,
     list_units,
 )
+from .env import load_local_env
 from .s3client import S3_BUCKET, make_s3_client
 from .sources.base import human_size
 
@@ -237,6 +238,7 @@ def _s3_prefix_hint(args: argparse.Namespace) -> str | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_local_env()
     args = _build_parser().parse_args(argv)
 
     s3 = make_s3_client()
