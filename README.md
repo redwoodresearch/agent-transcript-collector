@@ -138,6 +138,89 @@ transcripts/<source>/<contributor>/_manifests/<unit>.json
 Downloads are idempotent and resumable. A unit already present on disk is
 skipped, so rerunning after an interruption only fetches what is missing.
 
+## Importing chippy runs (`chippy-importer`)
+
+Besides the consent-based contributor flow, the package ships an **admin-side
+importer** for an existing transcript archive that already lives in S3: the
+**chippy** controller writes raw, unredacted run transcripts to its own
+artifacts bucket, and `chippy-importer` mirrors them locally, redacts them, and
+re-uploads one zip per run to `rr-agent-transcripts` for analysis.
+
+```text
+source  s3://<source-bucket>/<prefix>/<run-id>/transcripts/*.jsonl   (raw)
+          │  read with a source-account profile (s3:GetObject + s3:ListBucket)
+          ▼
+mirror  ./chippy-mirror/<run-id>/transcripts/*.jsonl                 (raw cache)
+          │  redact locally
+          ▼
+dest    s3://rr-agent-transcripts/chippy/<run-id>/transcripts.zip    (redacted)
+          │  written with a dest-account profile (s3:PutObject)
+```
+
+Source and dest usually live in **different AWS accounts**, so the two clients
+take independent profiles. Both stages are idempotent: mirrored files are never
+re-downloaded, and runs already present in the dest bucket are skipped unless
+`--force`.
+
+```bash
+# dry-run the 3 smallest runs (build zips locally, upload nothing)
+chippy-importer --source-profile admin-chippy --limit 3 --dry-run --llm-screen
+
+# import everything not already in the dest bucket
+chippy-importer --source-profile admin-chippy --dest-profile PowerUserAccess-… --llm-screen
+```
+
+**`--llm-screen` is recommended on every run** (see [Redaction](#redaction) — it
+handles the one identifier the importer can't scrub by a blanket rule). The
+importer will refuse to start without an explicit handle policy.
+
+### Redaction
+
+Redaction reuses the package [redactor](#security-notes) for secrets (secret
+types, type-preserving mocks — all identical to the contributor flow) and adds an
+importer-specific identity policy:
+
+- **Emails** — real addresses are redacted, except a built-in allow-list of
+  automated/bot senders (`noreply@anthropic.com`, `git@github.com`, …) kept for
+  research utility. Extend with `--keep-emails-file`.
+- **Home-path usernames** — `/home/<user>/` → `/home/[USER]/` (default logins
+  like `ubuntu` are preserved).
+- **Personal names** — scrubbed as bare tokens, supplied via `--redact-names`
+  / `--redact-names-file`.
+- **Personal GitHub handles** — scrubbed only in `github.com/<handle>` context.
+
+No personal identifiers are baked into the repo. Secrets, emails, and home-path
+usernames redact by **default**. Personal **names** and **GitHub handles** are the
+exception: whether a token is personal is a judgment call (`github.com/torvalds`
+is a person; `github.com/anthropics` is an org worth keeping), so they are only
+scrubbed when you tell the importer which ones are personal.
+
+Because a handle kept by mistake means publishing a real person's account, the
+importer **refuses to start until you make an explicit handle decision** — pick
+one of:
+
+- **`--llm-screen`** — *recommended.* Candidate handles and usernames found in the
+  selected runs are classified by an LLM as personal (redact) vs. org/bot/service
+  (keep), so you don't maintain a list by hand. Needs the `llm` extra and
+  `ANTHROPIC_API_KEY` (or an `ant auth login` profile).
+- `--redact-handles-file PATH` — redact a known list of handles (composes with
+  `--llm-screen`).
+- `--keep-all-handles` — explicitly keep every handle as-is (only for corpora
+  where handles carry no personal info).
+
+```bash
+uv pip install 'agent-transcript-collector[llm]'
+# recommended: let the LLM screen handles/names, optionally seeded with a known list
+chippy-importer --source-profile admin-chippy --llm-screen \
+  --redact-handles-file known-handles.txt
+```
+
+Key flags: `--source-bucket` / `--source-prefix` / `--source-profile`,
+`--dest-bucket` / `--dest-profile`, `--mirror`, `--run RID` (repeatable),
+`--limit N`, `--force`, `--dry-run` / `--out`, and the handle-policy flags
+(`--llm-screen`, `--redact-handles-file`, `--keep-all-handles`) plus
+`--redact-names` / `--keep-emails-file`. `chippy-importer --help` lists them all.
+
 ## Storage Layout
 
 Uploads are split into size-budgeted zip units. Completed units use

@@ -12,10 +12,12 @@ dependencies = [
 
 [project.optional-dependencies]
 tui = ["textual>=0.50"]
+llm = ["anthropic>=0.40"]
 
 [project.scripts]
 agent-transcript-collector = "agent_transcript_collector.app:main"
 agent-transcript-downloader = "agent_transcript_collector.download:main"
+chippy-importer = "agent_transcript_collector.chippy_import:main"
 
 [build-system]
 requires = ["hatchling"]

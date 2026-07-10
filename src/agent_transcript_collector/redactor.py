@@ -18,6 +18,7 @@ from pathlib import Path
 
 USERNAME_PLACEHOLDER = "[USER]"
 EMAIL_PLACEHOLDER = "[EMAIL]"
+HANDLE_PLACEHOLDER = "[HANDLE]"
 
 # Secrets are replaced with type-preserving MOCKS rather than a blanket
 # [REDACTED], so an investigator can still see *which* kind of credential was
@@ -423,3 +424,90 @@ def redact_path_token(token: str, usernames: tuple[str, ...] | None = None) -> t
 
     token = _HOMEPATH_ENCODED_RE.sub(_enc, token)
     return token, n + counts["n"]
+
+
+# ---------------------------------------------------------------------------
+# Composable identity helpers.
+#
+# ``redact_identity`` bundles home-path + local-machine + email redaction with a
+# single policy. Importers that pull *foreign* transcripts (e.g. the chippy
+# importer) need finer control — a curated email keep-list, an explicit set of
+# personal names/handles to scrub — so they compose these single-purpose passes
+# instead. Each returns (redacted_text, count) and is safe to chain.
+# ---------------------------------------------------------------------------
+
+
+def redact_home_path_users(text: str) -> tuple[str, int]:
+    """Redact non-default usernames in ``/home/<u>/`` and ``/Users/<u>/`` paths.
+
+    Default/system logins (ubuntu, ec2-user, ...) are preserved. Unlike
+    ``redact_identity`` this touches only paths, so a caller can pair it with its
+    own email/username policy.
+    """
+    defaults = default_usernames()
+    counts = {"n": 0}
+
+    def _sub(m):
+        if m.group(2).lower() in defaults:
+            return m.group(0)
+        counts["n"] += 1
+        return m.group(1) + USERNAME_PLACEHOLDER
+
+    return _HOMEPATH_RE.sub(_sub, text), counts["n"]
+
+
+def redact_emails(text: str, keep: frozenset[str] = frozenset()) -> tuple[str, int]:
+    """Redact plausible email addresses, preserving any address in ``keep``.
+
+    Same address detection as ``redact_identity`` (alphabetic TLD, internal-host
+    pseudo-TLDs skipped), but with an explicit case-insensitive allow-list so
+    known automated/bot senders (noreply@…, git@github.com) survive for research
+    utility while real personal addresses are removed.
+    """
+    keep_lower = {k.lower() for k in keep}
+    counts = {"n": 0}
+
+    def _sub(m):
+        if m.group(1).lower() in _EMAIL_NON_TLDS:
+            return m.group(0)
+        if m.group(0).lower() in keep_lower:
+            return m.group(0)
+        counts["n"] += 1
+        return EMAIL_PLACEHOLDER
+
+    return _EMAIL_RE.sub(_sub, text), counts["n"]
+
+
+def redact_named_users(text: str, names) -> tuple[str, int]:
+    """Redact specific personal names as whole bare tokens (case-insensitive).
+
+    Names shorter than ``MIN_USERNAME_LEN`` or on the default-login stoplist are
+    ignored, so a caller can't accidentally nuke common words. Longest-first so
+    overlapping names redact greedily.
+    """
+    defaults = default_usernames()
+    total = 0
+    wanted = sorted({n.strip() for n in names if n and n.strip()}, key=len, reverse=True)
+    for name in wanted:
+        if len(name) < MIN_USERNAME_LEN or name.lower() in defaults:
+            continue
+        pat = re.compile(
+            r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])", re.IGNORECASE
+        )
+        text, c = pat.subn(USERNAME_PLACEHOLDER, text)
+        total += c
+    return text, total
+
+
+def redact_github_handles(text: str, handles) -> tuple[str, int]:
+    """Redact personal GitHub handles, only in ``github.com/<handle>`` context.
+
+    Scoping to the URL context avoids scrubbing the handle where it coincides
+    with an ordinary word. Handles are matched case-insensitively, longest-first.
+    """
+    wanted = sorted({h.strip() for h in handles if h and h.strip()}, key=len, reverse=True)
+    if not wanted:
+        return text, 0
+    alt = "|".join(re.escape(h) for h in wanted)
+    pat = re.compile(r"(github\.com/)(?:" + alt + r")\b", re.IGNORECASE)
+    return pat.subn(r"\1" + HANDLE_PLACEHOLDER, text)
