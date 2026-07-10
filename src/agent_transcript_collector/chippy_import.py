@@ -238,7 +238,33 @@ def _read_list(path: str) -> list[str]:
     return [ln.strip() for ln in Path(path).read_text(encoding="utf-8").splitlines() if ln.strip()]
 
 
+def require_handle_policy(args) -> None:
+    """Refuse to run until the operator has made an explicit GitHub-handle decision.
+
+    Personal GitHub handles are only scrubbed when screened in, so — unlike
+    secrets and emails, which redact by default — an import with no handle policy
+    would silently publish real people's handles. Rather than let that happen on a
+    forgotten flag, require one of: ``--llm-screen`` (recommended — classifies
+    handles automatically), ``--redact-handles-file`` (a known list), or an
+    explicit ``--keep-all-handles`` acknowledgement.
+    """
+    if args.llm_screen or args.redact_handles_file or args.keep_all_handles:
+        return
+    raise SystemExit(
+        "refusing to import: no GitHub-handle policy set, so personal handles "
+        "would be published unredacted.\n"
+        "Choose one:\n"
+        "  --llm-screen              (recommended) classify handles as personal "
+        "vs org/bot with an LLM and redact the personal ones\n"
+        "  --redact-handles-file P   redact the handles listed in file P\n"
+        "  --keep-all-handles        keep every handle as-is (only when handles "
+        "carry no personal info)"
+    )
+
+
 def import_runs(args) -> int:
+    require_handle_policy(args)
+
     src = make_client(args.source_profile)
     dst = None if args.dry_run else make_client(args.dest_profile)
 
@@ -259,11 +285,15 @@ def import_runs(args) -> int:
         print(f"LLM screening ({args.llm_model}): +{len(screened.names)} names, "
               f"+{len(screened.handles)} handles to redact.", file=sys.stderr)
 
-    if not policy.names and not policy.handles:
-        print("NOTE: no personal names/handles configured — only secrets, emails and "
-              "home-path usernames will be redacted. Pass --redact-names / "
-              "--redact-handles-file / --llm-screen to scrub personal identifiers.",
+    if args.keep_all_handles and not args.llm_screen and not args.redact_handles_file:
+        print("NOTE: --keep-all-handles — every github.com/<handle> is kept as-is, "
+              "including real people's accounts. --llm-screen is the recommended "
+              "alternative (it scrubs personal handles, keeps orgs/bots).",
               file=sys.stderr)
+    if not policy.names:
+        print("NOTE: no personal names configured (--redact-names / --redact-names-file); "
+              "personal names in free text / paths won't be scrubbed unless --llm-screen "
+              "classifies them.", file=sys.stderr)
     if args.dry_run:
         args.out.mkdir(parents=True, exist_ok=True)
 
@@ -328,11 +358,15 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="File of personal names (one per line) to scrub.")
     p.add_argument("--redact-handles-file", metavar="PATH",
                    help="File of personal GitHub handles (one per line) to scrub.")
+    p.add_argument("--keep-all-handles", action="store_true",
+                   help="Acknowledge that every github.com/<handle> is kept as-is "
+                        "(incl. real people). Only for handle-free corpora; prefer --llm-screen.")
     p.add_argument("--keep-emails-file", metavar="PATH",
                    help="File of additional automated emails to KEEP (one per line).")
     p.add_argument("--llm-screen", action="store_true",
-                   help="Use an LLM to classify candidate names/handles (needs the 'llm' extra "
-                        "and ANTHROPIC_API_KEY).")
+                   help="RECOMMENDED. Use an LLM to classify candidate names/handles as personal "
+                        "(redact) vs org/bot (keep). Needs the 'llm' extra and ANTHROPIC_API_KEY "
+                        "(or an 'ant auth login' profile).")
     p.add_argument("--llm-model", default=os.environ.get("CHIPPY_LLM_MODEL", "claude-opus-4-8"),
                    help="Model for --llm-screen (default: claude-opus-4-8).")
     return p

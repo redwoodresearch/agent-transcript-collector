@@ -4,6 +4,7 @@ No network: a FakeS3 stands in for both the source (list + get) and dest (head +
 put) buckets, mirroring the style of test_download.py.
 """
 
+import argparse
 import io
 import json
 import re
@@ -87,6 +88,30 @@ class TestRedactionPolicy:
         policy.extend(names=["b"], handles=["y"])
         assert policy.names == {"a", "b"}
         assert policy.handles == {"x", "y"}
+
+
+class TestHandlePolicyGate:
+    """An import must not run without an explicit GitHub-handle decision."""
+
+    @staticmethod
+    def _args(**kw):
+        base = {"llm_screen": False, "redact_handles_file": None, "keep_all_handles": False}
+        base.update(kw)
+        return argparse.Namespace(**base)
+
+    def test_no_policy_raises(self):
+        with pytest.raises(SystemExit) as exc:
+            chippy_import.require_handle_policy(self._args())
+        assert "--llm-screen" in str(exc.value)  # recommended option surfaced
+
+    def test_llm_screen_satisfies(self):
+        chippy_import.require_handle_policy(self._args(llm_screen=True))
+
+    def test_handles_file_satisfies(self):
+        chippy_import.require_handle_policy(self._args(redact_handles_file="h.txt"))
+
+    def test_keep_all_handles_satisfies(self):
+        chippy_import.require_handle_policy(self._args(keep_all_handles=True))
 
 
 # --------------------------------------------------------------------------- #
