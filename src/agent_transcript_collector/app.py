@@ -94,6 +94,7 @@ async def preview_session(source: str, group: str, session: str, parent: str = "
 UNIT_BYTES = int(os.environ.get("CTC_UNIT_BYTES", str(25 * 1024 * 1024)))
 # Upload units concurrently to overlap network round-trips on large uploads.
 UPLOAD_CONCURRENCY = max(1, int(os.environ.get("CTC_UPLOAD_CONCURRENCY", "4")))
+RECEIPT_DIR = "_uploaded"
 
 
 def _group_token(group_key):
@@ -113,6 +114,34 @@ def _members_hash(unit_sessions):
 def _unit_key(source, contributor, group_key, part, unit_sessions):
     return (f"{source.id}/{contributor}/{_group_token(group_key)}/"
             f"part-{part:03d}-{_members_hash(unit_sessions)}.zip")
+
+
+def _receipt_token(group: str, parent: str | None, session: str) -> str:
+    """Opaque, stable identity for one local transcript."""
+    identity = json.dumps([group, parent or "", session], separators=(",", ":"))
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _receipt_prefix(source_id: str, contributor: str) -> str:
+    return f"{source_id}/{contributor}/{RECEIPT_DIR}/"
+
+
+def _receipt_key(source_id: str, contributor: str, session) -> str:
+    token = _receipt_token(session.group_key, session.parent, session.id)
+    return _receipt_prefix(source_id, contributor) + token
+
+
+def _list_receipt_tokens(s3, source_id: str, contributor: str) -> set[str]:
+    """List transcript receipt tokens for one source and contributor."""
+    prefix = _receipt_prefix(source_id, contributor)
+    tokens = set()
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            token = obj["Key"][len(prefix):]
+            if token and "/" not in token:
+                tokens.add(token)
+    return tokens
 
 
 def _plan_units(sessions):
@@ -140,7 +169,7 @@ def _plan_units(sessions):
 
 
 def _build_unit_zip(source, unit_sessions, contributor, redact_id=True):
-    """Build one unit's zip in memory. Returns (zip_bytes, manifest_dict).
+    """Build one unit's zip. Returns (zip_bytes, manifest_dict, included_sessions).
 
     Secrets/credentials are ALWAYS redacted; identity is optional. Identity
     redaction also covers the archive path and manifest group fields (which
@@ -148,6 +177,7 @@ def _build_unit_zip(source, unit_sessions, contributor, redact_id=True):
     """
     buf = io.BytesIO()
     manifest_sessions = []
+    included_sessions = []
     total_redactions = 0
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for sess in unit_sessions:
@@ -155,6 +185,7 @@ def _build_unit_zip(source, unit_sessions, contributor, redact_id=True):
                 raw = Path(sess.path).read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
+            included_sessions.append(sess)
             raw, redaction_count = redact_jsonl_content(raw)   # always — secrets/credentials
             group_key, group_label = sess.group_key, sess.group_label
             if redact_id:
@@ -179,7 +210,7 @@ def _build_unit_zip(source, unit_sessions, contributor, redact_id=True):
             "sessions": manifest_sessions, "total_redactions": total_redactions,
         }
         zf.writestr("manifest.json", json.dumps(manifest, indent=2))
-    return buf.getvalue(), manifest
+    return buf.getvalue(), manifest, included_sessions
 
 
 def _upload_units(s3, source, sessions, contributor, redact_id=True, on_unit=None):
@@ -187,7 +218,8 @@ def _upload_units(s3, source, sessions, contributor, redact_id=True, on_unit=Non
 
     Keys are deterministic, so a re-run overwrites the same objects in place
     (idempotent — no duplicates) and an aborted run's completed units stay
-    durable. The uploader key needs only s3:PutObject. Units upload concurrently
+    durable. Successful units also write one deterministic receipt per transcript
+    so the UI can detect earlier uploads. Units upload concurrently
     (CTC_UPLOAD_CONCURRENCY) to overlap network latency; the boto3 client is
     thread-safe for calls. Returns (uploaded_results, unit_errors); a single
     unit's failure doesn't abort the others. on_unit(n) ticks progress (called
@@ -201,10 +233,18 @@ def _upload_units(s3, source, sessions, contributor, redact_id=True, on_unit=Non
     def _do(u):
         group_key, part, unit = u
         key = _unit_key(source, contributor, group_key, part, unit)
-        zip_bytes, man = _build_unit_zip(source, unit, contributor, redact_id)
+        zip_bytes, man, included = _build_unit_zip(
+            source, unit, contributor, redact_id)
         s3.put_object(Bucket=S3_BUCKET, Key=key, Body=zip_bytes,
                       ContentType="application/zip")
-        return {"source": source.id, "s3_key": key, "session_count": len(unit),
+        for sess in included:
+            s3.put_object(
+                Bucket=S3_BUCKET,
+                Key=_receipt_key(source.id, contributor, sess),
+                Body=key.encode("utf-8"),
+                ContentType="text/plain",
+            )
+        return {"source": source.id, "s3_key": key, "session_count": len(included),
                 "zip_size_bytes": len(zip_bytes), "total_redactions": man["total_redactions"]}
 
     # Warm the username lru_cache on this thread before fanning out, so the pool
@@ -286,6 +326,39 @@ def _run_upload_job(job_id, selected, contributor, redact_id):
         with JOBS_LOCK:
             if _active_job["id"] == job_id:
                 _active_job["id"] = None
+
+
+@app.post("/api/uploaded")
+async def uploaded_sessions(request: Request):
+    """Return local session descriptors with upload receipts for a contributor."""
+    body = await request.json()
+    contributor = _safe_name(body.get("contributor_name", "anonymous"))
+    sessions = body.get("sessions", [])
+    by_source: dict[str, list[dict]] = defaultdict(list)
+    for item in sessions:
+        source_id = item.get("source", "")
+        if get_source(source_id) is not None:
+            by_source[source_id].append(item)
+
+    try:
+        s3 = _make_s3_client()
+        uploaded = []
+        for source_id, source_sessions in by_source.items():
+            tokens = _list_receipt_tokens(s3, source_id, contributor)
+            for item in source_sessions:
+                token = _receipt_token(
+                    item.get("group", ""),
+                    item.get("parent") or None,
+                    item.get("session", ""),
+                )
+                if token in tokens:
+                    uploaded.append(item)
+        return {"uploaded": uploaded}
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Could not check upload history: {type(e).__name__}: {e}"},
+            status_code=502,
+        )
 
 
 @app.post("/api/upload")

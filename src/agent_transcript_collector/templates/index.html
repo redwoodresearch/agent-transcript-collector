@@ -131,6 +131,12 @@
     background: rgba(210,153,34,0.15); color: var(--yellow);
     border: 1px solid var(--yellow); border-radius: 4px; padding: 1px 5px; flex-shrink: 0;
   }
+  .uploaded-badge {
+    display: none; background: rgba(63,185,80,0.15); color: var(--green);
+    border-color: var(--green);
+  }
+  .session.uploaded .uploaded-badge { display: inline-block; }
+  #history-status { color: var(--text-muted); font-size: 0.75rem; }
   input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
   .spacer { flex: 1; }
   .body-pad { padding-bottom: 60px; }
@@ -147,6 +153,7 @@
     <input type="text" id="contributor-name" placeholder="your name" value=""
            oninput="onNameInput()">
   </label>
+  <span id="history-status"></span>
   <label>
     <input type="checkbox" id="identity-toggle" checked>
     Redact my username &amp; paths
@@ -187,6 +194,7 @@
            data-parent="{{ session.parent or '' }}">
         <input type="checkbox" class="session-checkbox" onchange="updateCounts()">
         {% if session.is_subagent %}<span class="badge" title="Spawned task subagent">subagent</span>{% endif %}
+        <span class="badge uploaded-badge" title="Previously uploaded by this contributor">uploaded</span>
         <span class="session-summary" onclick="previewSession(this)" title="Click to preview">
           {{ session.first_message }}
         </span>
@@ -239,6 +247,15 @@ function sessionKey(row) {
   return [row.dataset.source, row.dataset.group, row.dataset.parent || '', row.dataset.session].join('|');
 }
 
+function sessionDescriptor(row) {
+  return {
+    source: row.dataset.source,
+    group: row.dataset.group,
+    session: row.dataset.session,
+    parent: row.dataset.parent || null,
+  };
+}
+
 function toggleProject(header) {
   const arrow = header.querySelector('.arrow');
   const project = header.closest('.project');
@@ -275,8 +292,47 @@ function deselectAll() {
 function saveName(v) { try { if (v) localStorage.setItem('ctc_name', v); } catch (e) {} }
 function loadName() { try { return localStorage.getItem('ctc_name'); } catch (e) { return null; } }
 
+let historyTimer = null;
+let historyRequest = 0;
 function onNameInput() {
   saveName(document.getElementById('contributor-name').value.trim());
+  clearTimeout(historyTimer);
+  historyTimer = setTimeout(refreshUploaded, 400);
+}
+
+async function refreshUploaded() {
+  const request = ++historyRequest;
+  const status = document.getElementById('history-status');
+  const rows = Array.from(document.querySelectorAll('.session'));
+  const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
+  status.textContent = 'Checking upload history…';
+  try {
+    const resp = await fetch('/api/uploaded', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        contributor_name: contributorName,
+        sessions: rows.map(sessionDescriptor),
+      }),
+    });
+    const data = await resp.json();
+    if (request !== historyRequest) return;
+    if (!resp.ok) {
+      rows.forEach(row => row.classList.remove('uploaded'));
+      status.textContent = 'Upload history unavailable';
+      return;
+    }
+    const uploaded = new Set((data.uploaded || []).map(item =>
+      [item.source, item.group, item.parent || '', item.session].join('|')));
+    rows.forEach(row => row.classList.toggle('uploaded', uploaded.has(sessionKey(row))));
+    status.textContent = uploaded.size
+      ? `${uploaded.size} previously uploaded`
+      : 'No previous uploads found';
+  } catch (e) {
+    if (request !== historyRequest) return;
+    rows.forEach(row => row.classList.remove('uploaded'));
+    status.textContent = 'Upload history unavailable';
+  }
 }
 
 function updateCounts() {
@@ -443,6 +499,7 @@ function trackJob(jobId) {
       clearJob();
       finishToast(j);
       if (j.status !== 'failed') deselectAll();
+      if (j.status !== 'failed') refreshUploaded();
       resetUploadBtn();
     }
   }, 1000);
@@ -487,6 +544,7 @@ function resetUploadBtn() {
   const saved = loadName();
   if (saved) document.getElementById('contributor-name').value = saved;
   updateCounts();
+  refreshUploaded();
   const job = loadJob();
   if (job) trackJob(job);
 })();

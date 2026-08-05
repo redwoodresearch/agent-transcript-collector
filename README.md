@@ -56,7 +56,8 @@ uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
 ```
 
 This opens <http://localhost:8899>. Preview the transcripts, select the ones you
-want to share, enter your name, and click **Upload Selected**.
+want to share, enter your name, and click **Upload Selected**. Transcripts
+previously uploaded under that contributor name are marked **uploaded**.
 
 To upload everything without the UI:
 
@@ -151,6 +152,11 @@ s3://rr-agent-transcripts/<source>/<contributor>/<group-hash>/part-NNN-<members-
 Each zip contains redacted transcript files plus a `manifest.json` with source,
 contributor, timestamp, session metadata, and redaction counts.
 
+Successful uploads also create opaque per-transcript receipts under
+`<source>/<contributor>/_uploaded/`. The local UI lists these receipts to detect
+previous uploads without downloading transcript content. Archives created before
+receipt tracking was introduced are not marked until they are uploaded again.
+
 ## Configuration
 
 Most users only need the `rw-eng` SSO profile. These knobs are available when you
@@ -172,7 +178,9 @@ The bucket and region are fixed to `rr-agent-transcripts` in `us-east-1`.
 
 ## AWS Permissions
 
-Uploading needs `s3:PutObject` on `rr-agent-transcripts/*`.
+Uploading needs `s3:PutObject` on `rr-agent-transcripts/*`. Detecting previous
+uploads in the local UI also needs `s3:ListBucket` on
+`rr-agent-transcripts`, scoped to the transcript prefixes where possible.
 
 Downloading needs `s3:GetObject` on `rr-agent-transcripts/*` and `s3:ListBucket`
 on `rr-agent-transcripts`.

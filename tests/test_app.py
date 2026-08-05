@@ -70,6 +70,30 @@ class _FakeS3:
         self.objs[Key] = Body
 
 
+class _FakePaginator:
+    def __init__(self, objs): self.objs = objs
+    def paginate(self, Bucket, Prefix):
+        return [{"Contents": [{"Key": key} for key in self.objs if key.startswith(Prefix)]}]
+
+
+class _ListableFakeS3(_FakeS3):
+    def get_paginator(self, operation):
+        assert operation == "list_objects_v2"
+        return _FakePaginator(self.objs)
+
+
+def test_receipts_are_stable_and_listable():
+    sess = _sess("x", parent="parent")
+    s3 = _ListableFakeS3()
+    key = appmod._receipt_key("claude_code", "tester", sess)
+    s3.objs[key] = b"archive-key"
+
+    assert key == appmod._receipt_key("claude_code", "tester", sess)
+    assert appmod._receipt_token(sess.group_key, sess.parent, sess.id) in (
+        appmod._list_receipt_tokens(s3, "claude_code", "tester"))
+    assert appmod._list_receipt_tokens(s3, "claude_code", "someone-else") == set()
+
+
 def test_upload_units_deterministic_overwrite(tmp_path):
     f = tmp_path / "s.jsonl"
     f.write_text('{"type":"user","message":{"content":"hi"}}\n')
@@ -86,7 +110,8 @@ def test_upload_units_deterministic_overwrite(tmp_path):
     key1 = up1[0]["s3_key"]
     up2, _ = appmod._upload_units(s3, Src(), [sess], "tester")
     assert len(up2) == 1 and up2[0]["s3_key"] == key1   # deterministic key -> overwrite in place
-    assert len(s3.objs) == 1                            # re-run overwrites, no duplicate
+    assert len(s3.objs) == 2                            # one archive + one stable receipt
+    assert appmod._receipt_key("claude_code", "tester", sess) in s3.objs
     assert sum(ticks) == 1
 
 
@@ -115,6 +140,32 @@ def test_upload_units_collects_per_unit_errors(tmp_path, monkeypatch):
     up, errs = appmod._upload_units(FlakyS3(), Src(), sessions, "t", on_unit=lambda n: ticks.append(n))
     assert len(errs) == 1 and len(up) == 2     # one unit failed, others still uploaded
     assert sum(ticks) == 3                      # progress ticks for every unit, success or fail
+
+
+def test_uploaded_endpoint_matches_receipts(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    sess = _sess("existing", parent="parent")
+    s3 = _ListableFakeS3()
+    s3.objs[appmod._receipt_key("claude_code", "tester", sess)] = b"archive-key"
+    monkeypatch.setattr(appmod, "_make_s3_client", lambda: s3)
+    descriptor = {
+        "source": "claude_code",
+        "group": sess.group_key,
+        "session": sess.id,
+        "parent": sess.parent,
+    }
+
+    response = TestClient(appmod.app).post(
+        "/api/uploaded",
+        json={"contributor_name": "tester", "sessions": [
+            descriptor,
+            {**descriptor, "session": "new"},
+        ]},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"uploaded": [descriptor]}
 
 
 def test_upload_job_endpoints():
