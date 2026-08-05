@@ -6,9 +6,6 @@ size-budgeted, resumable units keyed
 <bucket>/<source>/<contributor>/<group-hash>/part-NNN-<members-hash>.zip
 """
 
-import hashlib
-import io
-import json
 import os
 import re
 import socket
@@ -17,10 +14,7 @@ import threading
 import time
 import uuid
 import webbrowser
-import zipfile
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
 from pathlib import Path
 
 import uvicorn
@@ -28,10 +22,25 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Environment, PackageLoader
 
-from .redactor import (
-    local_usernames, redact_identity, redact_jsonl_content, redact_path_token)
-from .s3client import S3_BUCKET, make_s3_client as _make_s3_client
+from .redactor import redact_identity, redact_jsonl_content
+from .s3client import make_s3_client as _make_s3_client, selected_profile
 from .sources import SOURCES, detect_all, find_session, get_source
+from .uploader import (
+    UploadBusy,
+    UploadLock,
+    content_fingerprint,
+    is_uploaded,
+    list_receipt_versions,
+    upload_units as _upload_units,
+)
+from .watcher import (
+    AllowedGroup,
+    WatcherConfig,
+    capture_source_env,
+    install as install_watcher,
+    status as watcher_status,
+    uninstall as uninstall_watcher,
+)
 
 
 def _safe_name(name: str) -> str:
@@ -88,184 +97,6 @@ async def preview_session(source: str, group: str, session: str, parent: str = "
     }
 
 
-# Per-unit byte budget: caps each upload object so an abort loses at most one
-# small object. Keys are deterministic, so completed units stay durable and a
-# re-run overwrites them in place (idempotent — no duplicates).
-UNIT_BYTES = int(os.environ.get("CTC_UNIT_BYTES", str(25 * 1024 * 1024)))
-# Upload units concurrently to overlap network round-trips on large uploads.
-UPLOAD_CONCURRENCY = max(1, int(os.environ.get("CTC_UPLOAD_CONCURRENCY", "4")))
-RECEIPT_DIR = "_uploaded"
-
-
-def _group_token(group_key):
-    # Opaque, deterministic, key-safe, leak-proof regardless of the identity
-    # toggle (the redacted label still travels inside the manifest).
-    return "g" + hashlib.sha1(group_key.encode("utf-8")).hexdigest()[:12]
-
-
-def _members_hash(unit_sessions):
-    # Membership-addressed: the same selection re-uploads to the same key
-    # (overwrite-in-place). A *different* selection yields a different key, so the
-    # previous parts remain as orphan objects (harmless; dedup downstream by id).
-    ids = "\n".join(f"{s.parent or ''}/{s.id}" for s in unit_sessions)
-    return hashlib.sha1(ids.encode("utf-8")).hexdigest()[:8]
-
-
-def _unit_key(source, contributor, group_key, part, unit_sessions):
-    return (f"{source.id}/{contributor}/{_group_token(group_key)}/"
-            f"part-{part:03d}-{_members_hash(unit_sessions)}.zip")
-
-
-def _receipt_token(group: str, parent: str | None, session: str) -> str:
-    """Opaque, stable identity for one local transcript."""
-    identity = json.dumps([group, parent or "", session], separators=(",", ":"))
-    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
-
-
-def _receipt_prefix(source_id: str, contributor: str) -> str:
-    return f"{source_id}/{contributor}/{RECEIPT_DIR}/"
-
-
-def _receipt_key(source_id: str, contributor: str, session) -> str:
-    token = _receipt_token(session.group_key, session.parent, session.id)
-    return _receipt_prefix(source_id, contributor) + token
-
-
-def _list_receipt_tokens(s3, source_id: str, contributor: str) -> set[str]:
-    """List transcript receipt tokens for one source and contributor."""
-    prefix = _receipt_prefix(source_id, contributor)
-    tokens = set()
-    paginator = s3.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
-        for obj in page.get("Contents", []):
-            token = obj["Key"][len(prefix):]
-            if token and "/" not in token:
-                tokens.add(token)
-    return tokens
-
-
-def _plan_units(sessions):
-    """Split a source's sessions into deterministic, size-budgeted units.
-
-    Base unit = one working-dir group; a group over UNIT_BYTES is packed into
-    parts of whole sessions (a single oversized session becomes its own part —
-    transcripts are never split). Yields (group_key, part_index, [Session]).
-    """
-    by_group = defaultdict(list)
-    for s in sessions:
-        by_group[s.group_key].append(s)
-    for group_key in sorted(by_group):
-        members = sorted(by_group[group_key], key=lambda s: (s.parent or "", s.id))
-        part, cur, cur_bytes = 0, [], 0
-        for s in members:
-            sz = s.size_bytes or 0
-            if cur and cur_bytes + sz > UNIT_BYTES:
-                yield group_key, part, cur
-                part, cur, cur_bytes = part + 1, [], 0
-            cur.append(s)
-            cur_bytes += sz
-        if cur:
-            yield group_key, part, cur
-
-
-def _build_unit_zip(source, unit_sessions, contributor, redact_id=True):
-    """Build one unit's zip. Returns (zip_bytes, manifest_dict, included_sessions).
-
-    Secrets/credentials are ALWAYS redacted; identity is optional. Identity
-    redaction also covers the archive path and manifest group fields (which
-    encode home path / username). Paths come from discovery, never user input.
-    """
-    buf = io.BytesIO()
-    manifest_sessions = []
-    included_sessions = []
-    total_redactions = 0
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for sess in unit_sessions:
-            try:
-                raw = Path(sess.path).read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            included_sessions.append(sess)
-            raw, redaction_count = redact_jsonl_content(raw)   # always — secrets/credentials
-            group_key, group_label = sess.group_key, sess.group_label
-            if redact_id:
-                raw, n = redact_identity(raw); redaction_count += n
-                group_key, n = redact_path_token(group_key); redaction_count += n
-                group_label, n = redact_path_token(group_label); redaction_count += n
-            total_redactions += redaction_count
-            if sess.is_subagent and sess.parent:
-                arc = f"{group_key}/{sess.parent}/subagents/{sess.id}.jsonl"
-            else:
-                arc = f"{group_key}/{sess.id}.jsonl"
-            zf.writestr(arc, raw)
-            manifest_sessions.append({
-                "group": group_key, "group_label": group_label, "session": sess.id,
-                "is_subagent": sess.is_subagent, "parent": sess.parent,
-                "size_bytes": len(raw.encode("utf-8")), "redactions": redaction_count,
-            })
-        manifest = {
-            "source": source.id, "source_format": source.source_format,
-            "contributor": contributor, "uploaded_at": datetime.now(timezone.utc).isoformat(),
-            "subagent_count": sum(1 for s in manifest_sessions if s["is_subagent"]),
-            "sessions": manifest_sessions, "total_redactions": total_redactions,
-        }
-        zf.writestr("manifest.json", json.dumps(manifest, indent=2))
-    return buf.getvalue(), manifest, included_sessions
-
-
-def _upload_units(s3, source, sessions, contributor, redact_id=True, on_unit=None):
-    """Upload a source's sessions as size-budgeted units, in parallel.
-
-    Keys are deterministic, so a re-run overwrites the same objects in place
-    (idempotent — no duplicates) and an aborted run's completed units stay
-    durable. Successful units also write one deterministic receipt per transcript
-    so the UI can detect earlier uploads. Units upload concurrently
-    (CTC_UPLOAD_CONCURRENCY) to overlap network latency; the boto3 client is
-    thread-safe for calls. Returns (uploaded_results, unit_errors); a single
-    unit's failure doesn't abort the others. on_unit(n) ticks progress (called
-    from this thread as each unit finishes, so it needs no lock).
-    """
-    units = list(_plan_units(sessions))
-    uploaded, errors = [], []
-    if not units:
-        return uploaded, errors
-
-    def _do(u):
-        group_key, part, unit = u
-        key = _unit_key(source, contributor, group_key, part, unit)
-        zip_bytes, man, included = _build_unit_zip(
-            source, unit, contributor, redact_id)
-        s3.put_object(Bucket=S3_BUCKET, Key=key, Body=zip_bytes,
-                      ContentType="application/zip")
-        for sess in included:
-            s3.put_object(
-                Bucket=S3_BUCKET,
-                Key=_receipt_key(source.id, contributor, sess),
-                Body=key.encode("utf-8"),
-                ContentType="text/plain",
-            )
-        return {"source": source.id, "s3_key": key, "session_count": len(included),
-                "zip_size_bytes": len(zip_bytes), "total_redactions": man["total_redactions"]}
-
-    # Warm the username lru_cache on this thread before fanning out, so the pool
-    # threads don't race a cold cache (a torn first write could permanently drop
-    # the git user.name from bare-token redaction).
-    local_usernames()
-
-    workers = min(UPLOAD_CONCURRENCY, len(units))
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        fut_unit = {ex.submit(_do, u): u for u in units}
-        for fut in as_completed(fut_unit):
-            n = len(fut_unit[fut][2])
-            try:
-                uploaded.append(fut.result())
-            except Exception as e:
-                errors.append({"source": source.id, "error": f"{type(e).__name__}: {e}"})
-            if on_unit:
-                on_unit(n)   # tick even on failure so the bar still completes
-    return uploaded, errors
-
-
 # --- background upload jobs (so closing the tab can't abort an upload) ---
 JOBS: dict[str, dict] = {}
 JOBS_LOCK = threading.Lock()
@@ -300,23 +131,31 @@ def _run_upload_job(job_id, selected, contributor, redact_id):
     progress into JOBS[job_id]."""
     job = JOBS[job_id]
     try:
-        to_upload = _resolve_selection(selected)
-        job["total"] = sum(len(s) for _, s in to_upload)
-        job["status"] = "running"
-        s3 = _make_s3_client()
-        for source, sessions in to_upload:
-            try:
-                uploaded, unit_errors = _upload_units(
-                    s3, source, sessions, contributor, redact_id,
-                    on_unit=lambda n: job.__setitem__("done", job["done"] + n))
-                with JOBS_LOCK:
-                    job["uploads"].extend(uploaded)
-                    job["errors"].extend(unit_errors)
-            except Exception as e:
-                with JOBS_LOCK:
-                    job["errors"].append({"source": source.id, "error": f"{type(e).__name__}: {e}"})
-        job["status"] = ("completed" if not job["errors"]
-                         else "partial" if job["uploads"] else "failed")
+        with UploadLock():
+            to_upload = _resolve_selection(selected)
+            job["total"] = sum(len(s) for _, s in to_upload)
+            job["status"] = "running"
+            s3 = _make_s3_client()
+            for source, sessions in to_upload:
+                try:
+                    uploaded, unit_errors = _upload_units(
+                        s3, source, sessions, contributor, redact_id,
+                        on_unit=lambda n: job.__setitem__("done", job["done"] + n))
+                    with JOBS_LOCK:
+                        job["uploads"].extend(uploaded)
+                        job["errors"].extend(unit_errors)
+                except Exception as e:
+                    with JOBS_LOCK:
+                        job["errors"].append({
+                            "source": source.id,
+                            "error": f"{type(e).__name__}: {e}",
+                        })
+            job["status"] = ("completed" if not job["errors"]
+                             else "partial" if job["uploads"] else "failed")
+    except UploadBusy as e:
+        with JOBS_LOCK:
+            job["errors"].append({"error": str(e)})
+        job["status"] = "failed"
     except Exception as e:
         with JOBS_LOCK:
             job["errors"].append({"error": f"{type(e).__name__}: {e}"})
@@ -344,14 +183,26 @@ async def uploaded_sessions(request: Request):
         s3 = _make_s3_client()
         uploaded = []
         for source_id, source_sessions in by_source.items():
-            tokens = _list_receipt_tokens(s3, source_id, contributor)
+            versions = list_receipt_versions(s3, source_id, contributor)
+            source = get_source(source_id)
+            resolved = {
+                (group.key, session.parent or None, session.id): session
+                for group in source.discover()
+                for session in group.sessions
+            }
             for item in source_sessions:
-                token = _receipt_token(
+                session = resolved.get((
                     item.get("group", ""),
                     item.get("parent") or None,
                     item.get("session", ""),
-                )
-                if token in tokens:
+                ))
+                if session is None:
+                    continue
+                try:
+                    fingerprint = content_fingerprint(session)
+                except OSError:
+                    continue
+                if is_uploaded(versions, session, fingerprint):
                     uploaded.append(item)
         return {"uploaded": uploaded}
     except Exception as e:
@@ -390,6 +241,64 @@ async def upload(request: Request):
     return JSONResponse({"job_id": job_id}, status_code=202)
 
 
+@app.get("/api/watcher")
+async def get_watcher_status():
+    return watcher_status()
+
+
+@app.put("/api/watcher")
+async def put_watcher(request: Request):
+    """Validate explicit group consent, then install or update the hourly job."""
+    body = await request.json()
+    requested = {
+        (str(item.get("source", "")), str(item.get("group", "")))
+        for item in body.get("groups", [])
+    }
+    discovered = {
+        (source.id, group.key): group.label
+        for source in SOURCES
+        for group in source.discover()
+    }
+    invalid = sorted(requested - discovered.keys())
+    if invalid:
+        return JSONResponse(
+            {"error": "One or more selected folders are no longer available"},
+            status_code=400,
+        )
+    if not requested:
+        return JSONResponse(
+            {"error": "Select at least one folder to watch"}, status_code=400
+        )
+    config = WatcherConfig(
+        contributor=_safe_name(body.get("contributor_name", "anonymous")),
+        redact_identity=bool(body.get("redact_identity", True)),
+        aws_profile=selected_profile(),
+        groups=[
+            AllowedGroup(source=source, group=group, label=discovered[(source, group)])
+            for source, group in sorted(requested)
+        ],
+        source_env=capture_source_env(),
+    )
+    try:
+        return install_watcher(config)
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Could not install watcher: {type(e).__name__}: {e}"},
+            status_code=500,
+        )
+
+
+@app.delete("/api/watcher")
+async def delete_watcher():
+    try:
+        return uninstall_watcher()
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Could not uninstall watcher: {type(e).__name__}: {e}"},
+            status_code=500,
+        )
+
+
 @app.get("/api/upload/{job_id}")
 async def upload_status(job_id: str):
     job = JOBS.get(job_id)
@@ -405,26 +314,34 @@ async def upload_status(job_id: str):
 def headless_upload(contributor_name: str = "anonymous"):
     """Upload all transcripts from every source as resumable units, no UI."""
     contributor = _safe_name(contributor_name)
-    s3 = _make_s3_client()
     any_found = False
-
-    for source in SOURCES:
-        sessions = [s for g in source.discover() for s in g.sessions]
-        if not sessions:
-            continue
-        any_found = True
-        print(f"[{source.label}] uploading {len(sessions)} sessions as units...")
-        try:
-            uploaded, unit_errors = _upload_units(s3, source, sessions, contributor)
-        except Exception as e:
-            print(f"[{source.label}] upload failed: {type(e).__name__}: {e}")
-            continue
-        mb = sum(u["zip_size_bytes"] for u in uploaded) / 1024 / 1024
-        red = sum(u["total_redactions"] for u in uploaded)
-        msg = f"[{source.label}] {len(uploaded)} unit(s) uploaded ({mb:.1f} MB, {red} redactions)"
-        if unit_errors:
-            msg += f"; {len(unit_errors)} unit(s) failed"
-        print(msg + ".")
+    try:
+        with UploadLock():
+            s3 = _make_s3_client()
+            for source in SOURCES:
+                sessions = [s for g in source.discover() for s in g.sessions]
+                if not sessions:
+                    continue
+                any_found = True
+                print(f"[{source.label}] uploading {len(sessions)} sessions as units...")
+                try:
+                    uploaded, unit_errors = _upload_units(
+                        s3, source, sessions, contributor)
+                except Exception as e:
+                    print(f"[{source.label}] upload failed: {type(e).__name__}: {e}")
+                    continue
+                mb = sum(u["zip_size_bytes"] for u in uploaded) / 1024 / 1024
+                red = sum(u["total_redactions"] for u in uploaded)
+                msg = (
+                    f"[{source.label}] {len(uploaded)} unit(s) uploaded "
+                    f"({mb:.1f} MB, {red} redactions)"
+                )
+                if unit_errors:
+                    msg += f"; {len(unit_errors)} unit(s) failed"
+                print(msg + ".")
+    except UploadBusy as e:
+        print(f"Upload skipped: {e}.")
+        return
 
     print("No transcripts found." if not any_found else "Done!")
 

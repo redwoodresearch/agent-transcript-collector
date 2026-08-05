@@ -24,6 +24,18 @@
     display: flex; gap: 12px; align-items: center; margin-bottom: 20px;
     flex-wrap: wrap;
   }
+  .watcher-controls {
+    display: flex; gap: 10px; align-items: center; margin: -8px 0 20px;
+    padding: 10px 12px; background: rgba(88,166,255,0.05);
+    border: 1px solid var(--border); border-radius: 8px; flex-wrap: wrap;
+  }
+  .watcher-controls .label { font-size: 0.85rem; font-weight: 600; }
+  #watcher-status { color: var(--text-muted); font-size: 0.78rem; flex: 1; }
+  #watcher-uninstall { display: none; }
+  .watch-folder {
+    display: flex; align-items: center; gap: 4px; color: var(--text-muted);
+    font-size: 0.72rem; white-space: nowrap;
+  }
   .controls label { font-size: 0.85rem; display: flex; align-items: center; gap: 6px; }
   #contributor-name:placeholder-shown { border-color: var(--yellow); }
   .controls input[type="text"] {
@@ -163,6 +175,13 @@
   <button class="secondary" onclick="deselectAll()">Deselect All</button>
 </div>
 
+<div class="watcher-controls">
+  <span class="label">Hourly watcher</span>
+  <span id="watcher-status">Checking status…</span>
+  <button class="secondary" id="watcher-install" onclick="installWatcher()">Install / Update</button>
+  <button class="secondary" id="watcher-uninstall" onclick="uninstallWatcher()">Uninstall</button>
+</div>
+
 {% if not sources %}
 <p class="empty">No transcripts found for any supported agent (Claude Code, Codex, Pi) on this machine.</p>
 {% endif %}
@@ -184,6 +203,12 @@
       <span class="arrow">&#9654;</span>
       <span class="project-path" title="{{ group.label }}">{{ group.label }}</span>
       <span class="project-meta">{{ group.session_count }} session{{ 's' if group.session_count != 1 else '' }} &middot; {{ group.total_size_human }}</span>
+      <label class="watch-folder" title="Allow hourly uploads from this folder"
+             onclick="event.stopPropagation()">
+        <input type="checkbox" class="watch-checkbox"
+               data-source="{{ source.id }}" data-group="{{ group.key }}">
+        hourly
+      </label>
     </div>
     <div class="sessions">
       {% for session in group.sessions %}
@@ -291,6 +316,89 @@ function deselectAll() {
 // storage is blocked) — never let it break the upload flow.
 function saveName(v) { try { if (v) localStorage.setItem('ctc_name', v); } catch (e) {} }
 function loadName() { try { return localStorage.getItem('ctc_name'); } catch (e) { return null; } }
+
+async function loadWatcher() {
+  const status = document.getElementById('watcher-status');
+  try {
+    const resp = await fetch('/api/watcher');
+    const data = await resp.json();
+    document.querySelectorAll('.watch-checkbox').forEach(cb => { cb.checked = false; });
+    if (data.config && data.config.groups) {
+      const allowed = new Set(data.config.groups.map(item => `${item.source}|${item.group}`));
+      document.querySelectorAll('.watch-checkbox').forEach(cb => {
+        cb.checked = allowed.has(`${cb.dataset.source}|${cb.dataset.group}`);
+      });
+    }
+    document.getElementById('watcher-uninstall').style.display = data.installed ? 'inline-block' : 'none';
+    if (data.error) {
+      status.textContent = data.error;
+    } else if (data.installed) {
+      const last = data.state || {};
+      const detail = last.finished_at
+        ? ` Last run: ${last.status}, ${last.sessions_uploaded || 0} uploaded.`
+        : '';
+      status.textContent = `Installed for ${data.config.groups.length} folder${data.config.groups.length !== 1 ? 's' : ''}.${detail}`;
+    } else {
+      status.textContent = 'Select accepted folders below, then install.';
+    }
+  } catch (e) {
+    status.textContent = 'Watcher status unavailable';
+  }
+}
+
+async function installWatcher() {
+  const groups = Array.from(document.querySelectorAll('.watch-checkbox:checked')).map(cb => ({
+    source: cb.dataset.source,
+    group: cb.dataset.group,
+  }));
+  if (!groups.length) {
+    showToast('Select at least one hourly folder', true);
+    return;
+  }
+  let contributorName = document.getElementById('contributor-name').value.trim();
+  if (!contributorName) {
+    contributorName = (window.prompt('Enter the contributor name for hourly uploads:', '') || '').trim();
+    if (!contributorName) return;
+    document.getElementById('contributor-name').value = contributorName;
+    saveName(contributorName);
+  }
+  const button = document.getElementById('watcher-install');
+  button.disabled = true;
+  button.textContent = 'Installing…';
+  try {
+    const resp = await fetch('/api/watcher', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        groups,
+        contributor_name: contributorName,
+        redact_identity: document.getElementById('identity-toggle').checked,
+      }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Install failed');
+    showToast('Hourly watcher installed');
+    await loadWatcher();
+  } catch (e) {
+    showToast(e.message, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Install / Update';
+  }
+}
+
+async function uninstallWatcher() {
+  if (!window.confirm('Stop hourly transcript uploads? Your folder choices and logs will be preserved.')) return;
+  try {
+    const resp = await fetch('/api/watcher', {method: 'DELETE'});
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Uninstall failed');
+    showToast('Hourly watcher uninstalled');
+    await loadWatcher();
+  } catch (e) {
+    showToast(e.message, true);
+  }
+}
 
 let historyTimer = null;
 let historyRequest = 0;
@@ -545,6 +653,7 @@ function resetUploadBtn() {
   if (saved) document.getElementById('contributor-name').value = saved;
   updateCounts();
   refreshUploaded();
+  loadWatcher();
   const job = loadJob();
   if (job) trackJob(job);
 })();

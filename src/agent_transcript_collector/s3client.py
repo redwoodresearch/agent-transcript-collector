@@ -13,6 +13,16 @@ S3_REGION = "us-east-1"
 DEFAULT_AWS_PROFILE = "rw-eng"
 
 
+def selected_profile() -> str:
+    """Resolve the AWS profile using the collector's documented precedence."""
+    return (
+        os.environ.get("CTC_AWS_PROFILE")
+        or os.environ.get("AWS_PROFILE")
+        or os.environ.get("AWS_DEFAULT_PROFILE")
+        or DEFAULT_AWS_PROFILE
+    )
+
+
 def make_s3_client():
     """Build an S3 client.
 
@@ -20,10 +30,5 @@ def make_s3_client():
     ``rw-eng``; callers can override it with ``CTC_AWS_PROFILE``, ``AWS_PROFILE``,
     or ``AWS_DEFAULT_PROFILE``.
     """
-    profile = (
-        os.environ.get("CTC_AWS_PROFILE")
-        or os.environ.get("AWS_PROFILE")
-        or os.environ.get("AWS_DEFAULT_PROFILE")
-        or DEFAULT_AWS_PROFILE
-    )
+    profile = selected_profile()
     return boto3.Session(profile_name=profile, region_name=S3_REGION).client("s3")

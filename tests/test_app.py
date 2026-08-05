@@ -31,6 +31,7 @@ def test_find_free_port_returns_start_when_free():
 
 from pathlib import Path
 from agent_transcript_collector import app as appmod
+from agent_transcript_collector import uploader
 from agent_transcript_collector.sources.base import Session
 
 
@@ -41,26 +42,26 @@ def _sess(sid, group="-home-u-proj", size=10, parent=None, path=Path("/nonexiste
 
 
 def test_plan_units_small_group_single_unit():
-    units = list(appmod._plan_units([_sess("a"), _sess("b")]))
+    units = list(uploader._plan_units([_sess("a"), _sess("b")]))
     assert len(units) == 1 and len(units[0][2]) == 2
 
 
 def test_plan_units_splits_oversized_group(monkeypatch):
-    monkeypatch.setattr(appmod, "UNIT_BYTES", 100)
-    units = list(appmod._plan_units([_sess(f"s{i}", size=60) for i in range(3)]))
+    units = list(uploader._plan_units(
+        [_sess(f"s{i}", size=60) for i in range(3)], unit_bytes=100))
     assert len(units) == 3 and all(len(m) == 1 for _, _, m in units)
 
 
 def test_plan_units_never_splits_one_session(monkeypatch):
-    monkeypatch.setattr(appmod, "UNIT_BYTES", 10)
-    units = list(appmod._plan_units([_sess("big", size=1000)]))
+    units = list(uploader._plan_units(
+        [_sess("big", size=1000)], unit_bytes=10))
     assert len(units) == 1 and len(units[0][2]) == 1
 
 
 def test_plan_units_deterministic_regardless_of_order():
     s = [_sess("b"), _sess("a"), _sess("c")]
-    a = [[x.id for x in m[2]] for m in appmod._plan_units(s)]
-    b = [[x.id for x in m[2]] for m in appmod._plan_units(list(reversed(s)))]
+    a = [[x.id for x in m[2]] for m in uploader._plan_units(s)]
+    b = [[x.id for x in m[2]] for m in uploader._plan_units(list(reversed(s)))]
     assert a == b
 
 
@@ -85,13 +86,16 @@ class _ListableFakeS3(_FakeS3):
 def test_receipts_are_stable_and_listable():
     sess = _sess("x", parent="parent")
     s3 = _ListableFakeS3()
-    key = appmod._receipt_key("claude_code", "tester", sess)
+    key = uploader._receipt_key("claude_code", "tester", sess, "content")
     s3.objs[key] = b"archive-key"
 
-    assert key == appmod._receipt_key("claude_code", "tester", sess)
-    assert appmod._receipt_token(sess.group_key, sess.parent, sess.id) in (
-        appmod._list_receipt_tokens(s3, "claude_code", "tester"))
-    assert appmod._list_receipt_tokens(s3, "claude_code", "someone-else") == set()
+    assert key == uploader._receipt_key(
+        "claude_code", "tester", sess, "content")
+    identity = uploader._receipt_token(sess.group_key, sess.parent, sess.id)
+    assert uploader.list_receipt_versions(
+        s3, "claude_code", "tester") == {identity: {"content"}}
+    assert uploader.list_receipt_versions(
+        s3, "claude_code", "someone-else") == {}
 
 
 def test_upload_units_deterministic_overwrite(tmp_path):
@@ -111,13 +115,14 @@ def test_upload_units_deterministic_overwrite(tmp_path):
     up2, _ = appmod._upload_units(s3, Src(), [sess], "tester")
     assert len(up2) == 1 and up2[0]["s3_key"] == key1   # deterministic key -> overwrite in place
     assert len(s3.objs) == 2                            # one archive + one stable receipt
-    assert appmod._receipt_key("claude_code", "tester", sess) in s3.objs
+    receipt = uploader._receipt_key(
+        "claude_code", "tester", sess, uploader.content_fingerprint(sess))
+    assert receipt in s3.objs
     assert sum(ticks) == 1
 
 
 def test_upload_units_collects_per_unit_errors(tmp_path, monkeypatch):
-    monkeypatch.setattr(appmod, "UNIT_BYTES", 10)          # one unit per session
-    monkeypatch.setattr(appmod, "UPLOAD_CONCURRENCY", 1)   # deterministic for the test
+    monkeypatch.setattr(uploader, "UPLOAD_CONCURRENCY", 1)   # deterministic for the test
     sessions = []
     for i in range(3):
         f = tmp_path / f"s{i}.jsonl"
@@ -137,18 +142,31 @@ def test_upload_units_collects_per_unit_errors(tmp_path, monkeypatch):
             self.objs[Key] = Body
 
     ticks = []
-    up, errs = appmod._upload_units(FlakyS3(), Src(), sessions, "t", on_unit=lambda n: ticks.append(n))
+    up, errs = uploader.upload_units(
+        FlakyS3(), Src(), sessions, "t",
+        on_unit=lambda n: ticks.append(n), unit_bytes=10)
     assert len(errs) == 1 and len(up) == 2     # one unit failed, others still uploaded
     assert sum(ticks) == 3                      # progress ticks for every unit, success or fail
 
 
-def test_uploaded_endpoint_matches_receipts(monkeypatch):
+def test_uploaded_endpoint_matches_receipts(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
+    from agent_transcript_collector.sources.base import Group
 
-    sess = _sess("existing", parent="parent")
+    transcript = tmp_path / "existing.jsonl"
+    transcript.write_text('{"message":"hello"}\n')
+    sess = _sess("existing", parent="parent", path=transcript)
     s3 = _ListableFakeS3()
-    s3.objs[appmod._receipt_key("claude_code", "tester", sess)] = b"archive-key"
+    receipt = uploader._receipt_key(
+        "claude_code", "tester", sess, uploader.content_fingerprint(sess))
+    s3.objs[receipt] = b"archive-key"
     monkeypatch.setattr(appmod, "_make_s3_client", lambda: s3)
+    class Source:
+        def discover(self):
+            return [Group(sess.group_key, sess.group_label, [sess])]
+    monkeypatch.setattr(
+        appmod, "get_source",
+        lambda source_id: Source() if source_id == "claude_code" else None)
     descriptor = {
         "source": "claude_code",
         "group": sess.group_key,
@@ -166,6 +184,38 @@ def test_uploaded_endpoint_matches_receipts(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"uploaded": [descriptor]}
+
+
+def test_watcher_endpoint_validates_discovered_groups(monkeypatch):
+    from fastapi.testclient import TestClient
+    from agent_transcript_collector.sources.base import Group
+
+    class Source:
+        id = "claude_code"
+        def discover(self):
+            return [Group("accepted", "/projects/accepted", [])]
+
+    captured = {}
+    monkeypatch.setattr(appmod, "SOURCES", [Source()])
+    monkeypatch.setattr(
+        appmod,
+        "install_watcher",
+        lambda config: captured.setdefault("config", config) or {"installed": True},
+    )
+    client = TestClient(appmod.app)
+
+    invalid = client.put("/api/watcher", json={
+        "groups": [{"source": "claude_code", "group": "other"}],
+    })
+    valid = client.put("/api/watcher", json={
+        "contributor_name": "alice",
+        "groups": [{"source": "claude_code", "group": "accepted"}],
+    })
+
+    assert invalid.status_code == 400
+    assert valid.status_code == 200
+    assert captured["config"].contributor == "alice"
+    assert captured["config"].groups[0].group == "accepted"
 
 
 def test_upload_job_endpoints():

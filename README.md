@@ -68,6 +68,49 @@ uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
 
 Use `--all` only when bulk upload without per-session review is intended.
 
+### Hourly Watcher
+
+The local review UI can install a per-user hourly watcher on macOS or Linux:
+
+1. Enter the contributor name that should own the uploads.
+2. Check **hourly** beside each folder you consent to share.
+3. Click **Install / Update**.
+
+The watcher uploads every existing transcript in those exact folders, then
+checks about once an hour for new transcripts or changed content. A transcript
+that grows after an upload is stored as a new content version; unchanged content
+is skipped. Selecting a folder does not implicitly select similarly named or
+descendant folders.
+
+The installer uses a macOS LaunchAgent or Linux systemd user timer. It runs only
+while the user's login session is available (unless systemd lingering was
+separately configured) and never requires `sudo`. **Uninstall** stops future
+runs while preserving the folder choices, last-run state, and logs.
+
+`uv` must remain installed at the path recorded during setup. The watcher uses
+the configured AWS SSO profile, but it cannot open an interactive login. If the
+last-run status reports expired credentials, run:
+
+```bash
+aws sso login --profile rw-eng
+```
+
+Watcher status and removal are also available from the terminal:
+
+```bash
+uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
+  agent-transcript-watcher status
+uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
+  agent-transcript-watcher uninstall
+```
+
+Configuration is stored with user-only permissions under
+`~/Library/Application Support/agent-transcript-collector/` on macOS or
+`${XDG_CONFIG_HOME:-~/.config}/agent-transcript-collector/` on Linux. Logs use
+`~/Library/Logs/agent-transcript-collector/watcher.log` on macOS and
+`${XDG_STATE_HOME:-~/.local/state}/agent-transcript-collector/watcher.log` on
+Linux.
+
 ### Download Transcripts
 
 List what is available:
@@ -153,9 +196,10 @@ Each zip contains redacted transcript files plus a `manifest.json` with source,
 contributor, timestamp, session metadata, and redaction counts.
 
 Successful uploads also create opaque per-transcript receipts under
-`<source>/<contributor>/_uploaded/`. The local UI lists these receipts to detect
-previous uploads without downloading transcript content. Archives created before
-receipt tracking was introduced are not marked until they are uploaded again.
+`<source>/<contributor>/_uploaded/<identity-hash>/<content-hash>`. The local UI
+and watcher list these receipts to detect exact uploaded content without
+downloading transcript archives. Archives created before receipt tracking was
+introduced are not marked until they are uploaded again.
 
 ## Configuration
 
@@ -179,7 +223,7 @@ The bucket and region are fixed to `rr-agent-transcripts` in `us-east-1`.
 ## AWS Permissions
 
 Uploading needs `s3:PutObject` on `rr-agent-transcripts/*`. Detecting previous
-uploads in the local UI also needs `s3:ListBucket` on
+uploads in the local UI or watcher also needs `s3:ListBucket` on
 `rr-agent-transcripts`, scoped to the transcript prefixes where possible.
 
 Downloading needs `s3:GetObject` on `rr-agent-transcripts/*` and `s3:ListBucket`

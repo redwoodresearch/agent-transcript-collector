@@ -16,6 +16,7 @@ tui = ["textual>=0.50"]
 [project.scripts]
 agent-transcript-collector = "agent_transcript_collector.app:main"
 agent-transcript-downloader = "agent_transcript_collector.download:main"
+agent-transcript-watcher = "agent_transcript_collector.watcher:main"
 
 [build-system]
 requires = ["hatchling"]
