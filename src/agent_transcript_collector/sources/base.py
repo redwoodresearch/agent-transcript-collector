@@ -92,6 +92,67 @@ def project_identity(cwd: str) -> tuple[str, str]:
     return f"_project-{name}", name
 
 
+def canonical_project_directory(cwd: str) -> str | None:
+    """Return the primary project directory when it can be identified safely."""
+    normalized = cwd.replace("\\", "/").rstrip("/")
+    if not normalized:
+        return None
+
+    for marker in ("/.claude/worktrees/", "/.agents/worktrees/"):
+        if marker in normalized:
+            return normalized.split(marker, 1)[0]
+
+    path = Path(normalized).expanduser()
+    if not path.is_absolute():
+        return None
+
+    for candidate in (path, *path.parents):
+        dotgit = candidate / ".git"
+        if dotgit.is_dir():
+            return str(candidate)
+        if not dotgit.is_file():
+            continue
+        try:
+            first_line = dotgit.read_text(encoding="utf-8").splitlines()[0]
+        except (OSError, IndexError):
+            return str(candidate)
+        if not first_line.startswith("gitdir:"):
+            return str(candidate)
+        git_dir = Path(first_line.split(":", 1)[1].strip()).expanduser()
+        if not git_dir.is_absolute():
+            git_dir = (candidate / git_dir).resolve()
+        common_file = git_dir / "commondir"
+        try:
+            common_dir = (git_dir / common_file.read_text(encoding="utf-8").strip()).resolve()
+        except OSError:
+            return str(candidate)
+        if common_dir.name == ".git":
+            return str(common_dir.parent)
+        return str(candidate)
+
+    if re.search(r"/\.?codex/worktrees/[^/]+/", normalized):
+        return None
+    return normalized
+
+
+def decode_existing_project_path(encoded: str) -> str | None:
+    """Recover a dash-encoded absolute path only when it exists on disk."""
+    parts = [part for part in encoded.replace("\\", "-").strip("-").split("-") if part]
+    current = Path("/")
+    while parts:
+        match = None
+        for count in range(len(parts), 0, -1):
+            candidate = current / "-".join(parts[:count])
+            if candidate.exists():
+                match = (candidate, count)
+                break
+        if match is None:
+            return None
+        current, consumed = match
+        parts = parts[consumed:]
+    return str(current)
+
+
 @dataclass
 class Session:
     source: str          # source id, e.g. "claude_code"
@@ -129,6 +190,7 @@ class Group:
     key: str
     label: str
     sessions: list[Session]
+    directory: str | None = None
 
     @property
     def session_count(self) -> int:

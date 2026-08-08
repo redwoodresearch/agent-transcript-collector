@@ -20,7 +20,15 @@ import re
 import sqlite3
 from pathlib import Path
 
-from .base import Group, Session, mtime, project_identity, truncate
+from .base import (
+    Group,
+    Session,
+    canonical_project_directory,
+    decode_existing_project_path,
+    mtime,
+    project_identity,
+    truncate,
+)
 
 
 def _cursor_home() -> Path:
@@ -169,11 +177,29 @@ class CursorSource:
             transcripts_dir = project_dir / "agent-transcripts"
             if not project_dir.is_dir() or not transcripts_dir.exists():
                 continue
-            cwd = label_by_key.get(project_dir.name) or _fallback_project_label(project_dir.name)
+            exact_cwd = label_by_key.get(project_dir.name)
+            recovered = (
+                decode_existing_project_path(project_dir.name)
+                if exact_cwd is None
+                else None
+            )
+            cwd = exact_cwd or recovered or _fallback_project_label(project_dir.name)
             key, label = project_identity(cwd)
+            directory = (
+                canonical_project_directory(cwd)
+                if exact_cwd is not None or recovered is not None
+                else None
+            )
             group = by_group.get(key)
             if group is None:
-                group = by_group[key] = Group(key=key, label=label, sessions=[])
+                group = by_group[key] = Group(
+                    key=key,
+                    label=label,
+                    sessions=[],
+                    directory=directory,
+                )
+            elif group.directory is None and directory is not None:
+                group.directory = directory
             for f in self._transcript_files(transcripts_dir):
                 first, count = self._summary(f)
                 parent = self._parent_id(transcripts_dir, f)

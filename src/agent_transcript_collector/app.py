@@ -6,15 +6,19 @@ size-budgeted, resumable units keyed
 <bucket>/<source>/<contributor>/<group-hash>/part-NNN-<members-hash>.zip
 """
 
+import getpass
 import os
 import re
+import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
 import uuid
 import webbrowser
 from collections import defaultdict
+from functools import lru_cache
 from pathlib import Path
 
 import uvicorn
@@ -24,7 +28,7 @@ from jinja2 import Environment, PackageLoader
 
 from .redactor import redact_identity, redact_jsonl_content
 from .s3client import make_s3_client as _make_s3_client, selected_profile
-from .sources import SOURCES, detect_all, find_session, get_source
+from .sources import SOURCES, detect_projects, find_session, get_source
 from .uploader import (
     UploadBusy,
     UploadLock,
@@ -56,11 +60,35 @@ jinja_env = Environment(
 )
 
 
+@lru_cache(maxsize=1)
+def _default_contributor_name() -> str:
+    """Prefer the authenticated GitHub login, then the local OS username."""
+    gh = shutil.which("gh")
+    if gh:
+        try:
+            result = subprocess.run(
+                [gh, "api", "user", "--jq", ".login"],
+                capture_output=True,
+                check=True,
+                text=True,
+                timeout=2,
+            )
+            login = result.stdout.strip()
+            if login:
+                return login
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return getpass.getuser()
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    sources = detect_all()
+    projects = detect_projects()
     template = jinja_env.get_template("index.html")
-    return template.render(sources=sources)
+    return template.render(
+        projects=projects,
+        default_contributor_name=_default_contributor_name(),
+    )
 
 
 @app.get("/api/preview")

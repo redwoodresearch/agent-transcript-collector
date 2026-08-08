@@ -11,7 +11,16 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .base import Group, Session, iter_jsonl, mtime, project_identity, truncate
+from .base import (
+    Group,
+    Session,
+    canonical_project_directory,
+    decode_existing_project_path,
+    iter_jsonl,
+    mtime,
+    project_identity,
+    truncate,
+)
 
 
 def _config_dir() -> Path:
@@ -74,13 +83,35 @@ class ClaudeCodeSource:
                 (f, f.parent.parent.name)
                 for f in sorted(project_dir.glob("*/subagents/*.jsonl"))
             )
-            for f, parent in files:
-                cwd, first, count = self._summary(f)
+            records = [
+                (f, parent, *self._summary(f))
+                for f, parent in files
+            ]
+            container_cwd = next((cwd for _, _, cwd, _, _ in records if cwd), None)
+            for f, parent, cwd, first, count in records:
                 fallback = decode_project_name(project_dir.name)
-                key, label = project_identity(cwd or fallback)
+                recovered = (
+                    decode_existing_project_path(project_dir.name)
+                    if cwd is None and container_cwd is None
+                    else None
+                )
+                observed_cwd = cwd or container_cwd or recovered or fallback
+                key, label = project_identity(observed_cwd)
+                directory = (
+                    canonical_project_directory(observed_cwd)
+                    if cwd is not None or container_cwd is not None or recovered is not None
+                    else None
+                )
                 group = by_group.get(key)
                 if group is None:
-                    group = by_group[key] = Group(key=key, label=label, sessions=[])
+                    group = by_group[key] = Group(
+                        key=key,
+                        label=label,
+                        sessions=[],
+                        directory=directory,
+                    )
+                elif group.directory is None and directory is not None:
+                    group.directory = directory
                 group.sessions.append(Session(
                     source=self.id, id=f.stem,
                     group_key=key, group_label=label,

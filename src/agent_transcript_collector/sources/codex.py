@@ -17,7 +17,15 @@ import os
 import re
 from pathlib import Path
 
-from .base import Group, Session, iter_jsonl, mtime, project_identity, truncate
+from .base import (
+    Group,
+    Session,
+    canonical_project_directory,
+    iter_jsonl,
+    mtime,
+    project_identity,
+    truncate,
+)
 
 _UUID_RE = re.compile(
     r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", re.I
@@ -149,9 +157,17 @@ class CodexSource:
                 continue  # review/compact/memory_consolidation/internal scaffolding
             cwd, first, count = self._summary(f)
             key, label = project_identity(cwd) if cwd else ("_ungrouped", "(unknown project)")
+            directory = canonical_project_directory(cwd) if cwd else None
             group = by_group.get(key)
             if group is None:
-                group = by_group[key] = Group(key=key, label=label, sessions=[])
+                group = by_group[key] = Group(
+                    key=key,
+                    label=label,
+                    sessions=[],
+                    directory=directory,
+                )
+            elif group.directory is None and directory is not None:
+                group.directory = directory
             group.sessions.append(Session(
                 source=self.id,
                 id=_session_id(f),

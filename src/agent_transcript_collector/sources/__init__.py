@@ -8,7 +8,7 @@ so paths are never built from user-supplied strings.
 
 from __future__ import annotations
 
-from .base import Group, Session, Source
+from .base import Group, Session, Source, human_size
 from .claude_code import ClaudeCodeSource
 from .codex import CodexSource
 from .cursor import CursorSource
@@ -35,7 +35,6 @@ def detect_all() -> list[dict]:
             continue
         session_count = sum(g.session_count for g in groups)
         total_bytes = sum(g.total_size_bytes for g in groups)
-        from .base import human_size
         detected.append({
             "id": source.id,
             "label": source.label,
@@ -53,6 +52,52 @@ def detect_all() -> list[dict]:
             ],
         })
     return detected
+
+
+def detect_projects() -> list[dict]:
+    """Discover transcripts as project -> harness -> sessions for the local UI."""
+    discovered: list[tuple[Source, Group]] = []
+    directories_by_label: dict[str, set[str]] = {}
+    for source in SOURCES:
+        for group in source.discover():
+            discovered.append((source, group))
+            if group.directory:
+                directories_by_label.setdefault(group.label, set()).add(group.directory)
+
+    projects_by_identity: dict[str, dict] = {}
+    for source, group in discovered:
+        directory = group.directory
+        candidates = directories_by_label.get(group.label, set())
+        if directory is None and len(candidates) == 1:
+            directory = next(iter(candidates))
+        identity = f"directory:{directory}" if directory else f"unresolved:{group.label}"
+        project = projects_by_identity.get(identity)
+        if project is None:
+            project = projects_by_identity[identity] = {
+                "key": f"project-{len(projects_by_identity)}",
+                "label": group.label,
+                "directory": directory,
+                "session_count": 0,
+                "total_size_bytes": 0,
+                "harnesses": [],
+            }
+        project["session_count"] += group.session_count
+        project["total_size_bytes"] += group.total_size_bytes
+        project["harnesses"].append({
+            "source": source.id,
+            "source_label": source.label,
+            "group": group.key,
+            "session_count": group.session_count,
+            "total_size_human": group.total_size_human,
+            "sessions": [session.as_dict() for session in group.sessions],
+        })
+
+    projects = list(projects_by_identity.values())
+    for project in projects:
+        project["total_size_human"] = human_size(project.pop("total_size_bytes"))
+        project["harnesses"].sort(key=lambda harness: harness["source_label"].lower())
+    projects.sort(key=lambda project: (project["label"].lower(), project["directory"] or ""))
+    return projects
 
 
 def find_session(source_id: str, group_key: str, session_id: str,
@@ -79,5 +124,6 @@ __all__ = [
     "Source",
     "get_source",
     "detect_all",
+    "detect_projects",
     "find_session",
 ]
