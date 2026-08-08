@@ -40,6 +40,7 @@ from .watcher import (
     WatcherConfig,
     capture_source_env,
     install as install_watcher,
+    save_config as save_watcher_config,
     status as watcher_status,
     uninstall as uninstall_watcher,
 )
@@ -286,7 +287,7 @@ async def get_watcher_status():
 
 @app.put("/api/watcher")
 async def put_watcher(request: Request):
-    """Validate explicit group consent, then install or update the hourly job."""
+    """Persist project consent and optionally enable the scheduled job."""
     body = await request.json()
     requested = {
         (str(item.get("source", "")), str(item.get("group", "")))
@@ -303,10 +304,6 @@ async def put_watcher(request: Request):
             {"error": "One or more selected folders are no longer available"},
             status_code=400,
         )
-    if not requested:
-        return JSONResponse(
-            {"error": "Select at least one folder to watch"}, status_code=400
-        )
     config = WatcherConfig(
         contributor=_safe_name(body.get("contributor_name", "anonymous")),
         redact_identity=bool(body.get("redact_identity", True)),
@@ -318,10 +315,14 @@ async def put_watcher(request: Request):
         source_env=capture_source_env(),
     )
     try:
-        return install_watcher(config)
+        enabled = bool(body.get("enabled", True))
+        if enabled or watcher_status().get("installed"):
+            return install_watcher(config)
+        path = save_watcher_config(config)
+        return {"installed": False, "configured": True, "config_path": str(path)}
     except Exception as e:
         return JSONResponse(
-            {"error": f"Could not install watcher: {type(e).__name__}: {e}"},
+            {"error": f"Could not update auto upload: {type(e).__name__}: {e}"},
             status_code=500,
         )
 

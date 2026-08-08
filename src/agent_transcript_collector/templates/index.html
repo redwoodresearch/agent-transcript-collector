@@ -31,7 +31,6 @@
   }
   .watcher-controls .label { font-size: 0.85rem; font-weight: 600; }
   #watcher-status { color: var(--text-muted); font-size: 0.78rem; flex: 1; }
-  #watcher-uninstall { display: none; }
   .auto-upload {
     display: flex; align-items: center; gap: 4px; color: var(--text-muted);
     font-size: 0.72rem; white-space: nowrap;
@@ -68,6 +67,8 @@
     white-space: nowrap;
   }
   .project-meta { color: var(--text-muted); font-size: 0.8rem; white-space: nowrap; }
+  .project-pending { color: var(--yellow); }
+  .project-pending.complete { color: var(--green); }
   .arrow { color: var(--text-muted); transition: transform 0.15s; font-size: 0.7rem; }
   .arrow.open { transform: rotate(90deg); }
 
@@ -177,16 +178,12 @@
     <input type="checkbox" id="identity-toggle" checked onchange="refreshUploaded()">
     Redact my username &amp; paths
   </label>
-  <div class="spacer"></div>
-  <button class="secondary" onclick="selectAll()">Select All</button>
-  <button class="secondary" onclick="deselectAll()">Deselect All</button>
 </div>
 
 <div class="watcher-controls">
   <span class="label">Auto upload</span>
   <span id="watcher-status">Checking status…</span>
-  <button class="secondary" id="watcher-install" onclick="installWatcher()">Enable / Update</button>
-  <button class="secondary" id="watcher-uninstall" onclick="uninstallWatcher()">Disable</button>
+  <button class="secondary" id="auto-upload-toggle" onclick="toggleAutoUpload()" disabled>Enable</button>
 </div>
 
 {% if not projects %}
@@ -196,9 +193,6 @@
 {% for project in projects %}
 <div class="project" data-project="{{ project.key }}">
   <div class="project-header" onclick="toggleProject(this)">
-    <input type="checkbox" class="project-checkbox"
-           onclick="event.stopPropagation(); toggleProjectCheckbox(this)"
-           title="Select all transcripts in {{ project.label }}">
     <span class="arrow project-arrow">&#9654;</span>
     <div class="project-title">
       <div class="project-name">{{ project.label }}</div>
@@ -206,10 +200,15 @@
         {{ project.directory or 'Directory unavailable' }}
       </div>
     </div>
-    <span class="project-meta">{{ project.session_count }} session{{ 's' if project.session_count != 1 else '' }} &middot; {{ project.total_size_human }}</span>
+    <span class="project-meta">
+      {{ project.session_count }} session{{ 's' if project.session_count != 1 else '' }}
+      &middot; {{ project.total_size_human }}
+      &middot; <span class="project-pending">checking uploads…</span>
+    </span>
     <label class="auto-upload" title="Automatically upload new transcripts from this project"
            onclick="event.stopPropagation()">
-      <input type="checkbox" class="auto-upload-checkbox">
+      <input type="checkbox" class="auto-upload-checkbox"
+             onchange="saveAutoUploadProjects(this)">
       auto upload
     </label>
   </div>
@@ -217,9 +216,6 @@
     {% for harness in project.harnesses %}
     <div class="harness" data-source="{{ harness.source }}" data-group="{{ harness.group }}">
       <div class="harness-header" onclick="toggleHarness(this)">
-        <input type="checkbox" class="harness-checkbox"
-               onclick="event.stopPropagation(); toggleHarnessCheckbox(this)"
-               title="Select all {{ harness.source_label }} transcripts">
         <span class="arrow harness-arrow">&#9654;</span>
         <span class="harness-label">{{ harness.source_label }}</span>
         <span class="harness-meta">{{ harness.session_count }} session{{ 's' if harness.session_count != 1 else '' }} &middot; {{ harness.total_size_human }}</span>
@@ -231,7 +227,6 @@
            data-group="{{ harness.group }}"
            data-session="{{ session.id }}"
            data-parent="{{ session.parent or '' }}">
-        <input type="checkbox" class="session-checkbox" onchange="updateCounts()">
         {% if session.is_subagent %}<span class="badge" title="Spawned task subagent">subagent</span>{% endif %}
         <span class="badge uploaded-badge" title="Previously uploaded by this contributor">uploaded</span>
         <span class="session-summary" onclick="previewSession(this)" title="Click to preview">
@@ -261,28 +256,18 @@
 
 <div class="status-bar">
   <div class="status-left">
-    <span class="status-count" id="selected-count">0</span> sessions selected
-    (<span id="selected-size">0 B</span>)
+    <span class="status-count" id="pending-upload-count">Checking uploads…</span>
   </div>
   <div class="progress" id="upload-progress">
     <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
     <span id="progress-text"></span>
   </div>
-  <button id="upload-btn" onclick="uploadSelected()" disabled>Upload Selected</button>
+  <button id="upload-btn" onclick="uploadNow()" disabled>Upload now</button>
 </div>
 
 <div class="toast" id="toast"></div>
 
 <script>
-const sessionSizes = {};
-{% for project in projects %}
-  {% for harness in project.harnesses %}
-    {% for session in harness.sessions %}
-      sessionSizes["{{ harness.source }}|{{ harness.group }}|{{ session.parent or '' }}|{{ session.id }}"] = {{ session.size_bytes }};
-    {% endfor %}
-  {% endfor %}
-{% endfor %}
-
 function sessionKey(row) {
   return [row.dataset.source, row.dataset.group, row.dataset.parent || '', row.dataset.session].join('|');
 }
@@ -310,37 +295,40 @@ function toggleHarness(header) {
   harness.querySelector('.sessions').classList.toggle('open');
 }
 
-function toggleProjectCheckbox(cb) {
-  const project = cb.closest('.project');
-  project.querySelectorAll('.session-checkbox').forEach(s => s.checked = cb.checked);
-  updateCounts();
-}
-
-function toggleHarnessCheckbox(cb) {
-  const harness = cb.closest('.harness');
-  harness.querySelectorAll('.session-checkbox').forEach(s => s.checked = cb.checked);
-  updateCounts();
-}
-
-function selectAll() {
-  document.querySelectorAll('.session-checkbox, .harness-checkbox, .project-checkbox')
-    .forEach(cb => cb.checked = true);
-  updateCounts();
-}
-
-function deselectAll() {
-  document.querySelectorAll('.session-checkbox, .harness-checkbox, .project-checkbox')
-    .forEach(cb => { cb.checked = false; cb.indeterminate = false; });
-  updateCounts();
-}
-
 // localStorage is best-effort (it throws in Safari private mode / when site
 // storage is blocked) — never let it break the upload flow.
 function saveName(v) { try { localStorage.setItem('ctc_name', v); } catch (e) {} }
 function loadName() { try { return localStorage.getItem('ctc_name'); } catch (e) { return null; } }
 
+let autoUploadEnabled = false;
+
+function selectedAutoUploadGroups() {
+  return Array.from(document.querySelectorAll('.auto-upload-checkbox:checked'))
+    .flatMap(cb => Array.from(cb.closest('.project').querySelectorAll('.harness')).map(harness => ({
+      source: harness.dataset.source,
+      group: harness.dataset.group,
+    })));
+}
+
+async function updateAutoUploadConfig(enabled) {
+  const resp = await fetch('/api/watcher', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      groups: selectedAutoUploadGroups(),
+      contributor_name: document.getElementById('contributor-name').value.trim() || 'anonymous',
+      redact_identity: document.getElementById('identity-toggle').checked,
+      enabled,
+    }),
+  });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || 'Could not update auto upload');
+  return data;
+}
+
 async function loadWatcher() {
   const status = document.getElementById('watcher-status');
+  const toggle = document.getElementById('auto-upload-toggle');
   try {
     const resp = await fetch('/api/watcher');
     const data = await resp.json();
@@ -359,10 +347,12 @@ async function loadWatcher() {
         cb.indeterminate = enabled > 0 && enabled < harnesses.length;
       });
     }
-    document.getElementById('watcher-uninstall').style.display = data.installed ? 'inline-block' : 'none';
+    autoUploadEnabled = Boolean(data.installed);
+    toggle.disabled = false;
+    toggle.textContent = autoUploadEnabled ? 'Disable' : 'Enable';
     if (data.error) {
       status.textContent = data.error;
-    } else if (data.installed) {
+    } else if (autoUploadEnabled) {
       const last = data.state || {};
       const detail = last.finished_at
         ? ` Last run: ${last.status}, ${last.sessions_uploaded || 0} uploaded.`
@@ -370,70 +360,62 @@ async function loadWatcher() {
       const enabled = document.querySelectorAll('.auto-upload-checkbox:checked').length;
       status.textContent = `Enabled for ${enabled} project${enabled !== 1 ? 's' : ''}.${detail}`;
     } else {
-      status.textContent = 'Select projects below, then enable.';
+      const selected = document.querySelectorAll('.auto-upload-checkbox:checked').length;
+      status.textContent = selected
+        ? `${selected} project${selected !== 1 ? 's' : ''} selected. Auto upload is disabled.`
+        : 'Select projects to auto upload.';
     }
+    updatePendingCounts(true);
   } catch (e) {
     status.textContent = 'Watcher status unavailable';
+    toggle.disabled = true;
   }
 }
 
-async function installWatcher() {
-  const groups = Array.from(document.querySelectorAll('.auto-upload-checkbox:checked'))
-    .flatMap(cb => Array.from(cb.closest('.project').querySelectorAll('.harness')).map(harness => ({
-      source: harness.dataset.source,
-      group: harness.dataset.group,
-    })));
-  if (!groups.length) {
+async function saveAutoUploadProjects(changed) {
+  changed.disabled = true;
+  document.getElementById('watcher-status').textContent = 'Saving project selection…';
+  try {
+    await updateAutoUploadConfig(autoUploadEnabled);
+    showToast(changed.checked ? 'Project added to auto upload' : 'Project removed from auto upload');
+    await loadWatcher();
+  } catch (e) {
+    showToast(e.message, true);
+    await loadWatcher();
+  } finally {
+    changed.disabled = false;
+  }
+}
+
+async function toggleAutoUpload() {
+  const button = document.getElementById('auto-upload-toggle');
+  if (!autoUploadEnabled && !selectedAutoUploadGroups().length) {
     showToast('Select at least one project for auto upload', true);
     return;
   }
-  let contributorName = document.getElementById('contributor-name').value.trim();
-  if (!contributorName) {
-    contributorName = (window.prompt('Enter the contributor name for automatic uploads:', '') || '').trim();
-    if (!contributorName) return;
-    document.getElementById('contributor-name').value = contributorName;
-    saveName(contributorName);
-  }
-  const button = document.getElementById('watcher-install');
   button.disabled = true;
-  button.textContent = 'Enabling…';
+  button.textContent = autoUploadEnabled ? 'Disabling…' : 'Enabling…';
   try {
-    const resp = await fetch('/api/watcher', {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        groups,
-        contributor_name: contributorName,
-        redact_identity: document.getElementById('identity-toggle').checked,
-      }),
-    });
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || 'Install failed');
-    showToast('Auto upload enabled');
+    if (autoUploadEnabled) {
+      const resp = await fetch('/api/watcher', {method: 'DELETE'});
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || 'Disable failed');
+      showToast('Auto upload disabled');
+    } else {
+      await updateAutoUploadConfig(true);
+      showToast('Auto upload enabled');
+    }
     await loadWatcher();
   } catch (e) {
     showToast(e.message, true);
-  } finally {
     button.disabled = false;
-    button.textContent = 'Enable / Update';
-  }
-}
-
-async function uninstallWatcher() {
-  if (!window.confirm('Disable automatic transcript uploads? Your project choices and logs will be preserved.')) return;
-  try {
-    const resp = await fetch('/api/watcher', {method: 'DELETE'});
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || 'Disable failed');
-    showToast('Auto upload disabled');
-    await loadWatcher();
-  } catch (e) {
-    showToast(e.message, true);
+    button.textContent = autoUploadEnabled ? 'Disable' : 'Enable';
   }
 }
 
 let historyTimer = null;
 let historyRequest = 0;
+let historyAvailable = false;
 function onNameInput() {
   saveName(document.getElementById('contributor-name').value.trim());
   clearTimeout(historyTimer);
@@ -446,6 +428,8 @@ async function refreshUploaded() {
   const rows = Array.from(document.querySelectorAll('.session'));
   const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
   status.textContent = 'Checking upload history…';
+  historyAvailable = false;
+  updatePendingCounts(false);
   try {
     const resp = await fetch('/api/uploaded', {
       method: 'POST',
@@ -461,46 +445,64 @@ async function refreshUploaded() {
     if (!resp.ok) {
       rows.forEach(row => row.classList.remove('uploaded'));
       status.textContent = 'Upload history unavailable';
+      updatePendingCounts(false);
       return;
     }
     const uploaded = new Set((data.uploaded || []).map(item =>
       [item.source, item.group, item.parent || '', item.session].join('|')));
     rows.forEach(row => row.classList.toggle('uploaded', uploaded.has(sessionKey(row))));
-    status.textContent = uploaded.size
-      ? `${uploaded.size} previously uploaded`
-      : 'No previous uploads found';
+    historyAvailable = true;
+    status.textContent = `${uploaded.size} uploaded · ${rows.length - uploaded.size} pending`;
+    updatePendingCounts(true);
   } catch (e) {
     if (request !== historyRequest) return;
     rows.forEach(row => row.classList.remove('uploaded'));
     status.textContent = 'Upload history unavailable';
+    updatePendingCounts(false);
   }
 }
 
-function updateCounts() {
-  const checked = document.querySelectorAll('.session-checkbox:checked');
-  let totalSize = 0;
-  checked.forEach(cb => { totalSize += sessionSizes[sessionKey(cb.closest('.session'))] || 0; });
-  document.getElementById('selected-count').textContent = checked.length;
-  document.getElementById('selected-size').textContent = humanSize(totalSize);
-  document.getElementById('upload-btn').disabled = checked.length === 0;
+function updatePendingCounts(available = historyAvailable) {
+  const button = document.getElementById('upload-btn');
+  const global = document.getElementById('pending-upload-count');
+  let selectedPending = 0;
+  let selectedProjects = 0;
 
-  // Roll up harness checkboxes
-  document.querySelectorAll('.harness').forEach(harness => {
-    const hcb = harness.querySelector('.harness-checkbox');
-    const all = harness.querySelectorAll('.session-checkbox');
-    const on = harness.querySelectorAll('.session-checkbox:checked');
-    hcb.checked = all.length > 0 && all.length === on.length;
-    hcb.indeterminate = on.length > 0 && on.length < all.length;
-  });
-
-  // Roll up project checkboxes
   document.querySelectorAll('.project').forEach(project => {
-    const pcb = project.querySelector('.project-checkbox');
-    const all = project.querySelectorAll('.session-checkbox');
-    const on = project.querySelectorAll('.session-checkbox:checked');
-    pcb.checked = all.length > 0 && all.length === on.length;
-    pcb.indeterminate = on.length > 0 && on.length < all.length;
+    const label = project.querySelector('.project-pending');
+    label.classList.remove('complete');
+    if (!available) {
+      label.textContent = 'upload status unavailable';
+      return;
+    }
+    const pending = project.querySelectorAll('.session:not(.uploaded)').length;
+    label.textContent = pending
+      ? `${pending} not uploaded`
+      : 'all uploaded';
+    label.classList.toggle('complete', pending === 0);
+    if (project.querySelector('.auto-upload-checkbox').checked) {
+      selectedProjects += 1;
+      selectedPending += pending;
+    }
   });
+
+  if (!available) {
+    global.textContent = 'Upload status unavailable';
+    button.textContent = 'Upload now';
+    button.disabled = true;
+  } else if (!selectedProjects) {
+    global.textContent = 'Select projects for auto upload';
+    button.textContent = 'Upload now';
+    button.disabled = true;
+  } else if (!selectedPending) {
+    global.textContent = 'Selected projects are up to date';
+    button.textContent = 'Everything uploaded';
+    button.disabled = true;
+  } else {
+    global.textContent = `${selectedPending} session${selectedPending !== 1 ? 's' : ''} need upload`;
+    button.textContent = `Upload ${selectedPending} now`;
+    button.disabled = false;
+  }
 }
 
 function humanSize(bytes) {
@@ -578,15 +580,19 @@ function saveJob(id) { try { localStorage.setItem('ctc_job', id); } catch (e) {}
 function clearJob() { try { localStorage.removeItem('ctc_job'); } catch (e) {} }
 function loadJob() { try { return localStorage.getItem('ctc_job'); } catch (e) { return null; } }
 
-async function uploadSelected() {
+async function uploadNow() {
   const btn = document.getElementById('upload-btn');
   btn.disabled = true;
   btn.textContent = 'Starting…';
 
-  const selected = Array.from(document.querySelectorAll('.session-checkbox:checked')).map(cb => {
-    const row = cb.closest('.session');
-    return { source: row.dataset.source, group: row.dataset.group, session: row.dataset.session, parent: row.dataset.parent || null };
-  });
+  const selected = Array.from(document.querySelectorAll('.auto-upload-checkbox:checked'))
+    .flatMap(cb => Array.from(cb.closest('.project').querySelectorAll('.session:not(.uploaded)')))
+    .map(sessionDescriptor);
+  if (!selected.length) {
+    showToast('Selected projects are already uploaded');
+    resetUploadBtn();
+    return;
+  }
 
   let contributorName = document.getElementById('contributor-name').value.trim();
   if (!contributorName) {
@@ -639,7 +645,6 @@ function trackJob(jobId) {
       stopTracking();
       clearJob();
       finishToast(j);
-      if (j.status !== 'failed') deselectAll();
       if (j.status !== 'failed') refreshUploaded();
       resetUploadBtn();
     }
@@ -675,8 +680,7 @@ function showProgress(on) {
 }
 function stopTracking() { clearInterval(pollTimer); pollTimer = null; showProgress(false); }
 function resetUploadBtn() {
-  document.getElementById('upload-btn').textContent = 'Upload Selected';
-  updateCounts();
+  updatePendingCounts();
 }
 
 // Restore a remembered name, set the initial button state, and re-attach to an
@@ -684,7 +688,7 @@ function resetUploadBtn() {
 (function init() {
   const saved = loadName();
   if (saved !== null) document.getElementById('contributor-name').value = saved;
-  updateCounts();
+  updatePendingCounts(false);
   refreshUploaded();
   loadWatcher();
   const job = loadJob();
