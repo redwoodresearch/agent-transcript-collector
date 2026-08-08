@@ -10,6 +10,7 @@ terms of the normalized types defined here.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -54,6 +55,41 @@ def truncate(text: str, max_length: int = 200) -> str:
     if len(text) > max_length:
         return text[:max_length] + "..."
     return text
+
+
+def project_identity(cwd: str) -> tuple[str, str]:
+    """Return a stable project key and a human-readable repository name.
+
+    Agent harnesses frequently run inside temporary worktrees. Treat those
+    checkouts as the repository they belong to instead of exposing ephemeral
+    paths in the UI. For live paths, the nearest Git root determines the
+    project; stale paths fall back to their final directory name.
+    """
+    normalized = cwd.replace("\\", "/").rstrip("/")
+
+    codex_match = re.search(r"/\.?codex/worktrees/[^/]+/([^/]+)", normalized)
+    if codex_match:
+        name = codex_match.group(1)
+        return f"_project-{name}", name
+
+    for marker in ("/.claude/worktrees/", "/.agents/worktrees/"):
+        if marker in normalized:
+            repository = normalized.split(marker, 1)[0]
+            name = Path(repository).name
+            return f"_project-{name}", name
+
+    path = Path(normalized).expanduser()
+    if not path.is_absolute():
+        name = path.name or "_root"
+        return f"_project-{name}", name
+
+    for candidate in (path, *path.parents):
+        if (candidate / ".git").exists():
+            name = candidate.name
+            return f"_project-{name}", name
+
+    name = path.name or "_root"
+    return f"_project-{name}", name
 
 
 @dataclass

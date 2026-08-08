@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 
-from .base import Group, Session, mtime, truncate
+from .base import Group, Session, mtime, project_identity, truncate
 
 
 def _cursor_home() -> Path:
@@ -63,6 +64,13 @@ def decode_project_name(encoded: str) -> str:
     if not normalized:
         return "/"
     return "/" + normalized.replace("-", "/")
+
+
+def _fallback_project_label(encoded: str) -> str:
+    worktree = re.search(r"(?:^|-)codex-worktrees-[^-]+-(.+)$", encoded)
+    if worktree:
+        return worktree.group(1)
+    return decode_project_name(encoded)
 
 
 def _extract_paths(obj) -> list[str]:
@@ -156,20 +164,23 @@ class CursorSource:
             return []
 
         label_by_key = _project_label_map()
-        groups: list[Group] = []
+        by_group: dict[str, Group] = {}
         for project_dir in sorted(projects_dir.iterdir()):
             transcripts_dir = project_dir / "agent-transcripts"
             if not project_dir.is_dir() or not transcripts_dir.exists():
                 continue
-            label = label_by_key.get(project_dir.name) or decode_project_name(project_dir.name)
-            sessions: list[Session] = []
+            cwd = label_by_key.get(project_dir.name) or _fallback_project_label(project_dir.name)
+            key, label = project_identity(cwd)
+            group = by_group.get(key)
+            if group is None:
+                group = by_group[key] = Group(key=key, label=label, sessions=[])
             for f in self._transcript_files(transcripts_dir):
                 first, count = self._summary(f)
                 parent = self._parent_id(transcripts_dir, f)
-                sessions.append(Session(
+                group.sessions.append(Session(
                     source=self.id,
                     id=self._session_id(transcripts_dir, f),
-                    group_key=project_dir.name,
+                    group_key=key,
                     group_label=label,
                     path=f,
                     size_bytes=f.stat().st_size,
@@ -179,9 +190,7 @@ class CursorSource:
                     is_subagent=parent is not None,
                     parent=parent,
                 ))
-            if sessions:
-                groups.append(Group(key=project_dir.name, label=label, sessions=sessions))
-        return groups
+        return [group for group in by_group.values() if group.sessions]
 
     def _transcript_files(self, transcripts_dir: Path) -> list[Path]:
         files = []
