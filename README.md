@@ -10,41 +10,17 @@ The tool supports Claude Code, Codex, Cursor, and Pi transcripts. Uploads go to
 
 ### First time: set up AWS SSO
 
-Redwood users should use an AWS SSO profile named `rw-eng`.
+Follow the AWS prerequisites and profile setup in the
+[Redwood devbox getting-started guide](https://github.com/redwoodresearch/research-devboxes/blob/main/docs/getting-started.md).
+Use a profile for the Redwood General Sandbox account and make that profile
+available to the collector:
 
 ```bash
-aws configure sso
+export AWS_PROFILE=<profile>
 ```
 
-When prompted, use:
-
-```text
-SSO start URL: https://d-90662ff878.awsapps.com/start
-SSO region: us-east-1
-Profile name: rw-eng
-```
-
-Choose the Redwood engineering AWS account/role. Then log in:
-
-```bash
-aws sso login --profile rw-eng
-```
-
-If you do not have AWS SSO access, DM Tyler Tracy on Slack.
-
-You only run `aws configure sso` once per machine. When your login expires, rerun
-only:
-
-```bash
-aws sso login --profile rw-eng
-```
-
-The collector and downloader automatically use the local `rw-eng` profile when
-it exists. You can also force it explicitly:
-
-```bash
-export AWS_PROFILE=rw-eng
-```
+The profile name is a local label. Use the same profile when refreshing an
+expired session with `aws sso login --profile <profile>`.
 
 ### Upload Transcripts
 
@@ -92,7 +68,7 @@ the configured AWS SSO profile, but it cannot open an interactive login. If the
 last-run status reports expired credentials, run:
 
 ```bash
-aws sso login --profile rw-eng
+aws sso login --profile <profile>
 ```
 
 Watcher status and removal are also available from the terminal:
@@ -203,54 +179,21 @@ introduced are not marked until they are uploaded again.
 
 ## Configuration
 
-Most users only need the `rw-eng` SSO profile. These knobs are available when you
-need to override defaults:
+Use the General Sandbox SSO profile configured through the
+[Redwood devbox guide](https://github.com/redwoodresearch/research-devboxes/blob/main/docs/getting-started.md).
+These knobs are available when you need to override defaults:
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `AWS_PROFILE` | _(unset)_ | Standard AWS profile selector; set to `rw-eng` if you want to be explicit. |
+| `AWS_PROFILE` | _(unset)_ | Standard AWS profile selector; set it to your General Sandbox profile. |
 | `CTC_AWS_PROFILE` | _(unset)_ | Collector-specific profile override. |
 | `CTC_UNIT_BYTES` | `26214400` (25 MB) | Per-unit upload size budget. |
 | `CTC_UPLOAD_CONCURRENCY` | `4` | Units uploaded in parallel. |
 | `CTC_DOWNLOAD_CONCURRENCY` | `4` | Units downloaded in parallel. |
 | `PORT` | `8899` | Local upload UI port. |
 
-The tool uses AWS SSO profiles only. It chooses `CTC_AWS_PROFILE`, then
-`AWS_PROFILE`, then `AWS_DEFAULT_PROFILE`, and finally `rw-eng`.
+The tool chooses `CTC_AWS_PROFILE`, then `AWS_PROFILE`, then
+`AWS_DEFAULT_PROFILE`. For compatibility with existing setups, it falls back to
+the local profile name `rw-eng`.
 
 The bucket and region are fixed to `rr-agent-transcripts` in `us-east-1`.
-
-## AWS Permissions
-
-Uploading needs `s3:PutObject` on `rr-agent-transcripts/*`. Detecting previous
-uploads in the local UI or watcher also needs `s3:ListBucket` on
-`rr-agent-transcripts`, scoped to the transcript prefixes where possible.
-
-Downloading needs `s3:GetObject` on `rr-agent-transcripts/*` and `s3:ListBucket`
-on `rr-agent-transcripts`.
-
-## Security Notes
-
-- The local UI always redacts well-formatted secrets before upload.
-- Redaction is best-effort and regex-based. Contributors should still preview
-  what they are sharing.
-- Identity/PII redaction is optional, but secret/credential redaction is always
-  on.
-- Detected secrets are replaced with type-preserving mocks, not a blanket
-  `[REDACTED]`, so analysts can see what kind of credential was present without
-  seeing the real value.
-- Do not commit credentials. Use AWS SSO for bucket access.
-
-## Adding a New Source
-
-Implement the `Source` protocol in `sources/base.py` as a new module under
-`sources/`, then register it in `sources/__init__.py`. A source needs
-`discover()` and `parse_messages()`; redaction, zipping, upload, and the UI are
-source-agnostic.
-
-## Development
-
-```bash
-uv sync
-uv run pytest
-```
