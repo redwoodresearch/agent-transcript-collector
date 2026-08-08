@@ -172,10 +172,10 @@ Each zip contains redacted transcript files plus a `manifest.json` with source,
 contributor, timestamp, session metadata, and redaction counts.
 
 Successful uploads also create opaque per-transcript receipts under
-`<source>/<contributor>/_uploaded/<identity-hash>/<content-hash>`. The local UI
-and watcher list these receipts to detect exact uploaded content without
-downloading transcript archives. Archives created before receipt tracking was
-introduced are not marked until they are uploaded again.
+`<source>/<contributor>/_uploaded/<identity-hash>/<archive-hash>`. The archive
+hash covers both the source bytes and the redaction policy. Every upload path
+checks these receipts before creating an archive, so unchanged sessions are
+skipped consistently. Older receipt formats are not treated as exact matches.
 
 ## Configuration
 

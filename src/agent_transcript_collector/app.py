@@ -28,9 +28,7 @@ from .sources import SOURCES, detect_all, find_session, get_source
 from .uploader import (
     UploadBusy,
     UploadLock,
-    content_fingerprint,
-    is_uploaded,
-    list_receipt_versions,
+    partition_uploaded,
     upload_units as _upload_units,
 )
 from .watcher import (
@@ -140,7 +138,7 @@ def _run_upload_job(job_id, selected, contributor, redact_id):
                 try:
                     uploaded, unit_errors = _upload_units(
                         s3, source, sessions, contributor, redact_id,
-                        on_unit=lambda n: job.__setitem__("done", job["done"] + n))
+                        on_progress=lambda n: job.__setitem__("done", job["done"] + n))
                     with JOBS_LOCK:
                         job["uploads"].extend(uploaded)
                         job["errors"].extend(unit_errors)
@@ -172,6 +170,7 @@ async def uploaded_sessions(request: Request):
     """Return local session descriptors with upload receipts for a contributor."""
     body = await request.json()
     contributor = _safe_name(body.get("contributor_name", "anonymous"))
+    redact_id = bool(body.get("redact_identity", True))
     sessions = body.get("sessions", [])
     by_source: dict[str, list[dict]] = defaultdict(list)
     for item in sessions:
@@ -183,27 +182,38 @@ async def uploaded_sessions(request: Request):
         s3 = _make_s3_client()
         uploaded = []
         for source_id, source_sessions in by_source.items():
-            versions = list_receipt_versions(s3, source_id, contributor)
             source = get_source(source_id)
             resolved = {
                 (group.key, session.parent or None, session.id): session
                 for group in source.discover()
                 for session in group.sessions
             }
+            resolved_items = []
             for item in source_sessions:
                 session = resolved.get((
                     item.get("group", ""),
                     item.get("parent") or None,
                     item.get("session", ""),
                 ))
-                if session is None:
-                    continue
-                try:
-                    fingerprint = content_fingerprint(session)
-                except OSError:
-                    continue
-                if is_uploaded(versions, session, fingerprint):
-                    uploaded.append(item)
+                if session is not None:
+                    resolved_items.append((item, session))
+            _, found, _ = partition_uploaded(
+                s3,
+                source,
+                [session for _, session in resolved_items],
+                contributor,
+                redact_id,
+            )
+            found_ids = {
+                (session.group_key, session.parent or None, session.id)
+                for session in found
+            }
+            uploaded.extend(
+                item
+                for item, session in resolved_items
+                if (session.group_key, session.parent or None, session.id)
+                in found_ids
+            )
         return {"uploaded": uploaded}
     except Exception as e:
         return JSONResponse(

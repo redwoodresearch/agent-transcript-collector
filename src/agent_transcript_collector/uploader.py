@@ -26,6 +26,7 @@ from .s3client import S3_BUCKET
 UNIT_BYTES = int(os.environ.get("CTC_UNIT_BYTES", str(25 * 1024 * 1024)))
 UPLOAD_CONCURRENCY = max(1, int(os.environ.get("CTC_UPLOAD_CONCURRENCY", "4")))
 RECEIPT_DIR = "_uploaded"
+ARCHIVE_FORMAT_VERSION = 1
 
 
 class UploadBusy(RuntimeError):
@@ -57,9 +58,10 @@ class UploadLock:
             self._file = None
 
 
-def content_fingerprint(session) -> str:
-    """Hash the exact local bytes used to decide whether a version is new."""
-    return hashlib.sha256(Path(session.path).read_bytes()).hexdigest()
+def archive_fingerprint(raw_bytes: bytes, redact_id: bool) -> str:
+    """Identify the source bytes and processing policy used for an archive."""
+    policy = f"archive-v{ARCHIVE_FORMAT_VERSION}:redact-id={int(redact_id)}\0"
+    return hashlib.sha256(policy.encode() + raw_bytes).hexdigest()
 
 
 def _group_token(group_key: str) -> str:
@@ -84,36 +86,37 @@ def _receipt_key(
 
 def list_receipt_versions(
     s3, source_id: str, contributor: str
-) -> dict[str, set[str | None]]:
-    """Return uploaded content versions by opaque transcript identity.
-
-    A ``None`` version represents the identity-only receipt format used before
-    content-version tracking.
-    """
+) -> dict[str, set[str]]:
+    """Return uploaded archive versions by opaque transcript identity."""
     prefix = _receipt_prefix(source_id, contributor)
-    versions: dict[str, set[str | None]] = defaultdict(set)
+    versions: dict[str, set[str]] = defaultdict(set)
     paginator = s3.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
         for obj in page.get("Contents", []):
             suffix = obj["Key"][len(prefix):]
             parts = suffix.split("/")
-            if len(parts) == 1 and parts[0]:
-                versions[parts[0]].add(None)
-            elif len(parts) == 2 and all(parts):
+            if len(parts) == 2 and all(parts):
                 versions[parts[0]].add(parts[1])
     return dict(versions)
 
 
-def is_uploaded(
-    versions: dict[str, set[str | None]],
-    session,
-    fingerprint: str,
-    *,
-    accept_legacy: bool = True,
-) -> bool:
-    identity = _receipt_token(session.group_key, session.parent, session.id)
-    uploaded = versions.get(identity, set())
-    return fingerprint in uploaded or (accept_legacy and None in uploaded)
+def partition_uploaded(s3, source, sessions, contributor, redact_id=True):
+    """Split sessions into pending and uploaded using the shared receipt policy."""
+    versions = list_receipt_versions(s3, source.id, contributor)
+    pending, uploaded, errors = [], [], []
+    for session in sessions:
+        try:
+            raw_bytes = Path(session.path).read_bytes()
+        except OSError as exc:
+            errors.append(
+                {"source": source.id, "error": f"{session.id}: {exc}"}
+            )
+            continue
+        fingerprint = archive_fingerprint(raw_bytes, redact_id)
+        identity = _receipt_token(session.group_key, session.parent, session.id)
+        target = uploaded if fingerprint in versions.get(identity, set()) else pending
+        target.append(session)
+    return pending, uploaded, errors
 
 
 def _plan_units(sessions, unit_bytes: int | None = None):
@@ -154,7 +157,7 @@ def _unit_key(source, contributor, group_key, part, included) -> str:
 
 
 def _build_unit_zip(source, unit_sessions, contributor, redact_id=True):
-    """Build an archive and return its manifest plus included content versions."""
+    """Build an archive and return its manifest plus included archive versions."""
     buffer = io.BytesIO()
     manifest_sessions = []
     included: list[tuple[object, str]] = []
@@ -165,7 +168,8 @@ def _build_unit_zip(source, unit_sessions, contributor, redact_id=True):
                 raw_bytes = Path(session.path).read_bytes()
             except OSError:
                 continue
-            fingerprint = hashlib.sha256(raw_bytes).hexdigest()
+            content_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+            fingerprint = archive_fingerprint(raw_bytes, redact_id)
             raw = raw_bytes.decode("utf-8", errors="replace")
             included.append((session, fingerprint))
             raw, redaction_count = redact_jsonl_content(raw)
@@ -193,14 +197,16 @@ def _build_unit_zip(source, unit_sessions, contributor, redact_id=True):
                     "is_subagent": session.is_subagent,
                     "parent": session.parent,
                     "size_bytes": len(raw.encode("utf-8")),
-                    "content_sha256": fingerprint,
+                    "content_sha256": content_sha256,
                     "redactions": redaction_count,
                 }
             )
         manifest = {
+            "archive_format_version": ARCHIVE_FORMAT_VERSION,
             "source": source.id,
             "source_format": source.source_format,
             "contributor": contributor,
+            "redact_identity": redact_id,
             "uploaded_at": datetime.now(timezone.utc).isoformat(),
             "subagent_count": sum(
                 1 for session in manifest_sessions if session["is_subagent"]
@@ -218,13 +224,19 @@ def upload_units(
     sessions,
     contributor,
     redact_id=True,
-    on_unit=None,
+    on_progress=None,
     *,
     unit_bytes: int | None = None,
 ):
-    """Upload versioned archive units and receipts concurrently."""
-    units = list(_plan_units(sessions, unit_bytes))
-    uploaded, errors = [], []
+    """Upload sessions that do not already have matching receipts."""
+    sessions = list(sessions)
+    pending, already_uploaded, errors = partition_uploaded(
+        s3, source, sessions, contributor, redact_id
+    )
+    if on_progress:
+        on_progress(len(already_uploaded) + len(errors))
+    units = list(_plan_units(pending, unit_bytes))
+    uploaded = []
     if not units:
         return uploaded, errors
 
@@ -267,6 +279,6 @@ def upload_units(
                 errors.append(
                     {"source": source.id, "error": f"{type(exc).__name__}: {exc}"}
                 )
-            if on_unit:
-                on_unit(count)
+            if on_progress:
+                on_progress(count)
     return uploaded, errors

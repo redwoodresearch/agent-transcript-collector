@@ -167,7 +167,7 @@
   </label>
   <span id="history-status"></span>
   <label>
-    <input type="checkbox" id="identity-toggle" checked>
+    <input type="checkbox" id="identity-toggle" checked onchange="refreshUploaded()">
     Redact my username &amp; paths
   </label>
   <div class="spacer"></div>
@@ -420,6 +420,7 @@ async function refreshUploaded() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         contributor_name: contributorName,
+        redact_identity: document.getElementById('identity-toggle').checked,
         sessions: rows.map(sessionDescriptor),
       }),
     });

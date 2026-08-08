@@ -24,9 +24,6 @@ from .sources import SOURCES
 from .uploader import (
     UploadBusy,
     UploadLock,
-    content_fingerprint,
-    is_uploaded,
-    list_receipt_versions,
     upload_units,
 )
 
@@ -161,24 +158,6 @@ def discover_allowed(config: WatcherConfig):
     return discovered
 
 
-def pending_versions(s3, source, sessions, contributor: str):
-    """Return sessions whose exact current content has no versioned receipt."""
-    versions = list_receipt_versions(s3, source.id, contributor)
-    pending = []
-    errors = []
-    for session in sessions:
-        try:
-            fingerprint = content_fingerprint(session)
-        except OSError as exc:
-            errors.append(f"{session.id}: {exc}")
-            continue
-        if not is_uploaded(
-            versions, session, fingerprint, accept_legacy=False
-        ):
-            pending.append(session)
-    return pending, errors
-
-
 def _sso_hint(exc: Exception, profile: str) -> str:
     message = f"{type(exc).__name__}: {exc}"
     lower = message.lower()
@@ -212,16 +191,10 @@ def run_once(
         with UploadLock(lock_path):
             client = s3 or make_s3_client()
             for source, sessions in discover_allowed(config):
-                pending, read_errors = pending_versions(
-                    client, source, sessions, config.contributor
-                )
-                result["errors"].extend(read_errors)
-                if not pending:
-                    continue
                 uploaded, upload_errors = upload_units(
                     client,
                     source,
-                    pending,
+                    sessions,
                     config.contributor,
                     config.redact_identity,
                 )
