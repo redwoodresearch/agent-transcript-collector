@@ -23,3 +23,13 @@ def test_tui_subcommand_dispatches_to_terminal_browser(monkeypatch):
 
     assert cli.main(["tui", "--prefix", "mts-trans/alice/"]) == 0
     assert called == ["mts-trans/alice/"]
+
+
+def test_watcher_subcommand_dispatches_to_watcher(monkeypatch):
+    from agent_transcript_collector import watcher
+
+    called = []
+    monkeypatch.setattr(watcher, "main", lambda argv: called.append(argv) or 0)
+
+    assert cli.main(["watcher", "uninstall", "--purge"]) == 0
+    assert called == [["uninstall", "--purge"]]

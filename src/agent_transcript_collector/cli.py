@@ -33,6 +33,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default=f"{STORAGE_PREFIX}/",
         help=f"S3 prefix to browse (default: {STORAGE_PREFIX}/).",
     )
+
+    watcher = commands.add_parser("watcher", help="Manage automatic uploads.")
+    watcher_commands = watcher.add_subparsers(dest="watcher_command", required=True)
+    run = watcher_commands.add_parser("run", help="Run one upload check.")
+    run.add_argument("--config")
+    watcher_commands.add_parser("status", help="Show watcher status.")
+    uninstall = watcher_commands.add_parser("uninstall", help="Remove the watcher.")
+    uninstall.add_argument("--purge", action="store_true")
     return parser
 
 
@@ -42,6 +50,15 @@ def main(argv: list[str] | None = None) -> int:
         from .app import main as run_ui
 
         return run_ui(headless=args.all, contributor_name=args.name)
+    if args.command == "watcher":
+        from .watcher import main as run_watcher
+
+        watcher_args = [args.watcher_command]
+        if args.watcher_command == "run" and args.config:
+            watcher_args.extend(["--config", args.config])
+        if args.watcher_command == "uninstall" and args.purge:
+            watcher_args.append("--purge")
+        return run_watcher(watcher_args)
 
     from .tui import main as run_tui
 

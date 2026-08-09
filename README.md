@@ -49,13 +49,13 @@ Or install once so the commands are on your `PATH`:
 uv tool install 'git+https://github.com/redwoodresearch/agent-transcript-collector'
 ```
 
-Either way you get two commands:
+The user-facing command is `rr-trans`:
 
 | Command | Purpose |
 |---|---|
 | `rr-trans ui` | Local review UI, uploads, watcher setup |
 | `rr-trans tui` | Explore uploaded transcript folders in S3 |
-| `agent-transcript-watcher` | Watcher status and removal |
+| `rr-trans watcher` | Watcher status and removal |
 
 Examples below use the short names. If you prefer `uvx`, prefix each one with
 `uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector'`.
@@ -110,8 +110,8 @@ aws sso login --profile <profile>
 Status and removal are also available from the terminal:
 
 ```bash
-agent-transcript-watcher status
-agent-transcript-watcher uninstall
+rr-trans watcher status
+rr-trans watcher uninstall
 ```
 
 `uninstall` stops future runs but preserves your folder choices, last-run state,

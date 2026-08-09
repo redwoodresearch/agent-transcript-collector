@@ -84,6 +84,26 @@ def test_watcher_resolves_saved_labels_to_current_project_keys(monkeypatch):
     assert {group.group for group in resolved} == {"project--one", "project--two"}
 
 
+def test_installed_watcher_uses_the_unified_cli(tmp_path):
+    config = watcher.WatcherConfig(
+        uv_path="/usr/bin/uv",
+        package_spec="git+https://example.test/rr-trans",
+    )
+
+    assert watcher.watcher_command(config, tmp_path / "watcher.json") == [
+        "/usr/bin/uv",
+        "tool",
+        "run",
+        "--from",
+        "git+https://example.test/rr-trans",
+        "rr-trans",
+        "watcher",
+        "run",
+        "--config",
+        str(tmp_path / "watcher.json"),
+    ]
+
+
 def test_failed_launchd_install_removes_service_file(tmp_path, monkeypatch):
     service_path = tmp_path / "watcher.plist"
     monkeypatch.setattr(watcher, "launchd_path", lambda: service_path)
