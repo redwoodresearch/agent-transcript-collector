@@ -20,26 +20,26 @@
   h1 { font-size: 1.5rem; margin-bottom: 4px; }
   .subtitle { color: var(--text-muted); margin-bottom: 24px; font-size: 0.9rem; }
 
-  .controls {
-    display: flex; gap: 12px; align-items: center; margin-bottom: 20px;
-    flex-wrap: wrap;
-  }
-  .watcher-controls {
-    display: flex; gap: 10px; align-items: center; margin: -8px 0 20px;
-    padding: 10px 12px; background: rgba(88,166,255,0.05);
+  .settings-controls {
+    display: flex; gap: 8px; align-items: center; margin: 0 0 20px;
+    padding: 8px 10px; background: rgba(88,166,255,0.05);
     border: 1px solid var(--border); border-radius: 8px; flex-wrap: wrap;
   }
-  .watcher-controls .label { font-size: 0.85rem; font-weight: 600; }
+  .settings-controls .label { font-size: 0.8rem; font-weight: 600; }
+  .settings-controls button { padding: 5px 10px; font-size: 0.78rem; }
+  .name-setting {
+    display: flex; align-items: center; gap: 6px; color: var(--text-muted);
+    font-size: 0.78rem; white-space: nowrap;
+  }
   #watcher-status { color: var(--text-muted); font-size: 0.78rem; flex: 1; min-width: 220px; }
   .auto-upload {
     display: flex; align-items: center; gap: 4px; color: var(--text-muted);
     font-size: 0.72rem; white-space: nowrap;
   }
-  .controls label { font-size: 0.85rem; display: flex; align-items: center; gap: 6px; }
   #contributor-name:placeholder-shown { border-color: var(--yellow); }
-  .controls input[type="text"] {
+  #contributor-name {
     background: var(--surface); border: 1px solid var(--border); color: var(--text);
-    padding: 6px 10px; border-radius: 6px; font-size: 0.85rem;
+    width: 150px; padding: 4px 8px; border-radius: 6px; font-size: 0.8rem;
   }
   button {
     background: var(--accent); color: #000; border: none; padding: 8px 16px;
@@ -165,17 +165,14 @@
 <h1>Redwood Research Transcript Collector</h1>
 <p class="subtitle">Select the transcripts you'd like to share. Preview any session before deciding. Secrets and credentials are always redacted.</p>
 
-<div class="controls">
-  <label>
+<div class="settings-controls">
+  <span class="label">Settings</span>
+  <label class="name-setting">
     Your name:
     <input type="text" id="contributor-name" placeholder="your name"
            value="{{ default_contributor_name }}"
            oninput="onNameInput()">
   </label>
-</div>
-
-<div class="watcher-controls">
-  <span class="label">Auto upload</span>
   <span id="watcher-status">Checking status…</span>
   <div class="progress" id="upload-progress">
     <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
