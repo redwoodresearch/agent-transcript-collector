@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Agent Transcript Collector</title>
+<title>Redwood Research Transcript Collector</title>
 <style>
   :root {
     --bg: #0d1117; --surface: #161b22; --border: #30363d;
@@ -50,10 +50,12 @@
   button.secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
   button.secondary:hover { border-color: var(--accent); }
 
-  .project {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-    margin-bottom: 12px; overflow: hidden;
+  .project-list {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; overflow: hidden;
   }
+  .project { border-bottom: 1px solid var(--border); }
+  .project:last-child { border-bottom: none; }
   .project-header {
     display: flex; align-items: center; gap: 10px; padding: 12px 16px;
     cursor: pointer; user-select: none;
@@ -87,7 +89,7 @@
   .sessions.open { display: block; }
 
   .session {
-    display: flex; align-items: flex-start; gap: 10px; padding: 10px 16px 10px 72px;
+    display: flex; align-items: center; gap: 10px; padding: 8px 16px 8px 72px;
     border-bottom: 1px solid var(--border); font-size: 0.83rem;
   }
   .session:last-child { border-bottom: none; }
@@ -97,6 +99,15 @@
   }
   .session-summary:hover { color: var(--text); }
   .session-meta { color: var(--text-muted); font-size: 0.78rem; white-space: nowrap; }
+  .session-actions { width: 72px; display: flex; justify-content: flex-end; }
+  .session-upload { padding: 4px 10px; font-size: 0.75rem; }
+  .uploaded-icon {
+    display: none; align-items: center; justify-content: center; width: 24px; height: 24px;
+    color: var(--green); border: 1px solid var(--green); border-radius: 50%;
+    font-weight: 700; line-height: 1;
+  }
+  .session.uploaded .session-upload { display: none; }
+  .session.uploaded .uploaded-icon { display: inline-flex; }
 
   .preview-pane {
     position: fixed; top: 0; right: 0; width: 480px; height: 100vh;
@@ -150,12 +161,6 @@
     background: rgba(210,153,34,0.15); color: var(--yellow);
     border: 1px solid var(--yellow); border-radius: 4px; padding: 1px 5px; flex-shrink: 0;
   }
-  .uploaded-badge {
-    display: none; background: rgba(63,185,80,0.15); color: var(--green);
-    border-color: var(--green);
-  }
-  .session.uploaded .uploaded-badge { display: inline-block; }
-  #history-status { color: var(--text-muted); font-size: 0.75rem; }
   input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
   .spacer { flex: 1; }
   .body-pad { padding-bottom: 60px; }
@@ -163,7 +168,7 @@
 </head>
 <body class="body-pad">
 
-<h1>Agent Transcript Collector</h1>
+<h1>Redwood Research Transcript Collector</h1>
 <p class="subtitle">Select the transcripts you'd like to share. Preview any session before deciding. Secrets and credentials are always redacted.</p>
 
 <div class="controls">
@@ -173,7 +178,6 @@
            value="{{ default_contributor_name }}"
            oninput="onNameInput()">
   </label>
-  <span id="history-status"></span>
   <label>
     <input type="checkbox" id="identity-toggle" checked onchange="onIdentityInput()">
     Redact my username &amp; paths
@@ -183,16 +187,18 @@
 <div class="watcher-controls">
   <span class="label">Auto upload</span>
   <span id="watcher-status">Checking status…</span>
-  <button class="secondary" id="auto-upload-toggle" onclick="toggleAutoUpload()" disabled>Enable</button>
+  <button class="secondary" id="auto-upload-toggle" onclick="toggleAutoUpload()"
+          title="Enable or disable hourly automatic uploads" disabled>Enable</button>
 </div>
 
 {% if not projects %}
 <p class="empty">No transcripts found for any supported agent (Claude Code, Codex, Pi) on this machine.</p>
 {% endif %}
 
+{% if projects %}<div class="project-list">{% endif %}
 {% for project in projects %}
 <div class="project" data-project="{{ project.key }}">
-  <div class="project-header" onclick="toggleProject(this)">
+  <div class="project-header" onclick="toggleProject(this)" title="Expand or collapse this project">
     <span class="arrow project-arrow">&#9654;</span>
     <div class="project-title">
       <div class="project-name">{{ project.label }}</div>
@@ -202,7 +208,6 @@
     </div>
     <span class="project-meta">
       {{ project.session_count }} session{{ 's' if project.session_count != 1 else '' }}
-      &middot; {{ project.total_size_human }}
       &middot; <span class="project-pending">checking uploads…</span>
     </span>
     <label class="auto-upload" title="Automatically upload new transcripts from this project"
@@ -215,10 +220,10 @@
   <div class="project-body">
     {% for harness in project.harnesses %}
     <div class="harness" data-source="{{ harness.source }}" data-group="{{ harness.group }}">
-      <div class="harness-header" onclick="toggleHarness(this)">
+      <div class="harness-header" onclick="toggleHarness(this)" title="Expand or collapse {{ harness.source_label }} transcripts">
         <span class="arrow harness-arrow">&#9654;</span>
         <span class="harness-label">{{ harness.source_label }}</span>
-        <span class="harness-meta">{{ harness.session_count }} session{{ 's' if harness.session_count != 1 else '' }} &middot; {{ harness.total_size_human }}</span>
+        <span class="harness-meta">{{ harness.session_count }} session{{ 's' if harness.session_count != 1 else '' }}</span>
       </div>
       <div class="sessions">
       {% for session in harness.sessions %}
@@ -228,13 +233,18 @@
            data-session="{{ session.id }}"
            data-parent="{{ session.parent or '' }}">
         {% if session.is_subagent %}<span class="badge" title="Spawned task subagent">subagent</span>{% endif %}
-        <span class="badge uploaded-badge" title="Previously uploaded by this contributor">uploaded</span>
         <span class="session-summary" onclick="previewSession(this)" title="Click to preview">
           {{ session.first_message }}
         </span>
         <span class="session-meta">
-          {{ session.message_count }} msgs &middot; {{ session.size_human }}
+          {{ session.message_count }} msgs
           {% if session.modified %}&middot; {{ session.modified.strftime('%b %d') }}{% endif %}
+        </span>
+        <span class="session-actions">
+          <button class="session-upload secondary" onclick="uploadTranscript(this); event.stopPropagation()"
+                  title="Upload only this transcript">Upload</button>
+          <span class="uploaded-icon" role="img" aria-label="Uploaded"
+                title="This transcript is already uploaded">&#10003;</span>
         </span>
       </div>
       {% endfor %}
@@ -244,12 +254,13 @@
   </div>
 </div>
 {% endfor %}
+{% if projects %}</div>{% endif %}
 
 <div class="preview-pane" id="preview-pane">
   <div class="preview-header">
     <span id="preview-title">Preview</span>
     <span id="preview-redaction-count" style="color: var(--yellow); font-size: 0.8rem;"></span>
-    <button class="secondary" onclick="closePreview()">Close</button>
+    <button class="secondary" onclick="closePreview()" title="Close transcript preview">Close</button>
   </div>
   <div class="preview-body" id="preview-body"></div>
 </div>
@@ -262,7 +273,7 @@
     <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
     <span id="progress-text"></span>
   </div>
-  <button id="upload-btn" onclick="uploadNow()" disabled>Upload now</button>
+  <button id="upload-btn" onclick="uploadNow()" title="Upload pending transcripts from selected projects" disabled>Upload now</button>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -465,10 +476,8 @@ async function refreshSettings() {
 
 async function refreshUploaded() {
   const request = ++historyRequest;
-  const status = document.getElementById('history-status');
   const rows = Array.from(document.querySelectorAll('.session'));
   const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
-  status.textContent = 'Checking upload history…';
   historyAvailable = false;
   updatePendingCounts(false);
   try {
@@ -485,7 +494,6 @@ async function refreshUploaded() {
     if (request !== historyRequest) return;
     if (!resp.ok) {
       rows.forEach(row => row.classList.remove('uploaded'));
-      status.textContent = 'Upload history unavailable';
       updatePendingCounts(false);
       return;
     }
@@ -493,12 +501,10 @@ async function refreshUploaded() {
       [item.source, item.group, item.parent || '', item.session].join('|')));
     rows.forEach(row => row.classList.toggle('uploaded', uploaded.has(sessionKey(row))));
     historyAvailable = true;
-    status.textContent = `${uploaded.size} uploaded · ${rows.length - uploaded.size} pending`;
     updatePendingCounts(true);
   } catch (e) {
     if (request !== historyRequest) return;
     rows.forEach(row => row.classList.remove('uploaded'));
-    status.textContent = 'Upload history unavailable';
     updatePendingCounts(false);
   }
 }
@@ -529,7 +535,14 @@ function updatePendingCounts(available = historyAvailable) {
     }
   });
 
-  if (!available) {
+  document.querySelectorAll('.session-upload').forEach(upload => {
+    upload.disabled = uploadBusy || !available || upload.closest('.session').classList.contains('uploaded');
+  });
+
+  if (uploadBusy) {
+    button.textContent = 'Uploading…';
+    button.disabled = true;
+  } else if (!available) {
     global.textContent = 'Upload status unavailable';
     button.textContent = 'Upload now';
     button.disabled = true;
@@ -546,14 +559,6 @@ function updatePendingCounts(available = historyAvailable) {
     button.textContent = `Upload ${selectedPending} now`;
     button.disabled = false;
   }
-}
-
-function humanSize(bytes) {
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let i = 0;
-  let size = bytes;
-  while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
-  return size.toFixed(1) + ' ' + units[i];
 }
 
 async function previewSession(el) {
@@ -618,25 +623,32 @@ function showToast(msg, isError) {
 // Upload runs as a background job on the server; the page starts it, then polls
 // for progress. Closing the tab doesn't abort it — reopening re-attaches.
 let pollTimer = null;
+let uploadBusy = false;
 
 function saveJob(id) { try { localStorage.setItem('ctc_job', id); } catch (e) {} }
 function clearJob() { try { localStorage.removeItem('ctc_job'); } catch (e) {} }
 function loadJob() { try { return localStorage.getItem('ctc_job'); } catch (e) { return null; } }
 
-async function uploadNow() {
-  const btn = document.getElementById('upload-btn');
-  btn.disabled = true;
-  btn.textContent = 'Starting…';
-
-  const selected = Array.from(document.querySelectorAll('.project'))
+function uploadNow() {
+  const rows = Array.from(document.querySelectorAll('.project'))
     .flatMap(project => consentedHarnesses(project))
-    .flatMap(harness => Array.from(harness.querySelectorAll('.session:not(.uploaded)')))
-    .map(sessionDescriptor);
+    .flatMap(harness => Array.from(harness.querySelectorAll('.session:not(.uploaded)')));
+  startUpload(rows);
+}
+
+function uploadTranscript(button) {
+  startUpload([button.closest('.session')]);
+}
+
+async function startUpload(rows) {
+  const selected = rows.map(sessionDescriptor);
   if (!selected.length) {
     showToast('Selected projects are already uploaded');
     resetUploadBtn();
     return;
   }
+  uploadBusy = true;
+  updatePendingCounts();
 
   let contributorName = document.getElementById('contributor-name').value.trim();
   if (!contributorName) {
@@ -674,7 +686,8 @@ async function uploadNow() {
 }
 
 function trackJob(jobId) {
-  document.getElementById('upload-btn').disabled = true;
+  uploadBusy = true;
+  updatePendingCounts();
   showProgress(true);
   clearInterval(pollTimer);
   pollTimer = setInterval(async () => {
@@ -711,9 +724,8 @@ function finishToast(j) {
   const up = j.uploads.length, failed = (j.errors || []).length;
   if (!up && failed) { showToast((j.errors[0] && j.errors[0].error) || 'Upload failed', true); return; }
   const sessions = j.uploads.reduce((a, u) => a + u.transcript_count, 0);
-  const bytes = j.uploads.reduce((a, u) => a + u.zip_size_bytes, 0);
   const red = j.uploads.reduce((a, u) => a + u.redactions, 0);
-  let msg = `Uploaded ${sessions} transcript${sessions !== 1 ? 's' : ''} (${humanSize(bytes)}, ${red} redactions)`;
+  let msg = `Uploaded ${sessions} transcript${sessions !== 1 ? 's' : ''} (${red} redactions)`;
   if (failed) msg += ` — ${failed} failed`;
   showToast(msg, failed > 0);
 }
@@ -724,6 +736,7 @@ function showProgress(on) {
 }
 function stopTracking() { clearInterval(pollTimer); pollTimer = null; showProgress(false); }
 function resetUploadBtn() {
+  uploadBusy = false;
   updatePendingCounts();
 }
 

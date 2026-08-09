@@ -56,6 +56,10 @@ def detect_all() -> list[dict]:
 
 def detect_projects() -> list[dict]:
     """Discover transcripts as project -> harness -> sessions for the local UI."""
+
+    def modified_at(session: Session) -> float:
+        return session.modified.timestamp() if session.modified else 0
+
     discovered: list[tuple[Source, Group]] = []
     directories_by_label: dict[str, set[str]] = {}
     for source in SOURCES:
@@ -78,25 +82,39 @@ def detect_projects() -> list[dict]:
                 "label": group.label,
                 "directory": directory,
                 "session_count": 0,
-                "total_size_bytes": 0,
+                "latest_modified": 0,
                 "harnesses": [],
             }
+        sessions = sorted(group.sessions, key=modified_at, reverse=True)
+        latest_modified = max(
+            (modified_at(session) for session in sessions), default=0
+        )
         project["session_count"] += group.session_count
-        project["total_size_bytes"] += group.total_size_bytes
+        project["latest_modified"] = max(project["latest_modified"], latest_modified)
         project["harnesses"].append({
             "source": source.id,
             "source_label": source.label,
             "group": group.key,
             "session_count": group.session_count,
-            "total_size_human": group.total_size_human,
-            "sessions": [session.as_dict() for session in group.sessions],
+            "latest_modified": latest_modified,
+            "sessions": [session.as_dict() for session in sessions],
         })
 
     projects = list(projects_by_identity.values())
     for project in projects:
-        project["total_size_human"] = human_size(project.pop("total_size_bytes"))
-        project["harnesses"].sort(key=lambda harness: harness["source_label"].lower())
-    projects.sort(key=lambda project: (project["label"].lower(), project["directory"] or ""))
+        project["harnesses"].sort(
+            key=lambda harness: (
+                -harness["latest_modified"],
+                harness["source_label"].lower(),
+            )
+        )
+    projects.sort(
+        key=lambda project: (
+            -project["latest_modified"],
+            project["label"].lower(),
+            project["directory"] or "",
+        )
+    )
     return projects
 
 
