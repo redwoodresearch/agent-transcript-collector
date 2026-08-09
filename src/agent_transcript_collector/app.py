@@ -352,7 +352,7 @@ async def put_watcher(request: Request):
             contributor=_safe_name(body.get("contributor_name", "anonymous")),
             aws_profile=existing.aws_profile if existing else selected_profile(),
             groups=groups,
-            source_env=existing.source_env if existing else capture_source_env(),
+            source_env=capture_source_env(),
             package_spec=(
                 existing.package_spec if existing else WatcherConfig.package_spec
             ),

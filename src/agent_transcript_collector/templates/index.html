@@ -348,6 +348,8 @@ function loadName() { try { return localStorage.getItem('ctc_name'); } catch (e)
 let autoUploadEnabled = false;
 let watcherConfigured = false;
 let watcherGroups = new Set();
+let nameRevision = 0;
+let syncedNameRevision = 0;
 
 function harnessKey(harness) {
   return `${harness.dataset.source}|${harness.dataset.group}`;
@@ -376,17 +378,23 @@ function selectedAutoUploadGroups() {
 }
 
 async function updateAutoUploadConfig(enabled) {
+  const submittedNameRevision = nameRevision;
+  const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
   const resp = await fetch('/api/watcher', {
     method: 'PUT',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
       groups: selectedAutoUploadGroups(),
-      contributor_name: document.getElementById('contributor-name').value.trim() || 'anonymous',
+      contributor_name: contributorName,
       enabled,
     }),
   });
   const data = await resp.json();
   if (!resp.ok) throw new Error(data.error || 'Could not update auto upload');
+  const currentName = document.getElementById('contributor-name').value.trim() || 'anonymous';
+  if (nameRevision === submittedNameRevision && currentName === contributorName) {
+    syncedNameRevision = submittedNameRevision;
+  }
   return data;
 }
 
@@ -411,10 +419,12 @@ async function loadWatcher() {
     watcherConfigured = Boolean(data.config);
     if (data.config) {
       const name = data.config.contributor || 'anonymous';
-      const settingsChanged = document.getElementById('contributor-name').value !== name;
-      document.getElementById('contributor-name').value = name;
-      saveName(name);
-      if (settingsChanged) refreshUploaded();
+      if (nameRevision === syncedNameRevision) {
+        const settingsChanged = document.getElementById('contributor-name').value !== name;
+        document.getElementById('contributor-name').value = name;
+        saveName(name);
+        if (settingsChanged) refreshUploaded();
+      }
     }
     watcherGroups = new Set(
       ((data.config && data.config.groups) || []).map(item => `${item.source}|${item.group}`));
@@ -520,6 +530,7 @@ let historyTimer = null;
 let historyRequest = 0;
 let historyAvailable = false;
 function onNameInput() {
+  nameRevision += 1;
   saveName(document.getElementById('contributor-name').value.trim());
   clearTimeout(historyTimer);
   historyTimer = setTimeout(refreshSettings, 400);
