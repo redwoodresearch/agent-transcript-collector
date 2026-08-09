@@ -30,7 +30,7 @@
     border: 1px solid var(--border); border-radius: 8px; flex-wrap: wrap;
   }
   .watcher-controls .label { font-size: 0.85rem; font-weight: 600; }
-  #watcher-status { color: var(--text-muted); font-size: 0.78rem; flex: 1; }
+  #watcher-status { color: var(--text-muted); font-size: 0.78rem; flex: 1; min-width: 220px; }
   .auto-upload {
     display: flex; align-items: center; gap: 4px; color: var(--text-muted);
     font-size: 0.72rem; white-space: nowrap;
@@ -99,8 +99,15 @@
   }
   .session-summary:hover { color: var(--text); }
   .session-meta { color: var(--text-muted); font-size: 0.78rem; white-space: nowrap; }
-  .session-actions { width: 72px; display: flex; justify-content: flex-end; }
+  .session-actions {
+    width: 104px; display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  }
   .session-upload { padding: 4px 10px; font-size: 0.75rem; }
+  .subagent-icon {
+    display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px;
+    color: var(--yellow); border: 1px solid var(--yellow); border-radius: 50%;
+    font-weight: 700; line-height: 1; flex-shrink: 0;
+  }
   .uploaded-icon {
     display: none; align-items: center; justify-content: center; width: 24px; height: 24px;
     color: var(--green); border: 1px solid var(--green); border-radius: 50%;
@@ -133,15 +140,9 @@
   .preview-msg .role { font-weight: 600; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 4px; }
   .redacted { background: rgba(248,81,73,0.15); color: var(--red); padding: 1px 4px; border-radius: 3px; }
 
-  .status-bar {
-    position: fixed; bottom: 0; left: 0; right: 0;
-    background: var(--surface); border-top: 1px solid var(--border);
-    padding: 10px 24px; display: flex; justify-content: space-between; align-items: center;
-    z-index: 101;
+  .progress {
+    display: none; align-items: center; gap: 8px; flex: 0 1 260px; min-width: 180px;
   }
-  .status-left { font-size: 0.85rem; }
-  .status-count { color: var(--accent); font-weight: 600; }
-  .progress { display: none; align-items: center; gap: 8px; flex: 1; margin: 0 16px; }
   .progress.show { display: flex; }
   .bar { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
   .bar-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.3s; }
@@ -156,17 +157,10 @@
   .toast.show { display: block; }
 
   .empty { color: var(--text-muted); padding: 40px 0; text-align: center; }
-  .badge {
-    font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.03em;
-    background: rgba(210,153,34,0.15); color: var(--yellow);
-    border: 1px solid var(--yellow); border-radius: 4px; padding: 1px 5px; flex-shrink: 0;
-  }
   input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
-  .spacer { flex: 1; }
-  .body-pad { padding-bottom: 60px; }
 </style>
 </head>
-<body class="body-pad">
+<body>
 
 <h1>Redwood Research Transcript Collector</h1>
 <p class="subtitle">Select the transcripts you'd like to share. Preview any session before deciding. Secrets and credentials are always redacted.</p>
@@ -187,6 +181,12 @@
 <div class="watcher-controls">
   <span class="label">Auto upload</span>
   <span id="watcher-status">Checking status…</span>
+  <div class="progress" id="upload-progress">
+    <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
+    <span id="progress-text"></span>
+  </div>
+  <button id="upload-btn" onclick="uploadNow()"
+          title="Upload pending transcripts from selected projects" disabled>Upload now</button>
   <button class="secondary" id="auto-upload-toggle" onclick="toggleAutoUpload()"
           title="Enable or disable hourly automatic uploads" disabled>Enable</button>
 </div>
@@ -232,7 +232,6 @@
            data-group="{{ harness.group }}"
            data-session="{{ session.id }}"
            data-parent="{{ session.parent or '' }}">
-        {% if session.is_subagent %}<span class="badge" title="Spawned task subagent">subagent</span>{% endif %}
         <span class="session-summary" onclick="previewSession(this)" title="Click to preview">
           {{ session.first_message }}
         </span>
@@ -241,6 +240,10 @@
           {% if session.modified %}&middot; {{ session.modified.strftime('%b %d') }}{% endif %}
         </span>
         <span class="session-actions">
+          {% if session.is_subagent %}
+          <span class="subagent-icon" role="img" aria-label="Subagent transcript"
+                title="This transcript was created by a subagent">&#8627;</span>
+          {% endif %}
           <button class="session-upload secondary" onclick="uploadTranscript(this); event.stopPropagation()"
                   title="Upload only this transcript">Upload</button>
           <span class="uploaded-icon" role="img" aria-label="Uploaded"
@@ -263,17 +266,6 @@
     <button class="secondary" onclick="closePreview()" title="Close transcript preview">Close</button>
   </div>
   <div class="preview-body" id="preview-body"></div>
-</div>
-
-<div class="status-bar">
-  <div class="status-left">
-    <span class="status-count" id="pending-upload-count">Checking uploads…</span>
-  </div>
-  <div class="progress" id="upload-progress">
-    <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
-    <span id="progress-text"></span>
-  </div>
-  <button id="upload-btn" onclick="uploadNow()" title="Upload pending transcripts from selected projects" disabled>Upload now</button>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -511,7 +503,6 @@ async function refreshUploaded() {
 
 function updatePendingCounts(available = historyAvailable) {
   const button = document.getElementById('upload-btn');
-  const global = document.getElementById('pending-upload-count');
   let selectedPending = 0;
   let selectedProjects = 0;
 
@@ -543,19 +534,15 @@ function updatePendingCounts(available = historyAvailable) {
     button.textContent = 'Uploading…';
     button.disabled = true;
   } else if (!available) {
-    global.textContent = 'Upload status unavailable';
     button.textContent = 'Upload now';
     button.disabled = true;
   } else if (!selectedProjects) {
-    global.textContent = 'Select projects for auto upload';
     button.textContent = 'Upload now';
     button.disabled = true;
   } else if (!selectedPending) {
-    global.textContent = 'Selected projects are up to date';
     button.textContent = 'Everything uploaded';
     button.disabled = true;
   } else {
-    global.textContent = `${selectedPending} session${selectedPending !== 1 ? 's' : ''} need upload`;
     button.textContent = `Upload ${selectedPending} now`;
     button.disabled = false;
   }
