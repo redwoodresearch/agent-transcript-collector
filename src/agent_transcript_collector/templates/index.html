@@ -102,6 +102,18 @@
   .session-actions {
     width: 104px; display: flex; align-items: center; justify-content: flex-end; gap: 8px;
   }
+  .icon-tooltip { position: relative; }
+  .icon-tooltip::after {
+    content: attr(data-tooltip); position: absolute; right: 0; bottom: calc(100% + 7px);
+    z-index: 20; padding: 5px 8px; border: 1px solid var(--border); border-radius: 5px;
+    background: #010409; color: var(--text); font-size: 0.72rem; font-weight: 400;
+    line-height: 1.2; white-space: nowrap; pointer-events: none;
+    opacity: 0; visibility: hidden; transform: translateY(2px);
+    transition: opacity 0.12s, transform 0.12s, visibility 0.12s;
+  }
+  .icon-tooltip:hover::after, .icon-tooltip:focus-visible::after {
+    opacity: 1; visibility: visible; transform: translateY(0);
+  }
   .session-upload { padding: 4px 10px; font-size: 0.75rem; }
   .subagent-icon {
     display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px;
@@ -234,13 +246,13 @@
         </span>
         <span class="session-actions">
           {% if session.is_subagent %}
-          <span class="subagent-icon" role="img" aria-label="Subagent transcript"
-                title="This transcript was created by a subagent">&#8627;</span>
+          <span class="subagent-icon icon-tooltip" role="img" tabindex="0"
+                aria-label="Subagent transcript" data-tooltip="Created by a subagent">&#8627;</span>
           {% endif %}
           <button class="session-upload secondary" onclick="uploadTranscript(this); event.stopPropagation()"
                   title="Upload only this transcript">Upload</button>
-          <span class="uploaded-icon" role="img" aria-label="Uploaded"
-                title="This transcript is already uploaded">&#10003;</span>
+          <span class="uploaded-icon icon-tooltip" role="img" tabindex="0"
+                aria-label="Uploaded" data-tooltip="Already uploaded">&#10003;</span>
         </span>
       </div>
       {% endfor %}
