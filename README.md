@@ -9,7 +9,7 @@ to `s3://rr-agent-transcripts` in `us-east-1`.
 - [Prerequisites](#prerequisites)
 - [Install](#install)
 - [Upload transcripts](#upload-transcripts)
-- [Automatic hourly uploads](#automatic-hourly-uploads)
+- [Automatic uploads](#automatic-uploads)
 - [Browse uploaded transcripts](#browse-uploaded-transcripts)
 - [What gets collected](#what-gets-collected)
 - [Privacy and redaction](#privacy-and-redaction)
@@ -73,16 +73,16 @@ free port is used). Preview the transcripts, select the ones you want to share,
 enter your name, and click **Upload Selected**. Transcripts already uploaded
 under that contributor name are marked **uploaded**.
 
-## Automatic hourly uploads
+## Automatic uploads
 
-The review UI can install a per-user hourly watcher on macOS or Linux:
+The review UI can install a per-user watcher on macOS or Linux:
 
 1. Enter the contributor name that should own the uploads.
-2. Check **hourly** beside each folder you consent to share.
-3. Click **Install / Update**.
+2. Check **auto upload** beside each folder you consent to share.
+3. Click **Enable**.
 
 The watcher uploads every existing transcript in those exact folders, then checks
-about once an hour for new transcripts or changed content. A transcript that
+once a minute for new transcripts or changed content. A transcript that
 grows after an upload is stored as a new content version; unchanged content is
 skipped. Selecting a folder does not implicitly select similarly named or
 descendant folders.

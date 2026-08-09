@@ -1,4 +1,4 @@
-"""Persisted consent and native hourly watcher installation."""
+"""Persisted consent and native automatic watcher installation."""
 
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ from .uploader import (
 PACKAGE_SPEC = "git+https://github.com/redwoodresearch/agent-transcript-collector@main"
 LAUNCHD_LABEL = "com.redwoodresearch.agent-transcript-collector"
 SYSTEMD_NAME = "agent-transcript-collector"
+WATCH_INTERVAL_SECONDS = 60
 SOURCE_ENV_VARS = (
     "CLAUDE_CONFIG_DIR",
     "CODEX_HOME",
@@ -232,7 +233,7 @@ def run_once(
 def _find_uv() -> str:
     uv = shutil.which("uv")
     if not uv:
-        raise RuntimeError("uv is required to install the hourly watcher")
+        raise RuntimeError("uv is required to install the automatic watcher")
     return uv
 
 
@@ -272,7 +273,7 @@ def render_launchd(config: WatcherConfig, config_path: Path) -> bytes:
     payload = {
         "Label": LAUNCHD_LABEL,
         "ProgramArguments": watcher_command(config, config_path),
-        "StartInterval": 3600,
+        "StartInterval": WATCH_INTERVAL_SECONDS,
         "RunAtLoad": True,
         "EnvironmentVariables": environment,
         "StandardOutPath": str(log),
@@ -306,11 +307,12 @@ def render_systemd(config: WatcherConfig, config_path: Path) -> tuple[bytes, byt
     )
     timer = (
         "[Unit]\n"
-        "Description=Upload accepted coding-agent transcripts hourly\n\n"
+        "Description=Upload accepted coding-agent transcripts every minute\n\n"
         "[Timer]\n"
-        "OnCalendar=hourly\n"
+        "OnBootSec=0\n"
+        f"OnUnitActiveSec={WATCH_INTERVAL_SECONDS}s\n"
+        "AccuracySec=1s\n"
         "Persistent=true\n"
-        "RandomizedDelaySec=5m\n"
         f"Unit={SYSTEMD_NAME}.service\n\n"
         "[Install]\n"
         "WantedBy=timers.target\n"
@@ -328,7 +330,7 @@ def install(
     """Persist consent and install/reload the native per-user timer.
 
     Activation failures roll the unit files back, because `status` reads
-    installed state from their presence and would otherwise report an hourly job
+    installed state from their presence and would otherwise report a scheduled job
     that never loaded.
     """
     platform = platform or sys.platform
