@@ -84,12 +84,12 @@ class PreparedTranscript:
     key: str
 
 
-def transcript_fingerprint(raw_bytes: bytes, redact_id: bool) -> str:
-    """Identify source content and the redaction policy applied to it."""
+def transcript_fingerprint(raw_bytes: bytes) -> str:
+    """Identify source content under the always-redacted upload policy."""
     # Fingerprints identify source bytes, not the surrounding S3 layout or
     # manifest schema. Keep this namespace stable across storage refactors so
     # already-uploaded content remains recognizable.
-    policy = f"archive-v{FINGERPRINT_VERSION}:redact-id={int(redact_id)}\0"
+    policy = f"archive-v{FINGERPRINT_VERSION}:redact-id=1\0"
     return hashlib.sha256(policy.encode() + raw_bytes).hexdigest()
 
 
@@ -142,9 +142,9 @@ def list_uploaded_keys(s3, contributor: str) -> set[str]:
     return keys
 
 
-def _prepare(source, session, contributor: str, redact_id: bool) -> PreparedTranscript:
+def _prepare(source, session, contributor: str) -> PreparedTranscript:
     raw_bytes = Path(session.path).read_bytes()
-    fingerprint = transcript_fingerprint(raw_bytes, redact_id)
+    fingerprint = transcript_fingerprint(raw_bytes)
     key = transcript_key(contributor, source.id, session, fingerprint)
     return PreparedTranscript(session, raw_bytes, fingerprint, key)
 
@@ -154,7 +154,6 @@ def partition_transcripts(
     source,
     sessions,
     contributor: str,
-    redact_id: bool = True,
     uploaded_keys: set[str] | None = None,
 ):
     """Split current transcript versions into pending and already uploaded."""
@@ -168,7 +167,7 @@ def partition_transcripts(
     errors = []
     for session in sessions:
         try:
-            prepared = _prepare(source, session, contributor, redact_id)
+            prepared = _prepare(source, session, contributor)
         except OSError as exc:
             errors.append({"source": source.id, "error": f"{session.id}: {exc}"})
             continue
@@ -179,21 +178,18 @@ def partition_transcripts(
     return pending, uploaded, errors
 
 
-def _build_transcript_zip(
-    source, prepared: PreparedTranscript, contributor: str, redact_id: bool = True
-):
+def _build_transcript_zip(source, prepared: PreparedTranscript, contributor: str):
     session = prepared.session
     raw = prepared.raw_bytes.decode("utf-8", errors="replace")
     content_sha256 = hashlib.sha256(prepared.raw_bytes).hexdigest()
     raw, redaction_count = redact_jsonl_content(raw)
     group_key, group_label = session.group_key, session.group_label
-    if redact_id:
-        raw, count = redact_identity(raw)
-        redaction_count += count
-        group_key, count = redact_path_token(group_key)
-        redaction_count += count
-        group_label, count = redact_path_token(group_label)
-        redaction_count += count
+    raw, count = redact_identity(raw)
+    redaction_count += count
+    group_key, count = redact_path_token(group_key)
+    redaction_count += count
+    group_label, count = redact_path_token(group_label)
+    redaction_count += count
 
     suffix = Path(session.path).suffix.lower()
     if suffix not in {".jsonl", ".txt"}:
@@ -212,7 +208,7 @@ def _build_transcript_zip(
         "version": {
             "fingerprint": prepared.fingerprint,
             "content_sha256": content_sha256,
-            "redact_identity": redact_id,
+            "redact_identity": True,
             "uploaded_at": datetime.now(timezone.utc).isoformat(),
         },
         "size_bytes": len(raw.encode("utf-8")),
@@ -230,7 +226,6 @@ def upload_transcripts(
     source,
     sessions,
     contributor: str,
-    redact_id: bool = True,
     on_progress=None,
     uploaded_keys: set[str] | None = None,
 ):
@@ -241,7 +236,7 @@ def upload_transcripts(
         else list_uploaded_keys(s3, contributor)
     )
     pending, uploaded, errors = partition_transcripts(
-        s3, source, list(sessions), contributor, redact_id, existing
+        s3, source, list(sessions), contributor, existing
     )
     if on_progress:
         on_progress(len(uploaded) + len(errors))
@@ -249,9 +244,7 @@ def upload_transcripts(
         return [], errors
 
     def upload_one(prepared: PreparedTranscript):
-        zip_bytes, manifest = _build_transcript_zip(
-            source, prepared, contributor, redact_id
-        )
+        zip_bytes, manifest = _build_transcript_zip(source, prepared, contributor)
         s3.put_object(
             Bucket=S3_BUCKET,
             Key=prepared.key,

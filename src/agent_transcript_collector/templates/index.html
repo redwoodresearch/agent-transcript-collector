@@ -172,10 +172,6 @@
            value="{{ default_contributor_name }}"
            oninput="onNameInput()">
   </label>
-  <label>
-    <input type="checkbox" id="identity-toggle" checked onchange="onIdentityInput()">
-    Redact my username &amp; paths
-  </label>
 </div>
 
 <div class="watcher-controls">
@@ -340,7 +336,6 @@ async function updateAutoUploadConfig(enabled) {
     body: JSON.stringify({
       groups: selectedAutoUploadGroups(),
       contributor_name: document.getElementById('contributor-name').value.trim() || 'anonymous',
-      redact_identity: document.getElementById('identity-toggle').checked,
       enabled,
     }),
   });
@@ -358,12 +353,8 @@ async function loadWatcher() {
     watcherConfigured = Boolean(data.config);
     if (data.config) {
       const name = data.config.contributor || 'anonymous';
-      const redact = Boolean(data.config.redact_identity);
-      const settingsChanged =
-        document.getElementById('contributor-name').value !== name ||
-        document.getElementById('identity-toggle').checked !== redact;
+      const settingsChanged = document.getElementById('contributor-name').value !== name;
       document.getElementById('contributor-name').value = name;
-      document.getElementById('identity-toggle').checked = redact;
       saveName(name);
       if (settingsChanged) refreshUploaded();
     }
@@ -451,10 +442,6 @@ function onNameInput() {
   historyTimer = setTimeout(refreshSettings, 400);
 }
 
-function onIdentityInput() {
-  refreshSettings();
-}
-
 async function refreshSettings() {
   refreshUploaded();
   if (!watcherConfigured) return;
@@ -478,7 +465,6 @@ async function refreshUploaded() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         contributor_name: contributorName,
-        redact_identity: document.getElementById('identity-toggle').checked,
         sessions: rows.map(sessionDescriptor),
       }),
     });
@@ -556,14 +542,13 @@ async function previewSession(el) {
   const body = document.getElementById('preview-body');
   const title = document.getElementById('preview-title');
   const redactCount = document.getElementById('preview-redaction-count');
-  const identity = document.getElementById('identity-toggle').checked;
 
   body.innerHTML = '<p style="color: var(--text-muted)">Loading...</p>';
   pane.classList.add('open');
   title.textContent = session.substring(0, 8) + '...';
 
   try {
-    const q = new URLSearchParams({ source, group, session, parent, identity });
+    const q = new URLSearchParams({ source, group, session, parent });
     const resp = await fetch('/api/preview?' + q.toString());
     const data = await resp.json();
 
@@ -649,13 +634,11 @@ async function startUpload(rows) {
   }
   saveName(contributorName);
   contributorName = contributorName || 'anonymous';
-  const redactIdentity = document.getElementById('identity-toggle').checked;
-
   try {
     const resp = await fetch('/api/upload', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ selected, contributor_name: contributorName, redact_identity: redactIdentity }),
+      body: JSON.stringify({ selected, contributor_name: contributorName }),
     });
     const data = await resp.json();
     if (resp.status === 409) {            // already running — attach to it

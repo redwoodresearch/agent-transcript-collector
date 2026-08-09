@@ -93,11 +93,8 @@ async def index():
 
 
 @app.get("/api/preview")
-async def preview_session(
-    source: str, group: str, session: str, parent: str = "", identity: bool = True
-):
-    """Preview a session's messages. Secrets are always redacted; identity is
-    the only optional pass."""
+async def preview_session(source: str, group: str, session: str, parent: str = ""):
+    """Preview a session's messages with secrets and identity redacted."""
     sess = find_session(source, group, session, parent or None)
     src = get_source(source)
     if sess is None or src is None:
@@ -105,10 +102,9 @@ async def preview_session(
 
     raw = Path(sess.path).read_text(encoding="utf-8", errors="replace")
 
-    raw, redaction_count = redact_jsonl_content(raw)  # always — secrets/credentials
-    if identity:
-        raw, n = redact_identity(raw)
-        redaction_count += n
+    raw, redaction_count = redact_jsonl_content(raw)
+    raw, n = redact_identity(raw)
+    redaction_count += n
 
     messages = []
     for m in src.parse_messages(raw):
@@ -160,7 +156,7 @@ def _resolve_selection(selected):
     return out
 
 
-def _run_upload_job(job_id, selected, contributor, redact_id):
+def _run_upload_job(job_id, selected, contributor):
     """Upload selected transcript versions while updating job progress."""
     job = JOBS[job_id]
     try:
@@ -177,7 +173,6 @@ def _run_upload_job(job_id, selected, contributor, redact_id):
                         source,
                         sessions,
                         contributor,
-                        redact_id,
                         on_progress=lambda n: job.__setitem__("done", job["done"] + n),
                         uploaded_keys=uploaded_keys,
                     )
@@ -219,7 +214,6 @@ async def uploaded_sessions(request: Request):
     """Return local sessions whose current transcript version is in S3."""
     body = await request.json()
     contributor = _safe_name(body.get("contributor_name", "anonymous"))
-    redact_id = bool(body.get("redact_identity", True))
     sessions = body.get("sessions", [])
     by_source: dict[str, list[dict]] = defaultdict(list)
     for item in sessions:
@@ -254,7 +248,6 @@ async def uploaded_sessions(request: Request):
                 source,
                 [session for _, session in resolved_items],
                 contributor,
-                redact_id,
                 uploaded_keys,
             )
             found_ids = {
@@ -280,7 +273,6 @@ async def upload(request: Request):
     body = await request.json()
     selected = body.get("selected", [])
     contributor = _safe_name(body.get("contributor_name", "anonymous"))
-    redact_id = body.get("redact_identity", True)
     if not selected:
         return JSONResponse({"error": "Nothing selected"}, status_code=400)
 
@@ -308,7 +300,7 @@ async def upload(request: Request):
 
     threading.Thread(
         target=_run_upload_job,
-        args=(job_id, selected, contributor, redact_id),
+        args=(job_id, selected, contributor),
         daemon=True,
     ).start()
     return JSONResponse({"job_id": job_id}, status_code=202)
@@ -353,7 +345,6 @@ async def put_watcher(request: Request):
             )
         config = WatcherConfig(
             contributor=_safe_name(body.get("contributor_name", "anonymous")),
-            redact_identity=bool(body.get("redact_identity", True)),
             aws_profile=existing.aws_profile if existing else selected_profile(),
             groups=groups,
             source_env=existing.source_env if existing else capture_source_env(),

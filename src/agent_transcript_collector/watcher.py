@@ -52,7 +52,6 @@ class AllowedGroup:
 class WatcherConfig:
     schema_version: int = 1
     contributor: str = "anonymous"
-    redact_identity: bool = True
     aws_profile: str = "rw-eng"
     groups: list[AllowedGroup] = field(default_factory=list)
     source_env: dict[str, str] = field(default_factory=dict)
@@ -74,7 +73,6 @@ class WatcherConfig:
         return cls(
             schema_version=1,
             contributor=str(data.get("contributor", "anonymous")),
-            redact_identity=bool(data.get("redact_identity", True)),
             aws_profile=str(data.get("aws_profile", "rw-eng")),
             groups=groups,
             source_env={
@@ -201,7 +199,6 @@ def run_once(
                     source,
                     sessions,
                     config.contributor,
-                    config.redact_identity,
                     uploaded_keys=uploaded_keys,
                 )
                 result["sessions_uploaded"] += sum(
@@ -434,7 +431,6 @@ def status(platform: str | None = None) -> dict:
             config = load_config(config_path)
             result["config"] = {
                 "contributor": config.contributor,
-                "redact_identity": config.redact_identity,
                 "groups": [asdict(group) for group in config.groups],
                 "aws_profile": config.aws_profile,
             }
