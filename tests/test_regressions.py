@@ -68,22 +68,6 @@ def test_watcher_captures_cursor_user_data_dir(monkeypatch):
     assert watcher.capture_source_env()["CURSOR_USER_DATA_DIR"] == "/custom/cursor"
 
 
-def test_watcher_resolves_saved_labels_to_current_project_keys(monkeypatch):
-    groups = [
-        SimpleNamespace(key="project--one", label="project", sessions=[]),
-        SimpleNamespace(key="project--two", label="project", sessions=[]),
-    ]
-    source = SimpleNamespace(id="codex", discover=lambda: groups)
-    monkeypatch.setattr(watcher, "SOURCES", [source])
-    config = watcher.WatcherConfig(
-        groups=[watcher.AllowedGroup("codex", "_project-project", "project")]
-    )
-
-    resolved = watcher.resolve_allowed_groups(config)
-
-    assert {group.group for group in resolved} == {"project--one", "project--two"}
-
-
 def test_installed_watcher_uses_the_unified_cli(tmp_path):
     config = watcher.WatcherConfig(
         uv_path="/usr/bin/uv",

@@ -13,8 +13,6 @@ dependencies = [
 
 [project.scripts]
 rr-trans = "agent_transcript_collector.cli:main"
-# Compatibility for watcher jobs installed before the unified CLI.
-agent-transcript-watcher = "agent_transcript_collector.watcher:main"
 
 [build-system]
 requires = ["hatchling"]

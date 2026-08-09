@@ -145,24 +145,14 @@ def capture_source_env() -> dict[str, str]:
 
 
 def _resolve_allowed(config: WatcherConfig):
-    """Pair saved consent with currently discovered source groups.
-
-    Project keys changed when repository hashes were introduced. Exact keys are
-    preferred; a saved label is expanded only when its old key no longer exists.
-    """
-    sources = {source.id: source for source in SOURCES}
-    groups_by_source = {
-        source_id: source.discover() for source_id, source in sources.items()
-    }
-    resolved = {}
-    for allowed in config.groups:
-        groups = groups_by_source.get(allowed.source, [])
-        matches = [group for group in groups if group.key == allowed.group]
-        if not matches:
-            matches = [group for group in groups if group.label == allowed.label]
-        for group in matches:
-            resolved[(allowed.source, group.key)] = (sources[allowed.source], group)
-    return list(resolved.values())
+    """Pair configured consent with exact current source-group keys."""
+    allowed = {(item.source, item.group) for item in config.groups}
+    return [
+        (source, group)
+        for source in SOURCES
+        for group in source.discover()
+        if (source.id, group.key) in allowed
+    ]
 
 
 def resolve_allowed_groups(config: WatcherConfig) -> list[AllowedGroup]:
