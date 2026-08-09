@@ -39,6 +39,7 @@ from .watcher import (
     WatcherConfig,
     capture_source_env,
     install as install_watcher,
+    load_config as load_watcher_config,
     save_config as save_watcher_config,
     status as watcher_status,
     uninstall as uninstall_watcher,
@@ -337,19 +338,32 @@ async def put_watcher(request: Request):
             {"error": "One or more selected folders are no longer available"},
             status_code=400,
         )
-    config = WatcherConfig(
-        contributor=_safe_name(body.get("contributor_name", "anonymous")),
-        redact_identity=bool(body.get("redact_identity", True)),
-        aws_profile=selected_profile(),
-        groups=[
+    try:
+        watcher = watcher_status()
+        existing = load_watcher_config() if watcher.get("configured") else None
+        groups = [
             AllowedGroup(source=source, group=group, label=discovered[(source, group)])
             for source, group in sorted(requested)
-        ],
-        source_env=capture_source_env(),
-    )
-    try:
+        ]
+        if existing:
+            groups.extend(
+                group
+                for group in existing.groups
+                if (group.source, group.group) not in discovered
+            )
+        config = WatcherConfig(
+            contributor=_safe_name(body.get("contributor_name", "anonymous")),
+            redact_identity=bool(body.get("redact_identity", True)),
+            aws_profile=existing.aws_profile if existing else selected_profile(),
+            groups=groups,
+            source_env=existing.source_env if existing else capture_source_env(),
+            package_spec=(
+                existing.package_spec if existing else WatcherConfig.package_spec
+            ),
+            uv_path=existing.uv_path if existing else "",
+        )
         enabled = bool(body.get("enabled", True))
-        installed = bool(watcher_status().get("installed"))
+        installed = bool(watcher.get("installed"))
         if enabled and not installed:
             return install_watcher(config)
         path = save_watcher_config(config)

@@ -155,13 +155,6 @@ def _resolve_allowed(config: WatcherConfig):
     ]
 
 
-def resolve_allowed_groups(config: WatcherConfig) -> list[AllowedGroup]:
-    return [
-        AllowedGroup(source=source.id, group=group.key, label=group.label)
-        for source, group in _resolve_allowed(config)
-    ]
-
-
 def discover_allowed(config: WatcherConfig):
     sessions_by_source = {}
     for source, group in _resolve_allowed(config):
@@ -278,8 +271,6 @@ def render_launchd(config: WatcherConfig, config_path: Path) -> bytes:
     environment = {
         "HOME": str(Path.home()),
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-        "CTC_AWS_PROFILE": config.aws_profile,
-        **config.source_env,
     }
     payload = {
         "Label": LAUNCHD_LABEL,
@@ -303,8 +294,6 @@ def render_systemd(config: WatcherConfig, config_path: Path) -> tuple[bytes, byt
     )
     environment = {
         "HOME": str(Path.home()),
-        "CTC_AWS_PROFILE": config.aws_profile,
-        **config.source_env,
     }
     env_lines = "\n".join(
         f"Environment={_systemd_quote(f'{key}={value}')}"
@@ -446,7 +435,7 @@ def status(platform: str | None = None) -> dict:
             result["config"] = {
                 "contributor": config.contributor,
                 "redact_identity": config.redact_identity,
-                "groups": [asdict(group) for group in resolve_allowed_groups(config)],
+                "groups": [asdict(group) for group in config.groups],
                 "aws_profile": config.aws_profile,
             }
         except (OSError, ValueError, json.JSONDecodeError) as exc:
