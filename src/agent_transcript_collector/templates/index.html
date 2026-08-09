@@ -20,18 +20,24 @@
   h1 { font-size: 1.5rem; margin-bottom: 4px; }
   .subtitle { color: var(--text-muted); margin-bottom: 24px; font-size: 0.9rem; }
 
-  .settings-controls {
+  .auto-upload-controls {
     display: flex; gap: 8px; align-items: center; margin: 0 0 20px;
     padding: 8px 10px; background: rgba(88,166,255,0.05);
     border: 1px solid var(--border); border-radius: 8px; flex-wrap: wrap;
   }
-  .settings-controls .label { font-size: 0.8rem; font-weight: 600; }
-  .settings-controls button { padding: 5px 10px; font-size: 0.78rem; }
+  .auto-upload-controls .label { font-size: 0.8rem; font-weight: 600; }
+  .auto-upload-controls button { padding: 5px 10px; font-size: 0.78rem; }
+  .auto-upload-heading { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+  .auto-upload-description, #watcher-version { color: var(--text-muted); font-size: 0.72rem; }
+  #watcher-version.mismatch { color: var(--yellow); }
   .name-setting {
     display: flex; align-items: center; gap: 6px; color: var(--text-muted);
     font-size: 0.78rem; white-space: nowrap;
   }
-  #watcher-status { color: var(--text-muted); font-size: 0.78rem; flex: 1; min-width: 220px; }
+  #watcher-status {
+    color: var(--text-muted); font-size: 0.78rem; flex: 1; min-width: 160px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .auto-upload {
     display: flex; align-items: center; gap: 4px; color: var(--text-muted);
     font-size: 0.72rem; white-space: nowrap;
@@ -177,8 +183,12 @@
 <h1>Redwood Research Transcript Collector</h1>
 <p class="subtitle">Select the transcripts you'd like to share. Preview any session before deciding. Secrets and credentials are always redacted.</p>
 
-<div class="settings-controls">
-  <span class="label">Settings</span>
+<div class="auto-upload-controls">
+  <span class="auto-upload-heading">
+    <span class="label">Auto upload</span>
+    <span class="auto-upload-description">Uploads new transcripts every minute.</span>
+    <span id="watcher-version" title="Auto uploader version"></span>
+  </span>
   <label class="name-setting">
     Your name:
     <input type="text" id="contributor-name" placeholder="your name"
@@ -194,6 +204,8 @@
           title="Upload pending transcripts from selected projects" disabled>Upload now</button>
   <button class="secondary" id="auto-upload-toggle" onclick="toggleAutoUpload()"
           title="Enable or disable automatic uploads every minute" disabled>Enable</button>
+  <button class="secondary" id="reinstall-watcher" onclick="reinstallWatcher()"
+          title="Reinstall the current auto uploader version" hidden>Reinstall</button>
 </div>
 
 {% if not projects %}
@@ -356,6 +368,8 @@ async function updateAutoUploadConfig(enabled) {
 async function loadWatcher() {
   const status = document.getElementById('watcher-status');
   const toggle = document.getElementById('auto-upload-toggle');
+  const reinstall = document.getElementById('reinstall-watcher');
+  const version = document.getElementById('watcher-version');
   try {
     const resp = await fetch('/api/watcher');
     const data = await resp.json();
@@ -377,6 +391,13 @@ async function loadWatcher() {
       cb.indeterminate = enabled > 0 && enabled < harnesses.length;
     });
     autoUploadEnabled = Boolean(data.installed);
+    const installedVersion = (data.config && data.config.auto_uploader_version) || 0;
+    const currentVersion = data.current_version;
+    version.textContent = data.needs_reinstall
+      ? `v${installedVersion} → v${currentVersion}`
+      : `v${currentVersion}`;
+    version.classList.toggle('mismatch', Boolean(data.needs_reinstall));
+    reinstall.hidden = !data.needs_reinstall;
     toggle.disabled = false;
     toggle.textContent = autoUploadEnabled ? 'Disable' : 'Enable';
     if (data.error) {
@@ -384,20 +405,43 @@ async function loadWatcher() {
     } else if (autoUploadEnabled) {
       const last = data.state || {};
       const detail = last.finished_at
-        ? ` Last run: ${last.status}, ${last.sessions_uploaded || 0} uploaded.`
-        : '';
+        ? `${last.status} · ${last.sessions_uploaded || 0} uploaded`
+        : 'no runs yet';
       const enabled = consentedProjects().length;
-      status.textContent = `Enabled for ${enabled} project${enabled !== 1 ? 's' : ''}.${detail}`;
+      status.textContent = `${enabled} project${enabled !== 1 ? 's' : ''} · ${detail}`;
     } else {
       const selected = consentedProjects().length;
       status.textContent = selected
-        ? `${selected} project${selected !== 1 ? 's' : ''} selected. Auto upload is disabled.`
+        ? `${selected} project${selected !== 1 ? 's' : ''} selected · disabled`
         : 'Select projects to auto upload.';
     }
+    if (data.needs_reinstall) {
+      status.textContent = `Update available · ${status.textContent}`;
+    }
+    status.title = status.textContent;
     updatePendingCounts();
   } catch (e) {
     status.textContent = 'Watcher status unavailable';
     toggle.disabled = true;
+    reinstall.hidden = true;
+  }
+}
+
+async function reinstallWatcher() {
+  const button = document.getElementById('reinstall-watcher');
+  button.disabled = true;
+  button.textContent = 'Reinstalling…';
+  try {
+    const resp = await fetch('/api/watcher/reinstall', {method: 'POST'});
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Reinstall failed');
+    showToast('Auto uploader reinstalled');
+    await loadWatcher();
+  } catch (e) {
+    showToast(e.message, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Reinstall';
   }
 }
 

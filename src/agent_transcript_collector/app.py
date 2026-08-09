@@ -344,6 +344,11 @@ async def put_watcher(request: Request):
                 if (group.source, group.group) not in discovered
             )
         config = WatcherConfig(
+            auto_uploader_version=(
+                existing.auto_uploader_version
+                if existing
+                else WatcherConfig.auto_uploader_version
+            ),
             contributor=_safe_name(body.get("contributor_name", "anonymous")),
             aws_profile=existing.aws_profile if existing else selected_profile(),
             groups=groups,
@@ -366,6 +371,24 @@ async def put_watcher(request: Request):
     except Exception as e:
         return JSONResponse(
             {"error": f"Could not update auto upload: {type(e).__name__}: {e}"},
+            status_code=500,
+        )
+
+
+@app.post("/api/watcher/reinstall")
+async def reinstall_watcher():
+    """Reinstall the configured auto uploader with the current version."""
+    try:
+        watcher = watcher_status()
+        if not watcher.get("configured"):
+            return JSONResponse(
+                {"error": "Configure auto upload before reinstalling it"},
+                status_code=400,
+            )
+        return install_watcher(load_watcher_config())
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Could not reinstall auto upload: {type(e).__name__}: {e}"},
             status_code=500,
         )
 

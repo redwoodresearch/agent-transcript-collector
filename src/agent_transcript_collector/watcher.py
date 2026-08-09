@@ -32,6 +32,7 @@ PACKAGE_SPEC = "git+https://github.com/redwoodresearch/agent-transcript-collecto
 LAUNCHD_LABEL = "com.redwoodresearch.agent-transcript-collector"
 SYSTEMD_NAME = "agent-transcript-collector"
 WATCH_INTERVAL_SECONDS = 60
+AUTO_UPLOADER_VERSION = 1
 SOURCE_ENV_VARS = (
     "CLAUDE_CONFIG_DIR",
     "CODEX_HOME",
@@ -52,6 +53,7 @@ class AllowedGroup:
 @dataclass
 class WatcherConfig:
     schema_version: int = 1
+    auto_uploader_version: int = AUTO_UPLOADER_VERSION
     contributor: str = "anonymous"
     aws_profile: str = "rw-eng"
     groups: list[AllowedGroup] = field(default_factory=list)
@@ -73,6 +75,7 @@ class WatcherConfig:
         ]
         return cls(
             schema_version=1,
+            auto_uploader_version=int(data.get("auto_uploader_version", 0)),
             contributor=str(data.get("contributor", "anonymous")),
             aws_profile=str(data.get("aws_profile", "rw-eng")),
             groups=groups,
@@ -334,6 +337,7 @@ def install(
     that never loaded.
     """
     platform = platform or sys.platform
+    config.auto_uploader_version = AUTO_UPLOADER_VERSION
     config.uv_path = config.uv_path or _find_uv()
     target = save_config(config, config_path)
     if platform == "darwin":
@@ -426,16 +430,22 @@ def status(platform: str | None = None) -> dict:
         "installed": bool(service_files)
         and all(path.exists() for path in service_files),
         "configured": config_path.exists(),
+        "current_version": AUTO_UPLOADER_VERSION,
         "state": load_state(),
     }
     if config_path.exists():
         try:
             config = load_config(config_path)
             result["config"] = {
+                "auto_uploader_version": config.auto_uploader_version,
                 "contributor": config.contributor,
                 "groups": [asdict(group) for group in config.groups],
                 "aws_profile": config.aws_profile,
             }
+            result["needs_reinstall"] = (
+                result["installed"]
+                and config.auto_uploader_version != AUTO_UPLOADER_VERSION
+            )
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             result["error"] = f"Invalid watcher configuration: {exc}"
     return result
