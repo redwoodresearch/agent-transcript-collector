@@ -73,14 +73,6 @@ free port is used). Preview the transcripts, select the ones you want to share,
 enter your name, and click **Upload Selected**. Transcripts already uploaded
 under that contributor name are marked **uploaded**.
 
-To skip the UI and upload everything found on the machine:
-
-```bash
-rr-trans ui --all --name <contributor>
-```
-
-Use `--all` only when you intend a bulk upload without per-session review.
-
 ## Automatic hourly uploads
 
 The review UI can install a per-user hourly watcher on macOS or Linux:

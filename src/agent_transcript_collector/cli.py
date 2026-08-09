@@ -14,18 +14,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    ui = commands.add_parser("ui", help="Open the local upload and consent UI.")
-    ui.add_argument(
-        "--all",
-        action="store_true",
-        help="Upload every discovered transcript without opening the UI.",
-    )
-    ui.add_argument(
-        "--name",
-        default="anonymous",
-        metavar="CONTRIBUTOR",
-        help="Contributor name used with --all (default: anonymous).",
-    )
+    commands.add_parser("ui", help="Open the local upload and consent UI.")
 
     tui = commands.add_parser("tui", help="Browse uploaded transcript folders in S3.")
     tui.add_argument(
@@ -49,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "ui":
         from .app import main as run_ui
 
-        return run_ui(headless=args.all, contributor_name=args.name)
+        return run_ui()
     if args.command == "watcher":
         from .watcher import main as run_watcher
 

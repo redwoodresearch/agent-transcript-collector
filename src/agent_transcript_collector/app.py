@@ -388,47 +388,6 @@ async def upload_status(job_id: str):
     return snap
 
 
-def headless_upload(contributor_name: str = "anonymous"):
-    """Upload all current transcript versions from every source, no UI."""
-    contributor = _safe_name(contributor_name)
-    any_found = False
-    try:
-        with UploadLock():
-            s3 = _make_s3_client()
-            uploaded_keys = list_uploaded_keys(s3, contributor)
-            for source in SOURCES:
-                sessions = [s for g in source.discover() for s in g.sessions]
-                if not sessions:
-                    continue
-                any_found = True
-                print(f"[{source.label}] checking {len(sessions)} transcripts...")
-                try:
-                    uploaded, upload_errors = _upload_transcripts(
-                        s3,
-                        source,
-                        sessions,
-                        contributor,
-                        uploaded_keys=uploaded_keys,
-                    )
-                except Exception as e:
-                    print(f"[{source.label}] upload failed: {type(e).__name__}: {e}")
-                    continue
-                mb = sum(u["zip_size_bytes"] for u in uploaded) / 1024 / 1024
-                red = sum(u["redactions"] for u in uploaded)
-                msg = (
-                    f"[{source.label}] {len(uploaded)} transcript(s) uploaded "
-                    f"({mb:.1f} MB, {red} redactions)"
-                )
-                if upload_errors:
-                    msg += f"; {len(upload_errors)} transcript(s) failed"
-                print(msg + ".")
-    except UploadBusy as e:
-        print(f"Upload skipped: {e}.")
-        return
-
-    print("No transcripts found." if not any_found else "Done!")
-
-
 def _find_free_port(start: int, host: str = "127.0.0.1", tries: int = 20) -> int | None:
     """Return the first bindable port at or after `start` (scanning `tries`)."""
     for port in range(start, start + tries):
@@ -441,25 +400,19 @@ def _find_free_port(start: int, host: str = "127.0.0.1", tries: int = 20) -> int
     return None
 
 
-def main(headless: bool = False, contributor_name: str = "anonymous") -> int:
-    if headless:
-        headless_upload(contributor_name)
-        return 0
-    else:
-        base = int(os.environ.get("PORT", 8899))
-        port = _find_free_port(base)
-        if port is None:
-            print(f"No free port found in {base}-{base + 19}; is something stuck?")
-            return 1
-        if port != base:
-            print(f"Port {base} is in use — using {port} instead.")
-        threading.Timer(
-            1.0, lambda: webbrowser.open(f"http://localhost:{port}")
-        ).start()
-        print(f"Opening browser at http://localhost:{port}")
-        print("Press Ctrl+C to stop.")
-        uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
-        return 0
+def main() -> int:
+    base = int(os.environ.get("PORT", 8899))
+    port = _find_free_port(base)
+    if port is None:
+        print(f"No free port found in {base}-{base + 19}; is something stuck?")
+        return 1
+    if port != base:
+        print(f"Port {base} is in use — using {port} instead.")
+    threading.Timer(1.0, lambda: webbrowser.open(f"http://localhost:{port}")).start()
+    print(f"Opening browser at http://localhost:{port}")
+    print("Press Ctrl+C to stop.")
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    return 0
 
 
 if __name__ == "__main__":

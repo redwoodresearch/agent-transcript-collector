@@ -1,18 +1,19 @@
+import pytest
+
 from agent_transcript_collector import app, cli, tui
 
 
 def test_ui_subcommand_dispatches_to_web_ui(monkeypatch):
     called = []
-    monkeypatch.setattr(
-        app,
-        "main",
-        lambda headless=False, contributor_name="anonymous": (
-            called.append((headless, contributor_name)) or 0
-        ),
-    )
+    monkeypatch.setattr(app, "main", lambda: called.append(True) or 0)
 
-    assert cli.main(["ui", "--all", "--name", "alice"]) == 0
-    assert called == [(True, "alice")]
+    assert cli.main(["ui"]) == 0
+    assert called == [True]
+
+
+def test_ui_rejects_bulk_upload_flags():
+    with pytest.raises(SystemExit):
+        cli.main(["ui", "--all", "--name", "alice"])
 
 
 def test_tui_subcommand_dispatches_to_terminal_browser(monkeypatch):
