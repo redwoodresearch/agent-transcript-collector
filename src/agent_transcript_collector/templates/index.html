@@ -30,6 +30,13 @@
   .auto-upload-heading { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
   .auto-upload-description, #watcher-version { color: var(--text-muted); font-size: 0.72rem; }
   #watcher-version.mismatch { color: var(--yellow); }
+  #unavailable-watcher-groups {
+    flex-basis: 100%; color: var(--yellow); font-size: 0.75rem;
+  }
+  .unavailable-watcher-group {
+    display: inline-flex; align-items: center; gap: 6px; margin: 4px 8px 0 0;
+  }
+  .unavailable-watcher-group button { padding: 2px 7px; font-size: 0.7rem; }
   .name-setting {
     display: flex; align-items: center; gap: 6px; color: var(--text-muted);
     font-size: 0.78rem; white-space: nowrap;
@@ -194,7 +201,7 @@
 <div class="auto-upload-controls">
   <span class="auto-upload-heading">
     <span class="label">Auto upload</span>
-    <span class="auto-upload-description">Uploads new transcripts every minute.</span>
+    <span class="auto-upload-description">Uploads changed transcripts every hour.</span>
     <span id="watcher-version" title="Auto uploader version"></span>
   </span>
   <label class="name-setting">
@@ -211,9 +218,10 @@
   <button id="upload-btn" onclick="uploadNow()"
           title="Upload pending transcripts from selected projects" disabled>Upload now</button>
   <button class="secondary" id="auto-upload-toggle" onclick="toggleAutoUpload()"
-          title="Enable or disable automatic uploads every minute" disabled>Enable</button>
+          title="Enable or disable automatic uploads every hour" disabled>Enable</button>
   <button class="secondary" id="reinstall-watcher" onclick="reinstallWatcher()"
           title="Reinstall the current auto uploader version" hidden>Reinstall</button>
+  <div id="unavailable-watcher-groups" hidden></div>
 </div>
 
 {% if not projects %}
@@ -377,7 +385,7 @@ function selectedAutoUploadGroups() {
     .map(harness => ({source: harness.dataset.source, group: harness.dataset.group}));
 }
 
-async function updateAutoUploadConfig(enabled) {
+async function updateAutoUploadConfig(enabled, removedGroups = []) {
   const submittedNameRevision = nameRevision;
   const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
   const resp = await fetch('/api/watcher', {
@@ -385,6 +393,7 @@ async function updateAutoUploadConfig(enabled) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
       groups: selectedAutoUploadGroups(),
+      removed_groups: removedGroups,
       contributor_name: contributorName,
       enabled,
     }),
@@ -396,6 +405,44 @@ async function updateAutoUploadConfig(enabled) {
     syncedNameRevision = submittedNameRevision;
   }
   return data;
+}
+
+function renderUnavailableGroups(groups) {
+  const container = document.getElementById('unavailable-watcher-groups');
+  const visible = new Set(
+    Array.from(document.querySelectorAll('.harness')).map(harnessKey));
+  const unavailable = groups.filter(item => !visible.has(`${item.source}|${item.group}`));
+  container.replaceChildren();
+  container.hidden = unavailable.length === 0;
+  if (!unavailable.length) return;
+
+  const heading = document.createElement('span');
+  heading.textContent = 'Saved folders not currently available: ';
+  container.appendChild(heading);
+  unavailable.forEach(item => {
+    const entry = document.createElement('span');
+    entry.className = 'unavailable-watcher-group';
+    const label = document.createElement('span');
+    label.textContent = `${item.label || item.group} (${item.source})`;
+    const remove = document.createElement('button');
+    remove.className = 'secondary';
+    remove.textContent = 'Remove';
+    remove.onclick = () => removeUnavailableGroup(item, remove);
+    entry.append(label, remove);
+    container.appendChild(entry);
+  });
+}
+
+async function removeUnavailableGroup(item, button) {
+  button.disabled = true;
+  try {
+    await updateAutoUploadConfig(autoUploadEnabled, [item]);
+    showToast('Saved folder removed from auto upload');
+    await loadWatcher();
+  } catch (e) {
+    showToast(e.message, true);
+    button.disabled = false;
+  }
 }
 
 function formatUploadTime(value) {
@@ -428,6 +475,7 @@ async function loadWatcher() {
     }
     watcherGroups = new Set(
       ((data.config && data.config.groups) || []).map(item => `${item.source}|${item.group}`));
+    renderUnavailableGroups((data.config && data.config.groups) || []);
     document.querySelectorAll('.project').forEach(project => {
       const cb = project.querySelector('.auto-upload-checkbox');
       const harnesses = Array.from(project.querySelectorAll('.harness'));
@@ -724,6 +772,7 @@ async function startUpload(rows) {
     if (entered) {
       contributorName = entered;
       document.getElementById('contributor-name').value = entered;
+      onNameInput();
     }
   }
   saveName(contributorName);

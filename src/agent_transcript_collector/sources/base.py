@@ -11,11 +11,81 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import tempfile
+import threading
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
+
+from ..paths import project_identity_cache_path
+
+
+_CODEX_WORKTREE_RE = re.compile(
+    r"(?P<root>.*?/\.?codex/worktrees/[^/]+/(?P<name>[^/]+))(?:/|$)"
+)
+_IDENTITY_CACHE_LOCK = threading.Lock()
+_identity_cache: dict[str, dict[str, str]] | None = None
+
+
+def _normalize_identity_cache(data: dict) -> dict[str, dict[str, str]]:
+    normalized = {}
+    for key, value in data.items():
+        if isinstance(value, dict) and value.get("identity") and value.get("name"):
+            normalized[str(key)] = {
+                "identity": str(value["identity"]),
+                "name": str(value["name"]),
+            }
+        elif isinstance(value, str):
+            normalized[str(key)] = {
+                "identity": value,
+                "name": Path(value).name or "_root",
+            }
+    return normalized
+
+
+def _load_identity_cache() -> dict[str, dict[str, str]]:
+    global _identity_cache
+    with _IDENTITY_CACHE_LOCK:
+        if _identity_cache is None:
+            try:
+                data = json.loads(project_identity_cache_path().read_text())
+                _identity_cache = _normalize_identity_cache(data)
+            except (OSError, ValueError, json.JSONDecodeError):
+                _identity_cache = {}
+        return dict(_identity_cache)
+
+
+def _remember_project_identity(worktree: str, identity: str, name: str) -> None:
+    global _identity_cache
+    with _IDENTITY_CACHE_LOCK:
+        if _identity_cache is None:
+            try:
+                data = json.loads(project_identity_cache_path().read_text())
+                _identity_cache = _normalize_identity_cache(data)
+            except (OSError, ValueError, json.JSONDecodeError):
+                _identity_cache = {}
+        value = {"identity": identity, "name": name}
+        if _identity_cache.get(worktree) == value:
+            return
+        _identity_cache[worktree] = value
+        target = project_identity_cache_path()
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(_identity_cache, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, target)
+        except OSError:
+            try:
+                os.unlink(temporary)
+            except (FileNotFoundError, UnboundLocalError):
+                pass
 
 
 def human_size(nbytes: float) -> str:
@@ -67,16 +137,29 @@ def project_identity(cwd: str) -> tuple[str, str]:
     project; stale paths fall back to their final directory name.
     """
     normalized = cwd.replace("\\", "/").rstrip("/")
+    worktree_match = _CODEX_WORKTREE_RE.match(normalized)
+    worktree_root = worktree_match.group("root") if worktree_match else None
     directory = canonical_project_directory(normalized)
     if directory is not None:
         name = Path(directory).name or "_root"
         identity = directory
+        if worktree_root:
+            _remember_project_identity(worktree_root, identity, name)
     else:
-        # A stale Codex worktree no longer has a .git file to follow. Its stable
-        # repository name is still encoded after the worktree id.
-        match = re.search(r"/\.?codex/worktrees/[^/]+/([^/]+)", normalized)
-        name = match.group(1) if match else Path(normalized).name or "_root"
-        identity = f"stale:{name}"
+        name = (
+            worktree_match.group("name")
+            if worktree_match
+            else Path(normalized).name or "_root"
+        )
+        cached = _load_identity_cache().get(worktree_root) if worktree_root else None
+        # A previously observed live worktree keeps its primary-repository
+        # identity after deletion. An unknown stale worktree falls back to its
+        # full root, avoiding collisions between same-named repositories.
+        if cached:
+            identity = cached["identity"]
+            name = cached["name"]
+        else:
+            identity = f"stale:{worktree_root or normalized}"
 
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
     return f"_project-{name}-{digest}", name

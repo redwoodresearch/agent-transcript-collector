@@ -1,4 +1,4 @@
-"""Upload one versioned ZIP per transcript using the ``mts-trans`` layout."""
+"""Upload one overwrite-in-place ZIP per transcript using ``mts-trans``."""
 
 from __future__ import annotations
 
@@ -13,8 +13,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from botocore.exceptions import ClientError
+
 from .paths import upload_lock_path
 from .redactor import (
+    canonicalize_secrets,
     local_usernames,
     redact_identity,
     redact_jsonl_content,
@@ -23,9 +26,13 @@ from .redactor import (
 from .s3client import S3_BUCKET
 from .storage import STORAGE_PREFIX
 
-TRANSCRIPT_FORMAT_VERSION = 2
-FINGERPRINT_VERSION = 1
-UPLOAD_CONCURRENCY = max(1, int(os.environ.get("CTC_UPLOAD_CONCURRENCY", "4")))
+TRANSCRIPT_FORMAT_VERSION = 3
+FINGERPRINT_VERSION = 2
+FINGERPRINT_METADATA = "content-fingerprint"
+
+
+def upload_concurrency() -> int:
+    return max(1, int(os.environ.get("CTC_UPLOAD_CONCURRENCY", "4")))
 
 
 class UploadBusy(RuntimeError):
@@ -85,12 +92,11 @@ class PreparedTranscript:
 
 
 def transcript_fingerprint(raw_bytes: bytes) -> str:
-    """Identify source content under the always-redacted upload policy."""
-    # Fingerprints identify source bytes, not the surrounding S3 layout or
-    # manifest schema. Keep this namespace stable across storage refactors so
-    # already-uploaded content remains recognizable.
+    """Identify content without preserving or hashing raw secret values."""
     policy = f"archive-v{FINGERPRINT_VERSION}:redact-id=1\0"
-    return hashlib.sha256(policy.encode() + raw_bytes).hexdigest()
+    canonical = canonicalize_secrets(raw_bytes.decode("utf-8", errors="replace"))
+    canonical, _ = redact_identity(canonical)
+    return hashlib.sha256(policy.encode() + canonical.encode()).hexdigest()
 
 
 def _safe_segment(value: str) -> str:
@@ -124,28 +130,30 @@ def transcript_prefix(contributor: str, source_id: str, session) -> str:
     return f"{root}{_safe_segment(session.id)}/"
 
 
-def transcript_key(contributor: str, source_id: str, session, fingerprint: str) -> str:
-    return f"{transcript_prefix(contributor, source_id, session)}{fingerprint}.zip"
+def transcript_key(contributor: str, source_id: str, session) -> str:
+    return f"{transcript_prefix(contributor, source_id, session)}transcript.zip"
 
 
-def list_uploaded_keys(s3, contributor: str) -> set[str]:
-    """List transcript versions already present for one contributor."""
-    prefix = f"{STORAGE_PREFIX}/{_safe_segment(contributor)}/"
-    keys: set[str] = set()
-    paginator = s3.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
-        keys.update(
-            item["Key"]
-            for item in page.get("Contents", [])
-            if item["Key"].endswith(".zip")
-        )
-    return keys
+def _uploaded_fingerprint(s3, key: str, cache: dict[str, str | None]) -> str | None:
+    if key in cache:
+        return cache[key]
+    try:
+        response = s3.head_object(Bucket=S3_BUCKET, Key=key)
+    except ClientError as exc:
+        code = str(exc.response.get("Error", {}).get("Code", ""))
+        if code not in {"404", "NoSuchKey", "NotFound"}:
+            raise
+        fingerprint = None
+    else:
+        fingerprint = response.get("Metadata", {}).get(FINGERPRINT_METADATA)
+    cache[key] = fingerprint
+    return fingerprint
 
 
 def _prepare(source, session, contributor: str) -> PreparedTranscript:
     raw_bytes = Path(session.path).read_bytes()
     fingerprint = transcript_fingerprint(raw_bytes)
-    key = transcript_key(contributor, source.id, session, fingerprint)
+    key = transcript_key(contributor, source.id, session)
     return PreparedTranscript(session, raw_bytes, fingerprint, key)
 
 
@@ -154,14 +162,10 @@ def partition_transcripts(
     source,
     sessions,
     contributor: str,
-    uploaded_keys: set[str] | None = None,
+    uploaded_fingerprints: dict[str, str | None] | None = None,
 ):
-    """Split current transcript versions into pending and already uploaded."""
-    existing = (
-        uploaded_keys
-        if uploaded_keys is not None
-        else list_uploaded_keys(s3, contributor)
-    )
+    """Split current transcripts into changed and already uploaded."""
+    existing = uploaded_fingerprints if uploaded_fingerprints is not None else {}
     pending: list[PreparedTranscript] = []
     uploaded = []
     errors = []
@@ -171,7 +175,7 @@ def partition_transcripts(
         except OSError as exc:
             errors.append({"source": source.id, "error": f"{session.id}: {exc}"})
             continue
-        if prepared.key in existing:
+        if _uploaded_fingerprint(s3, prepared.key, existing) == prepared.fingerprint:
             uploaded.append(session)
         else:
             pending.append(prepared)
@@ -181,7 +185,6 @@ def partition_transcripts(
 def _build_transcript_zip(source, prepared: PreparedTranscript, contributor: str):
     session = prepared.session
     raw = prepared.raw_bytes.decode("utf-8", errors="replace")
-    content_sha256 = hashlib.sha256(prepared.raw_bytes).hexdigest()
     raw, redaction_count = redact_jsonl_content(raw)
     group_key, group_label = session.group_key, session.group_label
     raw, count = redact_identity(raw)
@@ -207,7 +210,7 @@ def _build_transcript_zip(source, prepared: PreparedTranscript, contributor: str
         },
         "version": {
             "fingerprint": prepared.fingerprint,
-            "content_sha256": content_sha256,
+            "content_sha256": hashlib.sha256(raw.encode()).hexdigest(),
             "redact_identity": True,
             "uploaded_at": datetime.now(timezone.utc).isoformat(),
         },
@@ -227,14 +230,10 @@ def upload_transcripts(
     sessions,
     contributor: str,
     on_progress=None,
-    uploaded_keys: set[str] | None = None,
+    uploaded_fingerprints: dict[str, str | None] | None = None,
 ):
-    """Upload each pending transcript version as its own deterministic ZIP."""
-    existing = (
-        uploaded_keys
-        if uploaded_keys is not None
-        else list_uploaded_keys(s3, contributor)
-    )
+    """Overwrite each session object only when its redacted content changes."""
+    existing = uploaded_fingerprints if uploaded_fingerprints is not None else {}
     pending, uploaded, errors = partition_transcripts(
         s3, source, list(sessions), contributor, existing
     )
@@ -250,6 +249,7 @@ def upload_transcripts(
             Key=prepared.key,
             Body=zip_bytes,
             ContentType="application/zip",
+            Metadata={FINGERPRINT_METADATA: prepared.fingerprint},
         )
         return {
             "source": source.id,
@@ -261,7 +261,7 @@ def upload_transcripts(
 
     local_usernames()
     results = []
-    workers = min(UPLOAD_CONCURRENCY, len(pending))
+    workers = min(upload_concurrency(), len(pending))
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {executor.submit(upload_one, item): item for item in pending}
         for future in as_completed(futures):
@@ -269,7 +269,7 @@ def upload_transcripts(
             try:
                 result = future.result()
                 results.append(result)
-                existing.add(prepared.key)
+                existing[prepared.key] = prepared.fingerprint
             except Exception as exc:
                 errors.append(
                     {"source": source.id, "error": f"{type(exc).__name__}: {exc}"}

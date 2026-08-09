@@ -30,9 +30,9 @@ export AWS_PROFILE=<profile>
 The profile name is a local label. Use the same name when refreshing an expired
 session with `aws sso login --profile <profile>`.
 
-Uploads require `s3:PutObject` and `s3:ListBucket`: the collector lists the
-contributor prefix so deterministic transcript versions already present can be
-skipped. The transcript browser only requires `s3:ListBucket`.
+Uploads require `s3:PutObject` and `s3:GetObject`: the collector checks each
+session object's fingerprint so unchanged content can be skipped. The transcript
+browser only requires `s3:ListBucket`.
 
 ## Install
 
@@ -82,10 +82,10 @@ The review UI can install a per-user watcher on macOS or Linux:
 3. Click **Enable**.
 
 The watcher uploads every existing transcript in those exact folders, then checks
-once a minute for new transcripts or changed content. A transcript that
-grows after an upload is stored as a new content version; unchanged content is
-skipped. Selecting a folder does not implicitly select similarly named or
-descendant folders.
+once an hour for new transcripts or changed content. Each session has one S3
+object: when its redacted content changes, that object is overwritten; unchanged
+content is skipped. Selecting a folder does not implicitly select similarly named
+or descendant folders.
 
 Installation uses a macOS LaunchAgent or a Linux systemd user timer, so it never
 needs `sudo` and runs only while your login session is available (unless you
@@ -182,18 +182,18 @@ what you select before uploading rather than treating redaction as a guarantee.
 
 ## Storage layout
 
-Each transcript version is stored in its own ZIP at a deterministic key:
+Each transcript is stored in one ZIP at a stable key:
 
 ```text
-s3://rr-agent-transcripts/mts-trans/<contributor>/<project-name>--<project-hash>/<source>/<session>/<content-hash>.zip
-s3://rr-agent-transcripts/mts-trans/<contributor>/<project-name>--<project-hash>/<source>/<parent>/subagents/<session>/<content-hash>.zip
+s3://rr-agent-transcripts/mts-trans/<contributor>/<project-name>--<project-hash>/<source>/<session>/transcript.zip
+s3://rr-agent-transcripts/mts-trans/<contributor>/<project-name>--<project-hash>/<source>/<parent>/subagents/<session>/transcript.zip
 ```
 
 The readable project name is paired with a short identity hash so separate
 same-named repositories do not collide. Each ZIP contains one redacted
 transcript and a `manifest.json` with project, source, contributor, session,
-version, and redaction metadata. Resuming a session adds a content version;
-unchanged content resolves to the existing key and is skipped.
+content-fingerprint, and redaction metadata. Resuming a session overwrites the
+same object only when the privacy-safe fingerprint changes.
 
 ## Configuration
 

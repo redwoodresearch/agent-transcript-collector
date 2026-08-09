@@ -1,7 +1,7 @@
 """FastAPI app: local web UI for selecting and uploading agent transcripts.
 
 Supports multiple agent harnesses (Claude Code, Codex, Cursor, Pi) via the source
-adapters in `.sources`. Each transcript version is uploaded as one ZIP under
+adapters in `.sources`. Each transcript is uploaded as one ZIP under
 ``mts-trans/<contributor>/<project>/<source>/<session>/``.
 """
 
@@ -30,7 +30,6 @@ from .sources import SOURCES, detect_projects, find_session, get_source
 from .uploader import (
     UploadBusy,
     UploadLock,
-    list_uploaded_keys,
     partition_transcripts,
     upload_transcripts as _upload_transcripts,
 )
@@ -157,7 +156,7 @@ def _resolve_selection(selected):
 
 
 def _run_upload_job(job_id, selected, contributor):
-    """Upload selected transcript versions while updating job progress."""
+    """Upload selected transcripts while updating job progress."""
     job = JOBS[job_id]
     try:
         with UploadLock():
@@ -165,7 +164,7 @@ def _run_upload_job(job_id, selected, contributor):
             job["total"] = sum(len(s) for _, s in to_upload)
             job["status"] = "running"
             s3 = _make_s3_client()
-            uploaded_keys = list_uploaded_keys(s3, contributor)
+            uploaded_fingerprints: dict[str, str | None] = {}
             for source, sessions in to_upload:
                 try:
                     uploaded, upload_errors = _upload_transcripts(
@@ -174,7 +173,7 @@ def _run_upload_job(job_id, selected, contributor):
                         sessions,
                         contributor,
                         on_progress=lambda n: job.__setitem__("done", job["done"] + n),
-                        uploaded_keys=uploaded_keys,
+                        uploaded_fingerprints=uploaded_fingerprints,
                     )
                     with JOBS_LOCK:
                         job["uploads"].extend(uploaded)
@@ -211,7 +210,7 @@ def _run_upload_job(job_id, selected, contributor):
 
 @app.post("/api/uploaded")
 async def uploaded_sessions(request: Request):
-    """Return local sessions whose current transcript version is in S3."""
+    """Return local sessions whose current fingerprint is in S3."""
     body = await request.json()
     contributor = _safe_name(body.get("contributor_name", "anonymous"))
     sessions = body.get("sessions", [])
@@ -223,7 +222,7 @@ async def uploaded_sessions(request: Request):
 
     try:
         s3 = _make_s3_client()
-        uploaded_keys = list_uploaded_keys(s3, contributor)
+        uploaded_fingerprints: dict[str, str | None] = {}
         uploaded = []
         for source_id, source_sessions in by_source.items():
             source = get_source(source_id)
@@ -248,7 +247,7 @@ async def uploaded_sessions(request: Request):
                 source,
                 [session for _, session in resolved_items],
                 contributor,
-                uploaded_keys,
+                uploaded_fingerprints,
             )
             found_ids = {
                 (session.group_key, session.parent or None, session.id)
@@ -319,6 +318,11 @@ async def put_watcher(request: Request):
         (str(item.get("source", "")), str(item.get("group", "")))
         for item in body.get("groups", [])
     }
+    removed = {
+        (str(item.get("source", "")), str(item.get("group", "")))
+        for item in body.get("removed_groups", [])
+    }
+    requested -= removed
     discovered = {
         (source.id, group.key): group.label
         for source in SOURCES
@@ -332,7 +336,7 @@ async def put_watcher(request: Request):
         )
     try:
         watcher = watcher_status()
-        existing = load_watcher_config() if watcher.get("configured") else None
+        existing = load_watcher_config() if watcher.get("config") else None
         groups = [
             AllowedGroup(source=source, group=group, label=discovered[(source, group)])
             for source, group in sorted(requested)
@@ -342,6 +346,7 @@ async def put_watcher(request: Request):
                 group
                 for group in existing.groups
                 if (group.source, group.group) not in discovered
+                and (group.source, group.group) not in removed
             )
         config = WatcherConfig(
             auto_uploader_version=(
@@ -385,7 +390,9 @@ async def reinstall_watcher():
                 {"error": "Configure auto upload before reinstalling it"},
                 status_code=400,
             )
-        return install_watcher(load_watcher_config())
+        config = load_watcher_config()
+        config.source_env = capture_source_env()
+        return install_watcher(config)
     except Exception as e:
         return JSONResponse(
             {"error": f"Could not reinstall auto upload: {type(e).__name__}: {e}"},
@@ -429,7 +436,7 @@ def _find_free_port(start: int, host: str = "127.0.0.1", tries: int = 20) -> int
 
 
 def main() -> int:
-    base = int(os.environ.get("PORT", 8899))
+    base = int(os.environ.get("PORT", "8899"))
     port = _find_free_port(base)
     if port is None:
         print(f"No free port found in {base}-{base + 19}; is something stuck?")

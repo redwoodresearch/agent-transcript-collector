@@ -24,15 +24,14 @@ from .sources import SOURCES
 from .uploader import (
     UploadBusy,
     UploadLock,
-    list_uploaded_keys,
     upload_transcripts,
 )
 
 PACKAGE_SPEC = "git+https://github.com/redwoodresearch/agent-transcript-collector@main"
 LAUNCHD_LABEL = "com.redwoodresearch.agent-transcript-collector"
 SYSTEMD_NAME = "agent-transcript-collector"
-WATCH_INTERVAL_SECONDS = 60
-AUTO_UPLOADER_VERSION = 2
+WATCH_INTERVAL_SECONDS = 60 * 60
+AUTO_UPLOADER_VERSION = 3
 SOURCE_ENV_VARS = (
     "CLAUDE_CONFIG_DIR",
     "CODEX_HOME",
@@ -40,6 +39,8 @@ SOURCE_ENV_VARS = (
     "CURSOR_USER_DATA_DIR",
     "PI_CODING_AGENT_SESSION_DIR",
     "PI_CODING_AGENT_DIR",
+    "CTC_UPLOAD_CONCURRENCY",
+    "CTC_USERNAME_STOPLIST",
 )
 
 
@@ -180,7 +181,7 @@ def run_once(
     state_path: Path | None = None,
     lock_path: Path | None = None,
 ) -> dict:
-    """Upload all new content versions from explicitly allowed groups."""
+    """Upload changed transcripts from explicitly allowed groups."""
     previous_state = load_state(state_path)
     started = datetime.now(timezone.utc).isoformat()
     result = {
@@ -197,14 +198,14 @@ def run_once(
     try:
         with UploadLock(lock_path):
             client = s3 or make_s3_client()
-            uploaded_keys = list_uploaded_keys(client, config.contributor)
+            uploaded_fingerprints: dict[str, str | None] = {}
             for source, sessions in discover_allowed(config):
                 uploaded, upload_errors = upload_transcripts(
                     client,
                     source,
                     sessions,
                     config.contributor,
-                    uploaded_keys=uploaded_keys,
+                    uploaded_fingerprints=uploaded_fingerprints,
                 )
                 result["sessions_uploaded"] += sum(
                     item["transcript_count"] for item in uploaded
@@ -251,6 +252,8 @@ def watcher_command(config: WatcherConfig, config_path: Path) -> list[str]:
         uv,
         "tool",
         "run",
+        "--refresh-package",
+        "agent-transcript-collector",
         "--from",
         config.package_spec,
         "rr-trans",
@@ -315,7 +318,7 @@ def render_systemd(config: WatcherConfig, config_path: Path) -> tuple[bytes, byt
     )
     timer = (
         "[Unit]\n"
-        "Description=Upload accepted coding-agent transcripts every minute\n\n"
+        "Description=Upload accepted coding-agent transcripts every hour\n\n"
         "[Timer]\n"
         "OnBootSec=0\n"
         f"OnUnitActiveSec={WATCH_INTERVAL_SECONDS}s\n"
@@ -422,18 +425,44 @@ def uninstall(
     return {"installed": False}
 
 
-def status(platform: str | None = None) -> dict:
+def status(
+    platform: str | None = None,
+    run_command=subprocess.run,
+) -> dict:
     platform = platform or sys.platform
     config_path = watcher_config_path()
     if platform == "darwin":
         service_files = [launchd_path()]
+        active = False
+        if all(path.exists() for path in service_files):
+            completed = run_command(
+                ["launchctl", "print", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"],
+                check=False,
+                capture_output=True,
+            )
+            active = completed.returncode == 0
     elif platform.startswith("linux"):
         service_files = list(systemd_paths())
+        active = False
+        if all(path.exists() for path in service_files):
+            enabled = run_command(
+                ["systemctl", "--user", "is-enabled", "--quiet", f"{SYSTEMD_NAME}.timer"],
+                check=False,
+            )
+            running = run_command(
+                ["systemctl", "--user", "is-active", "--quiet", f"{SYSTEMD_NAME}.timer"],
+                check=False,
+            )
+            active = enabled.returncode == 0 and running.returncode == 0
     else:
         service_files = []
+        active = False
+    service_files_present = bool(service_files) and all(
+        path.exists() for path in service_files
+    )
     result = {
-        "installed": bool(service_files)
-        and all(path.exists() for path in service_files),
+        "installed": active,
+        "service_files_present": service_files_present,
         "configured": config_path.exists(),
         "current_version": AUTO_UPLOADER_VERSION,
         "interval_seconds": WATCH_INTERVAL_SECONDS,

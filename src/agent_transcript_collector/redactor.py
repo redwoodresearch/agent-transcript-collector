@@ -263,13 +263,8 @@ def _mock(kind: str, original: str) -> str:
     return _MOCK_TAG + r.chars(_ALNUM, 8)                              # generic
 
 
-def redact(text: str) -> tuple[str, list[dict]]:
-    """Replace secrets in text with type-preserving mocks.
-
-    Returns (redacted_text, list_of_redaction_records).
-    Each record has: {"pattern_name": kind, "start": int, "end": int, "original_length": int}
-    where start/end are offsets into the ORIGINAL text.
-    """
+def _secret_spans(text: str) -> list[list]:
+    """Return merged ``[start, end, kind]`` secret spans."""
     spans = []  # (start, end, kind) of the secret group
     for _name, pattern, group, kind in PATTERNS:
         for match in pattern.finditer(text):
@@ -277,9 +272,6 @@ def redact(text: str) -> tuple[str, list[dict]]:
             if start < 0 or end <= start:
                 continue
             spans.append((start, end, kind))
-
-    if not spans:
-        return text, []
 
     # Sort by start, longest-first on ties, then merge overlapping spans. The
     # surviving kind is the highest-ranked among the overlap (most specific type).
@@ -293,6 +285,19 @@ def redact(text: str) -> tuple[str, list[dict]]:
                 prev[2] = kind
         else:
             merged.append([start, end, kind])
+    return merged
+
+
+def redact(text: str) -> tuple[str, list[dict]]:
+    """Replace secrets in text with type-preserving mocks.
+
+    Returns (redacted_text, list_of_redaction_records).
+    Each record has: {"pattern_name": kind, "start": int, "end": int, "original_length": int}
+    where start/end are offsets into the ORIGINAL text.
+    """
+    merged = _secret_spans(text)
+    if not merged:
+        return text, []
 
     # Apply from end to preserve offsets.
     records = []
@@ -305,6 +310,18 @@ def redact(text: str) -> tuple[str, list[dict]]:
         })
     records.reverse()
     return result, records
+
+
+def canonicalize_secrets(text: str) -> str:
+    """Replace secrets with stable type markers for privacy-safe fingerprints.
+
+    The result intentionally discards secret values. It is stable across
+    processes, unlike the randomized mocks used in uploaded transcript bodies.
+    """
+    result = text
+    for start, end, kind in reversed(_secret_spans(text)):
+        result = result[:start] + f"[SECRET:{kind}]" + result[end:]
+    return result
 
 
 def redact_jsonl_content(raw_jsonl: str) -> tuple[str, int]:
