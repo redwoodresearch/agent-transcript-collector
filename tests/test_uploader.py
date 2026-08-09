@@ -4,7 +4,10 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_transcript_collector.uploader import upload_transcripts
+from agent_transcript_collector.uploader import (
+    transcript_fingerprint,
+    upload_transcripts,
+)
 
 
 class FakePaginator:
@@ -33,6 +36,12 @@ class FakeS3:
 
     def put_object(self, *, Key, Body, **kwargs):
         self.objects[Key] = Body
+
+
+def test_fingerprint_stays_stable_across_storage_refactors():
+    assert transcript_fingerprint(b"transcript", True) == (
+        "8d9921c2d4f5747dd93695e452f649b7e8f57946803e68a23b31b2a1a790ac33"
+    )
 
 
 def session(path: Path, *, session_id="session-1", parent=None):

@@ -24,6 +24,7 @@ from .s3client import S3_BUCKET
 from .storage import STORAGE_PREFIX
 
 TRANSCRIPT_FORMAT_VERSION = 2
+FINGERPRINT_VERSION = 1
 UPLOAD_CONCURRENCY = max(1, int(os.environ.get("CTC_UPLOAD_CONCURRENCY", "4")))
 
 
@@ -85,7 +86,10 @@ class PreparedTranscript:
 
 def transcript_fingerprint(raw_bytes: bytes, redact_id: bool) -> str:
     """Identify source content and the redaction policy applied to it."""
-    policy = f"transcript-v{TRANSCRIPT_FORMAT_VERSION}:redact-id={int(redact_id)}\0"
+    # Fingerprints identify source bytes, not the surrounding S3 layout or
+    # manifest schema. Keep this namespace stable across storage refactors so
+    # already-uploaded content remains recognizable.
+    policy = f"archive-v{FINGERPRINT_VERSION}:redact-id={int(redact_id)}\0"
     return hashlib.sha256(policy.encode() + raw_bytes).hexdigest()
 
 
