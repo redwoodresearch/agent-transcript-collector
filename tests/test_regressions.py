@@ -8,6 +8,7 @@ from agent_transcript_collector import app
 from agent_transcript_collector import watcher
 from agent_transcript_collector.redactor import redact_path_token
 from agent_transcript_collector.sources.base import project_identity
+from agent_transcript_collector.sources.cursor import CursorSource
 from agent_transcript_collector.uploader import UploadBusy, UploadLock
 
 
@@ -41,6 +42,18 @@ def test_linked_worktree_uses_main_repository_key(tmp_path):
 def test_project_name_is_not_treated_as_an_encoded_home_path():
     token = "_project-home-assistant-123456789abc"
     assert redact_path_token(token, usernames=()) == (token, 0)
+
+
+def test_cursor_subagent_id_comes_from_its_filename(tmp_path):
+    transcripts = tmp_path / "agent-transcripts"
+    path = transcripts / "parent-id" / "subagents" / "child-id.jsonl"
+    path.parent.mkdir(parents=True)
+    path.touch()
+
+    source = CursorSource()
+
+    assert source._parent_id(transcripts, path) == "parent-id"
+    assert source._session_id(transcripts, path) == "child-id"
 
 
 def test_upload_lock_rejects_a_second_process_lock(tmp_path):

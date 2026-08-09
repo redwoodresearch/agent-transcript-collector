@@ -229,7 +229,9 @@ class CursorSource:
 
     def _session_id(self, transcripts_dir: Path, path: Path) -> str:
         rel = path.relative_to(transcripts_dir)
-        if len(rel.parts) > 1 and rel.parts[0] != "subagents":
+        if "subagents" in rel.parts:
+            return path.stem
+        if len(rel.parts) > 1:
             return rel.parts[-2]
         return path.stem
 
