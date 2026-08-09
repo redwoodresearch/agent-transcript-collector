@@ -32,7 +32,7 @@ PACKAGE_SPEC = "git+https://github.com/redwoodresearch/agent-transcript-collecto
 LAUNCHD_LABEL = "com.redwoodresearch.agent-transcript-collector"
 SYSTEMD_NAME = "agent-transcript-collector"
 WATCH_INTERVAL_SECONDS = 60
-AUTO_UPLOADER_VERSION = 1
+AUTO_UPLOADER_VERSION = 2
 SOURCE_ENV_VARS = (
     "CLAUDE_CONFIG_DIR",
     "CODEX_HOME",
@@ -181,6 +181,7 @@ def run_once(
     lock_path: Path | None = None,
 ) -> dict:
     """Upload all new content versions from explicitly allowed groups."""
+    previous_state = load_state(state_path)
     started = datetime.now(timezone.utc).isoformat()
     result = {
         "started_at": started,
@@ -229,6 +230,10 @@ def run_once(
             else:
                 os.environ[name] = value
         result["finished_at"] = datetime.now(timezone.utc).isoformat()
+        if result["sessions_uploaded"]:
+            result["last_uploaded_at"] = result["finished_at"]
+        elif previous_state.get("last_uploaded_at"):
+            result["last_uploaded_at"] = previous_state["last_uploaded_at"]
         save_state(result, state_path)
     return result
 
@@ -431,6 +436,7 @@ def status(platform: str | None = None) -> dict:
         and all(path.exists() for path in service_files),
         "configured": config_path.exists(),
         "current_version": AUTO_UPLOADER_VERSION,
+        "interval_seconds": WATCH_INTERVAL_SECONDS,
         "state": load_state(),
     }
     if config_path.exists():
