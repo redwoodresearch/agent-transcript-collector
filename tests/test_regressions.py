@@ -1,11 +1,10 @@
 import subprocess
-from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
-from agent_transcript_collector import app
-from agent_transcript_collector import watcher
+from agent_transcript_collector import app, watcher
 from agent_transcript_collector.redactor import redact_path_token
 from agent_transcript_collector.sources.base import project_identity
 from agent_transcript_collector.sources.cursor import CursorSource
@@ -67,6 +66,22 @@ def test_upload_lock_rejects_a_second_process_lock(tmp_path):
 def test_watcher_captures_cursor_user_data_dir(monkeypatch):
     monkeypatch.setenv("CURSOR_USER_DATA_DIR", "/custom/cursor")
     assert watcher.capture_source_env()["CURSOR_USER_DATA_DIR"] == "/custom/cursor"
+
+
+def test_watcher_resolves_saved_labels_to_current_project_keys(monkeypatch):
+    groups = [
+        SimpleNamespace(key="project--one", label="project", sessions=[]),
+        SimpleNamespace(key="project--two", label="project", sessions=[]),
+    ]
+    source = SimpleNamespace(id="codex", discover=lambda: groups)
+    monkeypatch.setattr(watcher, "SOURCES", [source])
+    config = watcher.WatcherConfig(
+        groups=[watcher.AllowedGroup("codex", "_project-project", "project")]
+    )
+
+    resolved = watcher.resolve_allowed_groups(config)
+
+    assert {group.group for group in resolved} == {"project--one", "project--two"}
 
 
 def test_failed_launchd_install_removes_service_file(tmp_path, monkeypatch):

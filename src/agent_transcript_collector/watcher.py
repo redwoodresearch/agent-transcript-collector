@@ -19,14 +19,14 @@ from .paths import (
     watcher_config_path,
     watcher_state_path,
 )
-from .s3client import make_s3_client, selected_profile
+from .s3client import make_s3_client
 from .sources import SOURCES
 from .uploader import (
     UploadBusy,
     UploadLock,
-    upload_units,
+    list_uploaded_keys,
+    upload_transcripts,
 )
-
 
 PACKAGE_SPEC = "git+https://github.com/redwoodresearch/agent-transcript-collector@main"
 LAUNCHD_LABEL = "com.redwoodresearch.agent-transcript-collector"
@@ -144,19 +144,40 @@ def capture_source_env() -> dict[str, str]:
     return {name: os.environ[name] for name in SOURCE_ENV_VARS if os.environ.get(name)}
 
 
+def _resolve_allowed(config: WatcherConfig):
+    """Pair saved consent with currently discovered source groups.
+
+    Project keys changed when repository hashes were introduced. Exact keys are
+    preferred; a saved label is expanded only when its old key no longer exists.
+    """
+    sources = {source.id: source for source in SOURCES}
+    groups_by_source = {
+        source_id: source.discover() for source_id, source in sources.items()
+    }
+    resolved = {}
+    for allowed in config.groups:
+        groups = groups_by_source.get(allowed.source, [])
+        matches = [group for group in groups if group.key == allowed.group]
+        if not matches:
+            matches = [group for group in groups if group.label == allowed.label]
+        for group in matches:
+            resolved[(allowed.source, group.key)] = (sources[allowed.source], group)
+    return list(resolved.values())
+
+
+def resolve_allowed_groups(config: WatcherConfig) -> list[AllowedGroup]:
+    return [
+        AllowedGroup(source=source.id, group=group.key, label=group.label)
+        for source, group in _resolve_allowed(config)
+    ]
+
+
 def discover_allowed(config: WatcherConfig):
-    allowed = {(item.source, item.group) for item in config.groups}
-    discovered = []
-    for source in SOURCES:
-        sessions = [
-            session
-            for group in source.discover()
-            if (source.id, group.key) in allowed
-            for session in group.sessions
-        ]
-        if sessions:
-            discovered.append((source, sessions))
-    return discovered
+    sessions_by_source = {}
+    for source, group in _resolve_allowed(config):
+        entry = sessions_by_source.setdefault(source.id, (source, []))
+        entry[1].extend(group.sessions)
+    return list(sessions_by_source.values())
 
 
 def _sso_hint(exc: Exception, profile: str) -> str:
@@ -181,7 +202,6 @@ def run_once(
         "finished_at": None,
         "status": "running",
         "sessions_uploaded": 0,
-        "units_uploaded": 0,
         "errors": [],
     }
     old_profile = os.environ.get("CTC_AWS_PROFILE")
@@ -191,17 +211,18 @@ def run_once(
     try:
         with UploadLock(lock_path):
             client = s3 or make_s3_client()
+            uploaded_keys = list_uploaded_keys(client, config.contributor)
             for source, sessions in discover_allowed(config):
-                uploaded, upload_errors = upload_units(
+                uploaded, upload_errors = upload_transcripts(
                     client,
                     source,
                     sessions,
                     config.contributor,
                     config.redact_identity,
+                    uploaded_keys=uploaded_keys,
                 )
-                result["units_uploaded"] += len(uploaded)
                 result["sessions_uploaded"] += sum(
-                    unit["session_count"] for unit in uploaded
+                    item["transcript_count"] for item in uploaded
                 )
                 result["errors"].extend(
                     item.get("error", str(item)) for item in upload_errors
@@ -285,10 +306,10 @@ def _systemd_quote(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def render_systemd(
-    config: WatcherConfig, config_path: Path
-) -> tuple[bytes, bytes]:
-    command = " ".join(_systemd_quote(arg) for arg in watcher_command(config, config_path))
+def render_systemd(config: WatcherConfig, config_path: Path) -> tuple[bytes, bytes]:
+    command = " ".join(
+        _systemd_quote(arg) for arg in watcher_command(config, config_path)
+    )
     environment = {
         "HOME": str(Path.home()),
         "CTC_AWS_PROFILE": config.aws_profile,
@@ -423,7 +444,8 @@ def status(platform: str | None = None) -> dict:
     else:
         service_files = []
     result = {
-        "installed": bool(service_files) and all(path.exists() for path in service_files),
+        "installed": bool(service_files)
+        and all(path.exists() for path in service_files),
         "configured": config_path.exists(),
         "state": load_state(),
     }
@@ -433,7 +455,7 @@ def status(platform: str | None = None) -> dict:
             result["config"] = {
                 "contributor": config.contributor,
                 "redact_identity": config.redact_identity,
-                "groups": [asdict(group) for group in config.groups],
+                "groups": [asdict(group) for group in resolve_allowed_groups(config)],
                 "aws_profile": config.aws_profile,
             }
         except (OSError, ValueError, json.JSONDecodeError) as exc:

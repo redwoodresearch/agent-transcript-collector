@@ -147,7 +147,7 @@ def decode_existing_project_path(encoded: str) -> str | None:
 class Session:
     source: str          # source id, e.g. "claude_code"
     id: str              # session id, unique within (source, group)
-    group_key: str       # stable grouping key (used in archive paths)
+    group_key: str       # stable project identity used for storage keys
     group_label: str     # human-readable group label (usually a cwd)
     path: Path           # absolute path to the transcript file on disk
     size_bytes: int

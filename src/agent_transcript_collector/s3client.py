@@ -1,7 +1,7 @@
 """Shared S3 configuration and client factory.
 
-Used by both the collector (upload, ``app.py``) and the downloader
-(``download.py``) so bucket/region/credential handling is defined once.
+Used by the collector, watcher, and read-only S3 browser so bucket, region, and
+credential handling is defined once.
 """
 
 import os

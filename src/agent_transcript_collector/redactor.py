@@ -397,7 +397,7 @@ def redact_identity(text: str, usernames: tuple[str, ...] | None = None) -> tupl
 
 
 # Dash-encoded home paths used as project keys: `-home-<user>-...` (Claude) and
-# `home-<user>-...` (Codex/Pi). Applied only to archive paths / manifest group
+# `home-<user>-...` (Codex/Pi). Applied only to storage / manifest group
 # fields, where the context is unambiguously a path — so no min-length guard,
 # unlike bare-token redaction in free content.
 _HOMEPATH_ENCODED_RE = re.compile(r"(^|-)(home|Users)-([^-]+)")
@@ -409,7 +409,7 @@ _PROJECT_KEY_PREFIX = "_project-"
 
 
 def redact_path_token(token: str, usernames: tuple[str, ...] | None = None) -> tuple[str, int]:
-    """Redact usernames from an archive path / manifest group field.
+    """Redact usernames from a storage or manifest group field.
 
     Covers the decoded slash form (/home/<u>/) via redact_identity AND the
     dash-encoded project-key form (-home-<u>-, home-<u>-), which the slash regex

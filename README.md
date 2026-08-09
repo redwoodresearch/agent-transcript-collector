@@ -1,7 +1,7 @@
 # agent-transcript-collector
 
-Collect AI coding-agent transcripts with consent, redact secrets locally, upload
-them to S3, and download them later for analysis.
+Collect AI coding-agent transcripts with consent, redact secrets locally, and
+upload them to S3.
 
 Supported sources: **Claude Code**, **Codex**, **Cursor**, and **Pi**. Uploads go
 to `s3://rr-agent-transcripts` in `us-east-1`.
@@ -10,7 +10,7 @@ to `s3://rr-agent-transcripts` in `us-east-1`.
 - [Install](#install)
 - [Upload transcripts](#upload-transcripts)
 - [Automatic hourly uploads](#automatic-hourly-uploads)
-- [Download transcripts](#download-transcripts)
+- [Browse uploaded transcripts](#browse-uploaded-transcripts)
 - [What gets collected](#what-gets-collected)
 - [Privacy and redaction](#privacy-and-redaction)
 - [Storage layout](#storage-layout)
@@ -30,9 +30,9 @@ export AWS_PROFILE=<profile>
 The profile name is a local label. Use the same name when refreshing an expired
 session with `aws sso login --profile <profile>`.
 
-Uploads require `s3:PutObject` and `s3:ListBucket`: the collector lists its
-receipt prefix so it can skip transcript versions that were already uploaded.
-Downloads additionally require `s3:GetObject`.
+Uploads require `s3:PutObject` and `s3:ListBucket`: the collector lists the
+contributor prefix so deterministic transcript versions already present can be
+skipped. The transcript browser only requires `s3:ListBucket`.
 
 ## Install
 
@@ -55,7 +55,7 @@ Either way you get three commands:
 |---|---|
 | `agent-transcript-collector` | Local review UI, uploads, watcher setup |
 | `agent-transcript-watcher` | Watcher status and removal |
-| `rr-trans` | Browse, list, and download uploaded transcripts |
+| `rr-trans` | Explore uploaded transcript folders in S3 |
 
 Examples below use the short names. If you prefer `uvx`, prefix each one with
 `uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector'`.
@@ -124,58 +124,17 @@ Your folder choices are stored with user-only permissions:
 | Config | `~/Library/Application Support/agent-transcript-collector/` | `${XDG_CONFIG_HOME:-~/.config}/agent-transcript-collector/` |
 | Logs | `~/Library/Logs/agent-transcript-collector/watcher.log` | `${XDG_STATE_HOME:-~/.local/state}/agent-transcript-collector/watcher.log` |
 
-## Download transcripts
+## Browse uploaded transcripts
 
-List what is available:
-
-```bash
-rr-trans --list
-```
-
-Download one source into `./transcripts`:
+Open the read-only terminal browser:
 
 ```bash
-rr-trans --source claude_code
+rr-trans
 ```
 
-Download everything matched by your filters:
-
-```bash
-rr-trans --all
-```
-
-Given no download filter, the downloader only prints the catalog and a hint, so
-it will not accidentally pull the whole bucket.
-
-| Flag | Effect |
-|---|---|
-| `--list` | Print available archives grouped by source. Add `--verbose` for contributor breakdowns. |
-| `--source S` | Download only source `S`; repeatable, e.g. `--source claude_code --source codex`. |
-| `--contributor N` | Download only contributor/collection `N`; repeatable. |
-| `--prefix P` | Download only keys under S3 prefix `P`, e.g. `--prefix claude_code/alice/`. |
-| `--all` | Download everything matched by the filters. |
-| `--tui` | Browse the S3 folder tree and select folders or archives; needs `textual` installed (see below). |
-| `--dest DIR` | Destination folder, default `./transcripts`. |
-| `--no-extract` | Keep raw `.zip` archives instead of extracting `.jsonl` files. |
-| `--concurrency N` | Parallel unit downloads, default `4`. |
-
-The `--tui` browser uses Enter to expand folders, Space to select a folder or
-archive, and `d` to download the selection. It needs the optional `textual`
-dependency:
-
-```bash
-uv tool install --with textual 'git+https://github.com/redwoodresearch/agent-transcript-collector'
-```
-
-Extracted downloads land in:
-
-```text
-transcripts/<source>/<contributor>/<group>/<session>.jsonl
-transcripts/<source>/<contributor>/_manifests/<unit>.json
-```
-
-Downloads are idempotent and resumable. A unit already present on disk is
-skipped, so rerunning after an interruption only fetches what is missing.
+Use Enter to expand folders and `q` to quit. It opens at `mts-trans/` by default;
+pass `--prefix mts-trans/<contributor>/` to start at a narrower S3 prefix. The
+browser only lists object names and sizes. It does not download or extract data.
 
 ## What gets collected
 
@@ -201,8 +160,8 @@ sessions are excluded where the source schema makes that distinction possible.
 
 ## Privacy and redaction
 
-Redaction happens on your machine before anything is written to an archive, and
-the count of replacements is recorded in each unit's manifest.
+Redaction happens on your machine before anything is written to a ZIP, and the
+count of replacements is recorded in its manifest.
 
 Two kinds of content are rewritten:
 
@@ -231,22 +190,18 @@ what you select before uploading rather than treating redaction as a guarantee.
 
 ## Storage layout
 
-Uploads are split into size-budgeted zip units. Completed units use
-deterministic keys, so rerunning an upload overwrites the same S3 objects instead
-of creating duplicates:
+Each transcript version is stored in its own ZIP at a deterministic key:
 
 ```text
-s3://rr-agent-transcripts/<source>/<contributor>/<group-hash>/part-NNN-<members-hash>.zip
+s3://rr-agent-transcripts/mts-trans/<contributor>/<project-name>--<project-hash>/<source>/<session>/<content-hash>.zip
+s3://rr-agent-transcripts/mts-trans/<contributor>/<project-name>--<project-hash>/<source>/<parent>/subagents/<session>/<content-hash>.zip
 ```
 
-Each zip contains redacted transcript files plus a `manifest.json` with the
-source, contributor, timestamp, session metadata, and redaction counts.
-
-Successful uploads also write opaque per-transcript receipts under
-`<source>/<contributor>/_uploaded/<identity-hash>/<archive-hash>`. The archive
-hash covers both the source bytes and the redaction policy, and every upload
-path checks these receipts before creating an archive, so unchanged sessions are
-skipped consistently. Older receipt formats are not treated as exact matches.
+The readable project name is paired with a short identity hash so separate
+same-named repositories do not collide. Each ZIP contains one redacted
+transcript and a `manifest.json` with project, source, contributor, session,
+version, and redaction metadata. Resuming a session adds a content version;
+unchanged content resolves to the existing key and is skipped.
 
 ## Configuration
 
@@ -258,9 +213,7 @@ These knobs exist for overriding defaults:
 |---|---|---|
 | `AWS_PROFILE` | _(unset)_ | Standard AWS profile selector; set it to your General Sandbox profile. |
 | `CTC_AWS_PROFILE` | _(unset)_ | Collector-specific profile override. |
-| `CTC_UNIT_BYTES` | `26214400` (25 MB) | Per-unit upload size budget. |
-| `CTC_UPLOAD_CONCURRENCY` | `4` | Units uploaded in parallel. |
-| `CTC_DOWNLOAD_CONCURRENCY` | `4` | Units downloaded in parallel. |
+| `CTC_UPLOAD_CONCURRENCY` | `4` | Transcripts uploaded in parallel. |
 | `CTC_USERNAME_STOPLIST` | _(unset)_ | Comma-separated logins to never redact. |
 | `PORT` | `8899` | Local review UI port. |
 

@@ -1,4 +1,4 @@
-"""Shared, version-aware transcript archive and receipt uploader."""
+"""Upload one versioned ZIP per transcript using the ``mts-trans`` layout."""
 
 from __future__ import annotations
 
@@ -6,9 +6,10 @@ import hashlib
 import io
 import json
 import os
+import re
 import zipfile
-from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,12 +21,10 @@ from .redactor import (
     redact_path_token,
 )
 from .s3client import S3_BUCKET
+from .storage import STORAGE_PREFIX
 
-
-UNIT_BYTES = int(os.environ.get("CTC_UNIT_BYTES", str(25 * 1024 * 1024)))
+TRANSCRIPT_FORMAT_VERSION = 2
 UPLOAD_CONCURRENCY = max(1, int(os.environ.get("CTC_UPLOAD_CONCURRENCY", "4")))
-RECEIPT_DIR = "_uploaded"
-ARCHIVE_FORMAT_VERSION = 1
 
 
 class UploadBusy(RuntimeError):
@@ -76,227 +75,208 @@ class UploadLock:
             self._file = None
 
 
-def archive_fingerprint(raw_bytes: bytes, redact_id: bool) -> str:
-    """Identify the source bytes and processing policy used for an archive."""
-    policy = f"archive-v{ARCHIVE_FORMAT_VERSION}:redact-id={int(redact_id)}\0"
+@dataclass(frozen=True)
+class PreparedTranscript:
+    session: object
+    raw_bytes: bytes
+    fingerprint: str
+    key: str
+
+
+def transcript_fingerprint(raw_bytes: bytes, redact_id: bool) -> str:
+    """Identify source content and the redaction policy applied to it."""
+    policy = f"transcript-v{TRANSCRIPT_FORMAT_VERSION}:redact-id={int(redact_id)}\0"
     return hashlib.sha256(policy.encode() + raw_bytes).hexdigest()
 
 
-def _group_token(group_key: str) -> str:
-    return "g" + hashlib.sha1(group_key.encode("utf-8")).hexdigest()[:12]
+def _safe_segment(value: str) -> str:
+    value = value.strip()
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "-", value).strip("-") or "unknown"
+    if cleaned != value:
+        suffix = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+        cleaned = f"{cleaned}--{suffix}"
+    return cleaned
 
 
-def _receipt_token(group: str, parent: str | None, session: str) -> str:
-    identity = json.dumps([group, parent or "", session], separators=(",", ":"))
-    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+def _project_segment(session) -> str:
+    name = (
+        re.sub(r"[^A-Za-z0-9._-]", "-", session.group_label.strip()).strip("-")
+        or "project"
+    )
+    identity = hashlib.sha256(session.group_key.encode("utf-8")).hexdigest()[:8]
+    return f"{name}--{identity}"
 
 
-def _receipt_prefix(source_id: str, contributor: str) -> str:
-    return f"{source_id}/{contributor}/{RECEIPT_DIR}/"
+def transcript_prefix(contributor: str, source_id: str, session) -> str:
+    root = (
+        f"{STORAGE_PREFIX}/{_safe_segment(contributor)}/"
+        f"{_project_segment(session)}/{_safe_segment(source_id)}/"
+    )
+    if session.is_subagent and session.parent:
+        return (
+            f"{root}{_safe_segment(session.parent)}/subagents/"
+            f"{_safe_segment(session.id)}/"
+        )
+    return f"{root}{_safe_segment(session.id)}/"
 
 
-def _receipt_key(
-    source_id: str, contributor: str, session, fingerprint: str
-) -> str:
-    identity = _receipt_token(session.group_key, session.parent, session.id)
-    return f"{_receipt_prefix(source_id, contributor)}{identity}/{fingerprint}"
+def transcript_key(contributor: str, source_id: str, session, fingerprint: str) -> str:
+    return f"{transcript_prefix(contributor, source_id, session)}{fingerprint}.zip"
 
 
-def list_receipt_versions(
-    s3, source_id: str, contributor: str
-) -> dict[str, set[str]]:
-    """Return uploaded archive versions by opaque transcript identity."""
-    prefix = _receipt_prefix(source_id, contributor)
-    versions: dict[str, set[str]] = defaultdict(set)
+def list_uploaded_keys(s3, contributor: str) -> set[str]:
+    """List transcript versions already present for one contributor."""
+    prefix = f"{STORAGE_PREFIX}/{_safe_segment(contributor)}/"
+    keys: set[str] = set()
     paginator = s3.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
-        for obj in page.get("Contents", []):
-            suffix = obj["Key"][len(prefix):]
-            parts = suffix.split("/")
-            if len(parts) == 2 and all(parts):
-                versions[parts[0]].add(parts[1])
-    return dict(versions)
-
-
-def partition_uploaded(s3, source, sessions, contributor, redact_id=True):
-    """Split sessions into pending and uploaded using the shared receipt policy."""
-    versions = list_receipt_versions(s3, source.id, contributor)
-    pending, uploaded, errors = [], [], []
-    for session in sessions:
-        try:
-            raw_bytes = Path(session.path).read_bytes()
-        except OSError as exc:
-            errors.append(
-                {"source": source.id, "error": f"{session.id}: {exc}"}
-            )
-            continue
-        fingerprint = archive_fingerprint(raw_bytes, redact_id)
-        identity = _receipt_token(session.group_key, session.parent, session.id)
-        target = uploaded if fingerprint in versions.get(identity, set()) else pending
-        target.append(session)
-    return pending, uploaded, errors
-
-
-def _plan_units(sessions, unit_bytes: int | None = None):
-    """Split sessions into deterministic, size-budgeted group units."""
-    budget = UNIT_BYTES if unit_bytes is None else unit_bytes
-    by_group = defaultdict(list)
-    for session in sessions:
-        by_group[session.group_key].append(session)
-    for group_key in sorted(by_group):
-        members = sorted(
-            by_group[group_key], key=lambda session: (session.parent or "", session.id)
+        keys.update(
+            item["Key"]
+            for item in page.get("Contents", [])
+            if item["Key"].endswith(".zip")
         )
-        part, current, current_bytes = 0, [], 0
-        for session in members:
-            size = session.size_bytes or 0
-            if current and current_bytes + size > budget:
-                yield group_key, part, current
-                part, current, current_bytes = part + 1, [], 0
-            current.append(session)
-            current_bytes += size
-        if current:
-            yield group_key, part, current
+    return keys
 
 
-def _members_hash(included: list[tuple[object, str]]) -> str:
-    members = "\n".join(
-        f"{session.parent or ''}/{session.id}/{fingerprint}"
-        for session, fingerprint in included
-    )
-    return hashlib.sha1(members.encode("utf-8")).hexdigest()[:12]
+def _prepare(source, session, contributor: str, redact_id: bool) -> PreparedTranscript:
+    raw_bytes = Path(session.path).read_bytes()
+    fingerprint = transcript_fingerprint(raw_bytes, redact_id)
+    key = transcript_key(contributor, source.id, session, fingerprint)
+    return PreparedTranscript(session, raw_bytes, fingerprint, key)
 
 
-def _unit_key(source, contributor, group_key, part, included) -> str:
-    return (
-        f"{source.id}/{contributor}/{_group_token(group_key)}/"
-        f"part-{part:03d}-{_members_hash(included)}.zip"
-    )
-
-
-def _build_unit_zip(source, unit_sessions, contributor, redact_id=True):
-    """Build an archive and return its manifest plus included archive versions."""
-    buffer = io.BytesIO()
-    manifest_sessions = []
-    included: list[tuple[object, str]] = []
-    total_redactions = 0
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        for session in unit_sessions:
-            try:
-                raw_bytes = Path(session.path).read_bytes()
-            except OSError:
-                continue
-            content_sha256 = hashlib.sha256(raw_bytes).hexdigest()
-            fingerprint = archive_fingerprint(raw_bytes, redact_id)
-            raw = raw_bytes.decode("utf-8", errors="replace")
-            included.append((session, fingerprint))
-            raw, redaction_count = redact_jsonl_content(raw)
-            group_key, group_label = session.group_key, session.group_label
-            if redact_id:
-                raw, count = redact_identity(raw)
-                redaction_count += count
-                group_key, count = redact_path_token(group_key)
-                redaction_count += count
-                group_label, count = redact_path_token(group_label)
-                redaction_count += count
-            total_redactions += redaction_count
-            if session.is_subagent and session.parent:
-                archive_path = (
-                    f"{group_key}/{session.parent}/subagents/{session.id}.jsonl"
-                )
-            else:
-                archive_path = f"{group_key}/{session.id}.jsonl"
-            archive.writestr(archive_path, raw)
-            manifest_sessions.append(
-                {
-                    "group": group_key,
-                    "group_label": group_label,
-                    "session": session.id,
-                    "is_subagent": session.is_subagent,
-                    "parent": session.parent,
-                    "size_bytes": len(raw.encode("utf-8")),
-                    "content_sha256": content_sha256,
-                    "redactions": redaction_count,
-                }
-            )
-        manifest = {
-            "archive_format_version": ARCHIVE_FORMAT_VERSION,
-            "source": source.id,
-            "source_format": source.source_format,
-            "contributor": contributor,
-            "redact_identity": redact_id,
-            "uploaded_at": datetime.now(timezone.utc).isoformat(),
-            "subagent_count": sum(
-                1 for session in manifest_sessions if session["is_subagent"]
-            ),
-            "sessions": manifest_sessions,
-            "total_redactions": total_redactions,
-        }
-        archive.writestr("manifest.json", json.dumps(manifest, indent=2))
-    return buffer.getvalue(), manifest, included
-
-
-def upload_units(
+def partition_transcripts(
     s3,
     source,
     sessions,
-    contributor,
-    redact_id=True,
-    on_progress=None,
-    *,
-    unit_bytes: int | None = None,
+    contributor: str,
+    redact_id: bool = True,
+    uploaded_keys: set[str] | None = None,
 ):
-    """Upload sessions that do not already have matching receipts."""
-    sessions = list(sessions)
-    pending, already_uploaded, errors = partition_uploaded(
-        s3, source, sessions, contributor, redact_id
+    """Split current transcript versions into pending and already uploaded."""
+    existing = (
+        uploaded_keys
+        if uploaded_keys is not None
+        else list_uploaded_keys(s3, contributor)
+    )
+    pending: list[PreparedTranscript] = []
+    uploaded = []
+    errors = []
+    for session in sessions:
+        try:
+            prepared = _prepare(source, session, contributor, redact_id)
+        except OSError as exc:
+            errors.append({"source": source.id, "error": f"{session.id}: {exc}"})
+            continue
+        if prepared.key in existing:
+            uploaded.append(session)
+        else:
+            pending.append(prepared)
+    return pending, uploaded, errors
+
+
+def _build_transcript_zip(
+    source, prepared: PreparedTranscript, contributor: str, redact_id: bool = True
+):
+    session = prepared.session
+    raw = prepared.raw_bytes.decode("utf-8", errors="replace")
+    content_sha256 = hashlib.sha256(prepared.raw_bytes).hexdigest()
+    raw, redaction_count = redact_jsonl_content(raw)
+    group_key, group_label = session.group_key, session.group_label
+    if redact_id:
+        raw, count = redact_identity(raw)
+        redaction_count += count
+        group_key, count = redact_path_token(group_key)
+        redaction_count += count
+        group_label, count = redact_path_token(group_label)
+        redaction_count += count
+
+    suffix = Path(session.path).suffix.lower()
+    if suffix not in {".jsonl", ".txt"}:
+        suffix = ".txt"
+    manifest = {
+        "transcript_format_version": TRANSCRIPT_FORMAT_VERSION,
+        "source": source.id,
+        "source_format": source.source_format,
+        "contributor": contributor,
+        "project": {"key": group_key, "name": group_label},
+        "session": {
+            "id": session.id,
+            "is_subagent": session.is_subagent,
+            "parent": session.parent,
+        },
+        "version": {
+            "fingerprint": prepared.fingerprint,
+            "content_sha256": content_sha256,
+            "redact_identity": redact_id,
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        },
+        "size_bytes": len(raw.encode("utf-8")),
+        "redactions": redaction_count,
+    }
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(f"transcript{suffix}", raw)
+        archive.writestr("manifest.json", json.dumps(manifest, indent=2))
+    return buffer.getvalue(), manifest
+
+
+def upload_transcripts(
+    s3,
+    source,
+    sessions,
+    contributor: str,
+    redact_id: bool = True,
+    on_progress=None,
+    uploaded_keys: set[str] | None = None,
+):
+    """Upload each pending transcript version as its own deterministic ZIP."""
+    existing = (
+        uploaded_keys
+        if uploaded_keys is not None
+        else list_uploaded_keys(s3, contributor)
+    )
+    pending, uploaded, errors = partition_transcripts(
+        s3, source, list(sessions), contributor, redact_id, existing
     )
     if on_progress:
-        on_progress(len(already_uploaded) + len(errors))
-    units = list(_plan_units(pending, unit_bytes))
-    uploaded = []
-    if not units:
-        return uploaded, errors
+        on_progress(len(uploaded) + len(errors))
+    if not pending:
+        return [], errors
 
-    def upload_one(unit_spec):
-        group_key, part, unit = unit_spec
-        zip_bytes, manifest, included = _build_unit_zip(
-            source, unit, contributor, redact_id
+    def upload_one(prepared: PreparedTranscript):
+        zip_bytes, manifest = _build_transcript_zip(
+            source, prepared, contributor, redact_id
         )
-        key = _unit_key(source, contributor, group_key, part, included)
         s3.put_object(
             Bucket=S3_BUCKET,
-            Key=key,
+            Key=prepared.key,
             Body=zip_bytes,
             ContentType="application/zip",
         )
-        for session, fingerprint in included:
-            s3.put_object(
-                Bucket=S3_BUCKET,
-                Key=_receipt_key(source.id, contributor, session, fingerprint),
-                Body=key.encode("utf-8"),
-                ContentType="text/plain",
-            )
         return {
             "source": source.id,
-            "s3_key": key,
-            "session_count": len(included),
+            "s3_key": prepared.key,
+            "transcript_count": 1,
             "zip_size_bytes": len(zip_bytes),
-            "total_redactions": manifest["total_redactions"],
+            "redactions": manifest["redactions"],
         }
 
     local_usernames()
-    workers = min(UPLOAD_CONCURRENCY, len(units))
+    results = []
+    workers = min(UPLOAD_CONCURRENCY, len(pending))
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(upload_one, unit): unit for unit in units}
+        futures = {executor.submit(upload_one, item): item for item in pending}
         for future in as_completed(futures):
-            count = len(futures[future][2])
+            prepared = futures[future]
             try:
-                uploaded.append(future.result())
+                result = future.result()
+                results.append(result)
+                existing.add(prepared.key)
             except Exception as exc:
                 errors.append(
                     {"source": source.id, "error": f"{type(exc).__name__}: {exc}"}
                 )
             if on_progress:
-                on_progress(count)
-    return uploaded, errors
+                on_progress(1)
+    return results, errors

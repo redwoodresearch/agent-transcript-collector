@@ -710,10 +710,10 @@ function renderProgress(j) {
 function finishToast(j) {
   const up = j.uploads.length, failed = (j.errors || []).length;
   if (!up && failed) { showToast((j.errors[0] && j.errors[0].error) || 'Upload failed', true); return; }
-  const sessions = j.uploads.reduce((a, u) => a + u.session_count, 0);
+  const sessions = j.uploads.reduce((a, u) => a + u.transcript_count, 0);
   const bytes = j.uploads.reduce((a, u) => a + u.zip_size_bytes, 0);
-  const red = j.uploads.reduce((a, u) => a + u.total_redactions, 0);
-  let msg = `Uploaded ${sessions} sessions in ${up} part${up !== 1 ? 's' : ''} (${humanSize(bytes)}, ${red} redactions)`;
+  const red = j.uploads.reduce((a, u) => a + u.redactions, 0);
+  let msg = `Uploaded ${sessions} transcript${sessions !== 1 ? 's' : ''} (${humanSize(bytes)}, ${red} redactions)`;
   if (failed) msg += ` — ${failed} failed`;
   showToast(msg, failed > 0);
 }

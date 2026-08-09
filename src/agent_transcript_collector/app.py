@@ -1,9 +1,8 @@
 """FastAPI app: local web UI for selecting and uploading agent transcripts.
 
 Supports multiple agent harnesses (Claude Code, Codex, Cursor, Pi) via the source
-adapters in `.sources`. Uploads run as a background job and are split into
-size-budgeted, resumable units keyed
-<bucket>/<source>/<contributor>/<group-hash>/part-NNN-<members-hash>.zip
+adapters in `.sources`. Each transcript version is uploaded as one ZIP under
+``mts-trans/<contributor>/<project>/<source>/<session>/``.
 """
 
 import getpass
@@ -32,8 +31,9 @@ from .sources import SOURCES, detect_projects, find_session, get_source
 from .uploader import (
     UploadBusy,
     UploadLock,
-    partition_uploaded,
-    upload_units as _upload_units,
+    list_uploaded_keys,
+    partition_transcripts,
+    upload_transcripts as _upload_transcripts,
 )
 from .watcher import (
     AllowedGroup,
@@ -93,8 +93,9 @@ async def index():
 
 
 @app.get("/api/preview")
-async def preview_session(source: str, group: str, session: str, parent: str = "",
-                          identity: bool = True):
+async def preview_session(
+    source: str, group: str, session: str, parent: str = "", identity: bool = True
+):
     """Preview a session's messages. Secrets are always redacted; identity is
     the only optional pass."""
     sess = find_session(source, group, session, parent or None)
@@ -104,7 +105,7 @@ async def preview_session(source: str, group: str, session: str, parent: str = "
 
     raw = Path(sess.path).read_text(encoding="utf-8", errors="replace")
 
-    raw, redaction_count = redact_jsonl_content(raw)   # always — secrets/credentials
+    raw, redaction_count = redact_jsonl_content(raw)  # always — secrets/credentials
     if identity:
         raw, n = redact_identity(raw)
         redaction_count += n
@@ -112,10 +113,12 @@ async def preview_session(source: str, group: str, session: str, parent: str = "
     messages = []
     for m in src.parse_messages(raw):
         text = m["text"]
-        messages.append({
-            "role": m["role"],
-            "text": text[:2000] + ("..." if len(text) > 2000 else ""),
-        })
+        messages.append(
+            {
+                "role": m["role"],
+                "text": text[:2000] + ("..." if len(text) > 2000 else ""),
+            }
+        )
 
     return {
         "messages": messages,
@@ -134,19 +137,23 @@ def _resolve_selection(selected):
     """Resolve the UI selection to [(source, [Session])] (no network calls).
 
     Key on (group, parent, id): subagents share their parent's group, so id
-    alone is not unique — must match the archive-path disambiguation.
+    alone is not unique, so parent identity is part of the selection key.
     """
     picks_by_source: dict[str, set] = defaultdict(set)
     for item in selected:
         picks_by_source[item.get("source", "")].add(
-            (item.get("group", ""), item.get("parent") or None, item.get("session", "")))
+            (item.get("group", ""), item.get("parent") or None, item.get("session", ""))
+        )
     out = []
     for source_id, picks in picks_by_source.items():
         source = get_source(source_id)
         if source is None:
             continue
-        resolved = {(g.key, s.parent or None, s.id): s
-                    for g in source.discover() for s in g.sessions}
+        resolved = {
+            (g.key, s.parent or None, s.id): s
+            for g in source.discover()
+            for s in g.sessions
+        }
         sessions = [resolved[p] for p in picks if p in resolved]
         if sessions:
             out.append((source, sessions))
@@ -154,8 +161,7 @@ def _resolve_selection(selected):
 
 
 def _run_upload_job(job_id, selected, contributor, redact_id):
-    """Worker thread: upload all selected sessions as resumable units, ticking
-    progress into JOBS[job_id]."""
+    """Upload selected transcript versions while updating job progress."""
     job = JOBS[job_id]
     try:
         with UploadLock():
@@ -163,22 +169,36 @@ def _run_upload_job(job_id, selected, contributor, redact_id):
             job["total"] = sum(len(s) for _, s in to_upload)
             job["status"] = "running"
             s3 = _make_s3_client()
+            uploaded_keys = list_uploaded_keys(s3, contributor)
             for source, sessions in to_upload:
                 try:
-                    uploaded, unit_errors = _upload_units(
-                        s3, source, sessions, contributor, redact_id,
-                        on_progress=lambda n: job.__setitem__("done", job["done"] + n))
+                    uploaded, upload_errors = _upload_transcripts(
+                        s3,
+                        source,
+                        sessions,
+                        contributor,
+                        redact_id,
+                        on_progress=lambda n: job.__setitem__("done", job["done"] + n),
+                        uploaded_keys=uploaded_keys,
+                    )
                     with JOBS_LOCK:
                         job["uploads"].extend(uploaded)
-                        job["errors"].extend(unit_errors)
+                        job["errors"].extend(upload_errors)
                 except Exception as e:
                     with JOBS_LOCK:
-                        job["errors"].append({
-                            "source": source.id,
-                            "error": f"{type(e).__name__}: {e}",
-                        })
-            job["status"] = ("completed" if not job["errors"]
-                             else "partial" if job["uploads"] else "failed")
+                        job["errors"].append(
+                            {
+                                "source": source.id,
+                                "error": f"{type(e).__name__}: {e}",
+                            }
+                        )
+            job["status"] = (
+                "completed"
+                if not job["errors"]
+                else "partial"
+                if job["uploads"]
+                else "failed"
+            )
     except UploadBusy as e:
         with JOBS_LOCK:
             job["errors"].append({"error": str(e)})
@@ -196,7 +216,7 @@ def _run_upload_job(job_id, selected, contributor, redact_id):
 
 @app.post("/api/uploaded")
 async def uploaded_sessions(request: Request):
-    """Return local session descriptors with upload receipts for a contributor."""
+    """Return local sessions whose current transcript version is in S3."""
     body = await request.json()
     contributor = _safe_name(body.get("contributor_name", "anonymous"))
     redact_id = bool(body.get("redact_identity", True))
@@ -209,6 +229,7 @@ async def uploaded_sessions(request: Request):
 
     try:
         s3 = _make_s3_client()
+        uploaded_keys = list_uploaded_keys(s3, contributor)
         uploaded = []
         for source_id, source_sessions in by_source.items():
             source = get_source(source_id)
@@ -219,19 +240,22 @@ async def uploaded_sessions(request: Request):
             }
             resolved_items = []
             for item in source_sessions:
-                session = resolved.get((
-                    item.get("group", ""),
-                    item.get("parent") or None,
-                    item.get("session", ""),
-                ))
+                session = resolved.get(
+                    (
+                        item.get("group", ""),
+                        item.get("parent") or None,
+                        item.get("session", ""),
+                    )
+                )
                 if session is not None:
                     resolved_items.append((item, session))
-            _, found, _ = partition_uploaded(
+            _, found, _ = partition_transcripts(
                 s3,
                 source,
                 [session for _, session in resolved_items],
                 contributor,
                 redact_id,
+                uploaded_keys,
             )
             found_ids = {
                 (session.group_key, session.parent or None, session.id)
@@ -240,8 +264,7 @@ async def uploaded_sessions(request: Request):
             uploaded.extend(
                 item
                 for item, session in resolved_items
-                if (session.group_key, session.parent or None, session.id)
-                in found_ids
+                if (session.group_key, session.parent or None, session.id) in found_ids
             )
         return {"uploaded": uploaded}
     except Exception as e:
@@ -263,20 +286,31 @@ async def upload(request: Request):
 
     with JOBS_LOCK:
         if _active_job["id"] is not None:
-            return JSONResponse({"error": "An upload is already running",
-                                 "job_id": _active_job["id"]}, status_code=409)
+            return JSONResponse(
+                {"error": "An upload is already running", "job_id": _active_job["id"]},
+                status_code=409,
+            )
         # Bound memory: drop oldest finished jobs, keep the most recent few.
         finished = [jid for jid, j in JOBS.items() if j["finished_at"] is not None]
         for jid in finished[:-10]:
             JOBS.pop(jid, None)
         job_id = uuid.uuid4().hex[:12]
         _active_job["id"] = job_id
-        JOBS[job_id] = {"status": "preparing", "total": None, "done": 0,
-                        "errors": [], "uploads": [],
-                        "started_at": time.time(), "finished_at": None}
+        JOBS[job_id] = {
+            "status": "preparing",
+            "total": None,
+            "done": 0,
+            "errors": [],
+            "uploads": [],
+            "started_at": time.time(),
+            "finished_at": None,
+        }
 
-    threading.Thread(target=_run_upload_job,
-                     args=(job_id, selected, contributor, redact_id), daemon=True).start()
+    threading.Thread(
+        target=_run_upload_job,
+        args=(job_id, selected, contributor, redact_id),
+        daemon=True,
+    ).start()
     return JSONResponse({"job_id": job_id}, status_code=202)
 
 
@@ -348,7 +382,7 @@ async def upload_status(job_id: str):
     job = JOBS.get(job_id)
     if job is None:
         return JSONResponse({"error": "Unknown job"}, status_code=404)
-    with JOBS_LOCK:                       # snapshot — the worker mutates lists concurrently
+    with JOBS_LOCK:  # snapshot — the worker mutates lists concurrently
         snap = dict(job)
         snap["uploads"] = list(job["uploads"])
         snap["errors"] = list(job["errors"])
@@ -356,32 +390,38 @@ async def upload_status(job_id: str):
 
 
 def headless_upload(contributor_name: str = "anonymous"):
-    """Upload all transcripts from every source as resumable units, no UI."""
+    """Upload all current transcript versions from every source, no UI."""
     contributor = _safe_name(contributor_name)
     any_found = False
     try:
         with UploadLock():
             s3 = _make_s3_client()
+            uploaded_keys = list_uploaded_keys(s3, contributor)
             for source in SOURCES:
                 sessions = [s for g in source.discover() for s in g.sessions]
                 if not sessions:
                     continue
                 any_found = True
-                print(f"[{source.label}] uploading {len(sessions)} sessions as units...")
+                print(f"[{source.label}] checking {len(sessions)} transcripts...")
                 try:
-                    uploaded, unit_errors = _upload_units(
-                        s3, source, sessions, contributor)
+                    uploaded, upload_errors = _upload_transcripts(
+                        s3,
+                        source,
+                        sessions,
+                        contributor,
+                        uploaded_keys=uploaded_keys,
+                    )
                 except Exception as e:
                     print(f"[{source.label}] upload failed: {type(e).__name__}: {e}")
                     continue
                 mb = sum(u["zip_size_bytes"] for u in uploaded) / 1024 / 1024
-                red = sum(u["total_redactions"] for u in uploaded)
+                red = sum(u["redactions"] for u in uploaded)
                 msg = (
-                    f"[{source.label}] {len(uploaded)} unit(s) uploaded "
+                    f"[{source.label}] {len(uploaded)} transcript(s) uploaded "
                     f"({mb:.1f} MB, {red} redactions)"
                 )
-                if unit_errors:
-                    msg += f"; {len(unit_errors)} unit(s) failed"
+                if upload_errors:
+                    msg += f"; {len(upload_errors)} transcript(s) failed"
                 print(msg + ".")
     except UploadBusy as e:
         print(f"Upload skipped: {e}.")
@@ -419,7 +459,9 @@ def main():
             return
         if port != base:
             print(f"Port {base} is in use — using {port} instead.")
-        threading.Timer(1.0, lambda: webbrowser.open(f"http://localhost:{port}")).start()
+        threading.Timer(
+            1.0, lambda: webbrowser.open(f"http://localhost:{port}")
+        ).start()
         print(f"Opening browser at http://localhost:{port}")
         print("Press Ctrl+C to stop.")
         uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
