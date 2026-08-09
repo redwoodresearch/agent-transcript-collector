@@ -1,9 +1,8 @@
-"""Read-only S3 transcript browser for the ``rr-trans`` command."""
+"""Lazy S3 transcript browser for the ``rr-trans`` command."""
 
 from __future__ import annotations
 
-import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import ClassVar
 
 from rich.text import Text
@@ -13,56 +12,46 @@ from textual.widgets import Footer, Header, Tree
 from textual.widgets.tree import TreeNode
 
 from .s3client import S3_BUCKET, make_s3_client
-from .sources.base import human_size
 from .storage import STORAGE_PREFIX
 
 
 @dataclass(frozen=True)
-class S3Object:
-    key: str
-    size: int
-
-
-@dataclass
-class ObjectNode:
-    """One folder or object in the S3 key hierarchy."""
+class S3Entry:
+    """One immediate child of an S3 prefix."""
 
     name: str
-    children: dict[str, ObjectNode] = field(default_factory=dict)
-    object_size: int | None = None
-
-    def summary(self) -> tuple[int, int]:
-        if self.object_size is not None:
-            return 1, self.object_size
-        summaries = [child.summary() for child in self.children.values()]
-        return sum(count for count, _ in summaries), sum(size for _, size in summaries)
+    key: str
+    is_folder: bool
 
 
-def list_objects(s3, prefix: str) -> list[S3Object]:
-    """List transcript ZIPs beneath an S3 prefix."""
+def list_folder(s3, prefix: str) -> list[S3Entry]:
+    """List only the immediate folders and transcript ZIPs under ``prefix``."""
     paginator = s3.get_paginator("list_objects_v2")
-    objects = []
-    for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
-        objects.extend(
-            S3Object(item["Key"], item["Size"])
-            for item in page.get("Contents", [])
-            if item["Key"].endswith(".zip")
-        )
-    return objects
-
-
-def build_object_tree(objects: list[S3Object]) -> ObjectNode:
-    root = ObjectNode(S3_BUCKET)
-    for item in sorted(objects, key=lambda entry: entry.key):
-        current = root
-        for part in item.key.split("/"):
-            current = current.children.setdefault(part, ObjectNode(part))
-        current.object_size = item.size
-    return root
+    folders: dict[str, S3Entry] = {}
+    objects: dict[str, S3Entry] = {}
+    for page in paginator.paginate(
+        Bucket=S3_BUCKET,
+        Prefix=prefix,
+        Delimiter="/",
+    ):
+        for item in page.get("CommonPrefixes", []):
+            key = item["Prefix"]
+            name = key.removeprefix(prefix).rstrip("/")
+            if name:
+                folders[key] = S3Entry(name=name, key=key, is_folder=True)
+        for item in page.get("Contents", []):
+            key = item["Key"]
+            name = key.removeprefix(prefix)
+            if name and "/" not in name and key.endswith(".zip"):
+                objects[key] = S3Entry(name=name, key=key, is_folder=False)
+    return [
+        *sorted(folders.values(), key=lambda entry: entry.name.lower()),
+        *sorted(objects.values(), key=lambda entry: entry.name.lower()),
+    ]
 
 
 class TranscriptBrowser(App[None]):
-    """Explore transcript folders and objects without downloading them."""
+    """Explore transcript folders, loading one S3 level when it is opened."""
 
     CSS = """
     Tree {
@@ -77,58 +66,87 @@ class TranscriptBrowser(App[None]):
         Binding("escape", "quit", "Quit"),
     ]
 
-    def __init__(self, objects: list[S3Object]) -> None:
+    def __init__(self, prefix: str) -> None:
         super().__init__()
-        self._objects = objects
+        self._prefix = prefix
+        self._s3 = None
+        self._loading: set[int] = set()
+        self._loaded: set[int] = set()
 
     def compose(self) -> ComposeResult:
-        model = build_object_tree(self._objects)
-        tree: Tree[None] = Tree("", id="transcripts")
+        tree: Tree[S3Entry] = Tree("Connecting to S3…", id="transcripts")
         tree.root.expand()
-        self._populate(tree.root, model)
         yield Header()
         yield tree
         yield Footer()
 
-    def _populate(self, parent: TreeNode[None], model: ObjectNode) -> None:
-        children = sorted(
-            model.children.values(),
-            key=lambda child: (child.object_size is not None, child.name.lower()),
-        )
-        for child in children:
-            tree_node = (
-                parent.add_leaf(self._label(child))
-                if child.object_size is not None
-                else parent.add(self._label(child))
-            )
-            self._populate(tree_node, child)
-
-    @staticmethod
-    def _label(node: ObjectNode) -> Text:
-        count, size = node.summary()
-        detail = (
-            human_size(size)
-            if node.object_size is not None
-            else f"{count} transcripts, {human_size(size)}"
-        )
-        return Text.assemble((node.name, "cyan"), (f"  {detail}", "dim"))
-
     def on_mount(self) -> None:
-        self.title = "rr-trans"
+        self.title = "Redwood Research Transcript Collector"
         self.sub_title = "enter=expand · q=quit"
         tree = self.query_one("#transcripts", Tree)
-        model = build_object_tree(self._objects)
-        tree.root.set_label(self._label(model))
         tree.focus()
+        self._load(tree.root, self._prefix)
+
+    def on_tree_node_expanded(self, event: Tree.NodeExpanded[S3Entry]) -> None:
+        entry = event.node.data
+        if entry is not None and entry.is_folder:
+            self._load(event.node, entry.key)
+
+    def _load(self, node: TreeNode[S3Entry], prefix: str) -> None:
+        node_id = node.id
+        if node_id in self._loading or node_id in self._loaded:
+            return
+        self._loading.add(node_id)
+        node.remove_children()
+        node.add_leaf(Text("Loading…", style="dim"))
+
+        def fetch() -> None:
+            try:
+                if self._s3 is None:
+                    self._s3 = make_s3_client()
+                entries = list_folder(self._s3, prefix)
+            except Exception as exc:
+                self.call_from_thread(self._show_error, node, exc)
+            else:
+                self.call_from_thread(self._show_entries, node, entries)
+
+        self.run_worker(
+            fetch,
+            thread=True,
+            exit_on_error=False,
+            group="s3-listing",
+        )
+
+    def _show_entries(
+        self,
+        node: TreeNode[S3Entry],
+        entries: list[S3Entry],
+    ) -> None:
+        self._loading.discard(node.id)
+        self._loaded.add(node.id)
+        node.remove_children()
+        if node is self.query_one("#transcripts", Tree).root:
+            node.set_label(Text(f"s3://{S3_BUCKET}/{self._prefix}", style="cyan"))
+        if not entries:
+            node.add_leaf(Text("No transcripts found", style="dim"))
+            return
+        for entry in entries:
+            label = Text(entry.name, style="cyan" if entry.is_folder else "")
+            if entry.is_folder:
+                child = node.add(label, data=entry)
+                child.add_leaf(Text("Open to load", style="dim"))
+            else:
+                node.add_leaf(label, data=entry)
+
+    def _show_error(self, node: TreeNode[S3Entry], error: Exception) -> None:
+        self._loading.discard(node.id)
+        node.remove_children()
+        node.add_leaf(Text(f"Unable to load: {error}", style="red"))
 
 
 def main(prefix: str = f"{STORAGE_PREFIX}/") -> int:
-    print(f"Listing s3://{S3_BUCKET}/{prefix} ...", file=sys.stderr)
-    objects = list_objects(make_s3_client(), prefix)
-    if not objects:
-        print("No transcripts found.", file=sys.stderr)
-        return 1
-    TranscriptBrowser(objects).run()
+    normalized = prefix.rstrip("/") + "/"
+    TranscriptBrowser(normalized).run()
     return 0
 
 
