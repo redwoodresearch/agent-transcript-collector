@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import io
 import json
@@ -42,10 +41,21 @@ class UploadLock:
 
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self._file = self.path.open("a+")
+        self._file = self.path.open("a+b")
         try:
-            fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            if os.name == "nt":
+                import msvcrt
+
+                if self._file.tell() == 0:
+                    self._file.write(b"\0")
+                    self._file.flush()
+                self._file.seek(0)
+                msvcrt.locking(self._file.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
             self._file.close()
             self._file = None
             raise UploadBusy("another transcript upload is already running")
@@ -53,7 +63,15 @@ class UploadLock:
 
     def __exit__(self, exc_type, exc, tb):
         if self._file is not None:
-            fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
+            if os.name == "nt":
+                import msvcrt
+
+                self._file.seek(0)
+                msvcrt.locking(self._file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
             self._file.close()
             self._file = None
 

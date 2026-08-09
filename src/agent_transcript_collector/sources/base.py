@@ -9,6 +9,7 @@ terms of the normalized types defined here.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -66,30 +67,19 @@ def project_identity(cwd: str) -> tuple[str, str]:
     project; stale paths fall back to their final directory name.
     """
     normalized = cwd.replace("\\", "/").rstrip("/")
+    directory = canonical_project_directory(normalized)
+    if directory is not None:
+        name = Path(directory).name or "_root"
+        identity = directory
+    else:
+        # A stale Codex worktree no longer has a .git file to follow. Its stable
+        # repository name is still encoded after the worktree id.
+        match = re.search(r"/\.?codex/worktrees/[^/]+/([^/]+)", normalized)
+        name = match.group(1) if match else Path(normalized).name or "_root"
+        identity = f"stale:{name}"
 
-    codex_match = re.search(r"/\.?codex/worktrees/[^/]+/([^/]+)", normalized)
-    if codex_match:
-        name = codex_match.group(1)
-        return f"_project-{name}", name
-
-    for marker in ("/.claude/worktrees/", "/.agents/worktrees/"):
-        if marker in normalized:
-            repository = normalized.split(marker, 1)[0]
-            name = Path(repository).name
-            return f"_project-{name}", name
-
-    path = Path(normalized).expanduser()
-    if not path.is_absolute():
-        name = path.name or "_root"
-        return f"_project-{name}", name
-
-    for candidate in (path, *path.parents):
-        if (candidate / ".git").exists():
-            name = candidate.name
-            return f"_project-{name}", name
-
-    name = path.name or "_root"
-    return f"_project-{name}", name
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+    return f"_project-{name}-{digest}", name
 
 
 def canonical_project_directory(cwd: str) -> str | None:

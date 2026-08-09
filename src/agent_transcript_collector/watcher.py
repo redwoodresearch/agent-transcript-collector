@@ -35,6 +35,7 @@ SOURCE_ENV_VARS = (
     "CLAUDE_CONFIG_DIR",
     "CODEX_HOME",
     "CURSOR_HOME",
+    "CURSOR_USER_DATA_DIR",
     "PI_CODING_AGENT_SESSION_DIR",
     "PI_CODING_AGENT_DIR",
 )
@@ -326,7 +327,12 @@ def install(
     platform: str | None = None,
     run_command=subprocess.run,
 ) -> dict:
-    """Persist consent and install/reload the native per-user timer."""
+    """Persist consent and install/reload the native per-user timer.
+
+    Activation failures roll the unit files back, because `status` reads
+    installed state from their presence and would otherwise report an hourly job
+    that never loaded.
+    """
     platform = platform or sys.platform
     config.uv_path = config.uv_path or _find_uv()
     target = save_config(config, config_path)
@@ -334,30 +340,41 @@ def install(
         service_path = launchd_path()
         _atomic_write(service_path, render_launchd(config, target))
         domain = f"gui/{os.getuid()}"
-        run_command(
-            ["launchctl", "bootout", f"{domain}/{LAUNCHD_LABEL}"],
-            check=False,
-            capture_output=True,
-        )
-        completed = run_command(
-            ["launchctl", "bootstrap", domain, str(service_path)],
-            check=False,
-            capture_output=True,
-        )
-        if completed.returncode:
-            raise RuntimeError(
-                completed.stderr.decode(errors="replace") or "launchctl bootstrap failed"
+        try:
+            run_command(
+                ["launchctl", "bootout", f"{domain}/{LAUNCHD_LABEL}"],
+                check=False,
+                capture_output=True,
             )
+            completed = run_command(
+                ["launchctl", "bootstrap", domain, str(service_path)],
+                check=False,
+                capture_output=True,
+            )
+            if completed.returncode:
+                raise RuntimeError(
+                    completed.stderr.decode(errors="replace")
+                    or "launchctl bootstrap failed"
+                )
+        except Exception:
+            service_path.unlink(missing_ok=True)
+            raise
         files = [str(service_path)]
     elif platform.startswith("linux"):
         service_path, timer_path = systemd_paths()
         service, timer = render_systemd(config, target)
         _atomic_write(service_path, service)
         _atomic_write(timer_path, timer)
-        run_command(["systemctl", "--user", "daemon-reload"], check=True)
-        run_command(
-            ["systemctl", "--user", "enable", "--now", timer_path.name], check=True
-        )
+        try:
+            run_command(["systemctl", "--user", "daemon-reload"], check=True)
+            run_command(
+                ["systemctl", "--user", "enable", "--now", timer_path.name], check=True
+            )
+        except Exception:
+            service_path.unlink(missing_ok=True)
+            timer_path.unlink(missing_ok=True)
+            run_command(["systemctl", "--user", "daemon-reload"], check=False)
+            raise
         files = [str(service_path), str(timer_path)]
     else:
         raise RuntimeError("the watcher installer supports macOS and Linux")

@@ -175,7 +175,7 @@
   </label>
   <span id="history-status"></span>
   <label>
-    <input type="checkbox" id="identity-toggle" checked onchange="refreshUploaded()">
+    <input type="checkbox" id="identity-toggle" checked onchange="onIdentityInput()">
     Redact my username &amp; paths
   </label>
 </div>
@@ -301,13 +301,33 @@ function saveName(v) { try { localStorage.setItem('ctc_name', v); } catch (e) {}
 function loadName() { try { return localStorage.getItem('ctc_name'); } catch (e) { return null; } }
 
 let autoUploadEnabled = false;
+let watcherConfigured = false;
+let watcherGroups = new Set();
+
+function harnessKey(harness) {
+  return `${harness.dataset.source}|${harness.dataset.group}`;
+}
+
+// The harnesses a project has consented to. A project whose saved config covers
+// only some of its harnesses renders indeterminate — keep exactly those groups,
+// so saving an unrelated project can't quietly revoke them.
+function consentedHarnesses(project) {
+  const cb = project.querySelector('.auto-upload-checkbox');
+  const harnesses = Array.from(project.querySelectorAll('.harness'));
+  if (cb.checked) return harnesses;
+  if (cb.indeterminate) return harnesses.filter(h => watcherGroups.has(harnessKey(h)));
+  return [];
+}
+
+function consentedProjects() {
+  return Array.from(document.querySelectorAll('.project'))
+    .filter(project => consentedHarnesses(project).length > 0);
+}
 
 function selectedAutoUploadGroups() {
-  return Array.from(document.querySelectorAll('.auto-upload-checkbox:checked'))
-    .flatMap(cb => Array.from(cb.closest('.project').querySelectorAll('.harness')).map(harness => ({
-      source: harness.dataset.source,
-      group: harness.dataset.group,
-    })));
+  return Array.from(document.querySelectorAll('.project'))
+    .flatMap(project => consentedHarnesses(project))
+    .map(harness => ({source: harness.dataset.source, group: harness.dataset.group}));
 }
 
 async function updateAutoUploadConfig(enabled) {
@@ -332,21 +352,27 @@ async function loadWatcher() {
   try {
     const resp = await fetch('/api/watcher');
     const data = await resp.json();
-    document.querySelectorAll('.auto-upload-checkbox').forEach(cb => {
-      cb.checked = false;
-      cb.indeterminate = false;
-    });
-    if (data.config && data.config.groups) {
-      const allowed = new Set(data.config.groups.map(item => `${item.source}|${item.group}`));
-      document.querySelectorAll('.project').forEach(project => {
-        const cb = project.querySelector('.auto-upload-checkbox');
-        const harnesses = Array.from(project.querySelectorAll('.harness'));
-        const enabled = harnesses.filter(harness =>
-          allowed.has(`${harness.dataset.source}|${harness.dataset.group}`)).length;
-        cb.checked = harnesses.length > 0 && enabled === harnesses.length;
-        cb.indeterminate = enabled > 0 && enabled < harnesses.length;
-      });
+    watcherConfigured = Boolean(data.config);
+    if (data.config) {
+      const name = data.config.contributor || 'anonymous';
+      const redact = Boolean(data.config.redact_identity);
+      const settingsChanged =
+        document.getElementById('contributor-name').value !== name ||
+        document.getElementById('identity-toggle').checked !== redact;
+      document.getElementById('contributor-name').value = name;
+      document.getElementById('identity-toggle').checked = redact;
+      saveName(name);
+      if (settingsChanged) refreshUploaded();
     }
+    watcherGroups = new Set(
+      ((data.config && data.config.groups) || []).map(item => `${item.source}|${item.group}`));
+    document.querySelectorAll('.project').forEach(project => {
+      const cb = project.querySelector('.auto-upload-checkbox');
+      const harnesses = Array.from(project.querySelectorAll('.harness'));
+      const enabled = harnesses.filter(harness => watcherGroups.has(harnessKey(harness))).length;
+      cb.checked = harnesses.length > 0 && enabled === harnesses.length;
+      cb.indeterminate = enabled > 0 && enabled < harnesses.length;
+    });
     autoUploadEnabled = Boolean(data.installed);
     toggle.disabled = false;
     toggle.textContent = autoUploadEnabled ? 'Disable' : 'Enable';
@@ -357,15 +383,15 @@ async function loadWatcher() {
       const detail = last.finished_at
         ? ` Last run: ${last.status}, ${last.sessions_uploaded || 0} uploaded.`
         : '';
-      const enabled = document.querySelectorAll('.auto-upload-checkbox:checked').length;
+      const enabled = consentedProjects().length;
       status.textContent = `Enabled for ${enabled} project${enabled !== 1 ? 's' : ''}.${detail}`;
     } else {
-      const selected = document.querySelectorAll('.auto-upload-checkbox:checked').length;
+      const selected = consentedProjects().length;
       status.textContent = selected
         ? `${selected} project${selected !== 1 ? 's' : ''} selected. Auto upload is disabled.`
         : 'Select projects to auto upload.';
     }
-    updatePendingCounts(true);
+    updatePendingCounts();
   } catch (e) {
     status.textContent = 'Watcher status unavailable';
     toggle.disabled = true;
@@ -419,7 +445,22 @@ let historyAvailable = false;
 function onNameInput() {
   saveName(document.getElementById('contributor-name').value.trim());
   clearTimeout(historyTimer);
-  historyTimer = setTimeout(refreshUploaded, 400);
+  historyTimer = setTimeout(refreshSettings, 400);
+}
+
+function onIdentityInput() {
+  refreshSettings();
+}
+
+async function refreshSettings() {
+  refreshUploaded();
+  if (!watcherConfigured) return;
+  try {
+    await updateAutoUploadConfig(autoUploadEnabled);
+    await loadWatcher();
+  } catch (e) {
+    showToast(e.message, true);
+  }
 }
 
 async function refreshUploaded() {
@@ -480,9 +521,11 @@ function updatePendingCounts(available = historyAvailable) {
       ? `${pending} not uploaded`
       : 'all uploaded';
     label.classList.toggle('complete', pending === 0);
-    if (project.querySelector('.auto-upload-checkbox').checked) {
+    const consented = consentedHarnesses(project);
+    if (consented.length) {
       selectedProjects += 1;
-      selectedPending += pending;
+      selectedPending += consented.reduce(
+        (total, harness) => total + harness.querySelectorAll('.session:not(.uploaded)').length, 0);
     }
   });
 
@@ -585,8 +628,9 @@ async function uploadNow() {
   btn.disabled = true;
   btn.textContent = 'Starting…';
 
-  const selected = Array.from(document.querySelectorAll('.auto-upload-checkbox:checked'))
-    .flatMap(cb => Array.from(cb.closest('.project').querySelectorAll('.session:not(.uploaded)')))
+  const selected = Array.from(document.querySelectorAll('.project'))
+    .flatMap(project => consentedHarnesses(project))
+    .flatMap(harness => Array.from(harness.querySelectorAll('.session:not(.uploaded)')))
     .map(sessionDescriptor);
   if (!selected.length) {
     showToast('Selected projects are already uploaded');

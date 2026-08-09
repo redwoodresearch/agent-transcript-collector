@@ -402,6 +402,11 @@ def redact_identity(text: str, usernames: tuple[str, ...] | None = None) -> tupl
 # unlike bare-token redaction in free content.
 _HOMEPATH_ENCODED_RE = re.compile(r"(^|-)(home|Users)-([^-]+)")
 
+# Keys from `project_identity` carry a repository basename behind this prefix
+# rather than an encoded path, so the dash-encoded pass must skip them: a repo
+# named `home-assistant` is not a user named `assistant`.
+_PROJECT_KEY_PREFIX = "_project-"
+
 
 def redact_path_token(token: str, usernames: tuple[str, ...] | None = None) -> tuple[str, int]:
     """Redact usernames from an archive path / manifest group field.
@@ -411,6 +416,8 @@ def redact_path_token(token: str, usernames: tuple[str, ...] | None = None) -> t
     can't see. Default logins are still preserved.
     """
     token, n = redact_identity(token, usernames=usernames)
+    if token.startswith(_PROJECT_KEY_PREFIX):
+        return token, n
     defaults = default_usernames()
     counts = {"n": 0}
 

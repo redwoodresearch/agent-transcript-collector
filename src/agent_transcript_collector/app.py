@@ -316,10 +316,15 @@ async def put_watcher(request: Request):
     )
     try:
         enabled = bool(body.get("enabled", True))
-        if enabled or watcher_status().get("installed"):
+        installed = bool(watcher_status().get("installed"))
+        if enabled and not installed:
             return install_watcher(config)
         path = save_watcher_config(config)
-        return {"installed": False, "configured": True, "config_path": str(path)}
+        return {
+            "installed": installed,
+            "configured": True,
+            "config_path": str(path),
+        }
     except Exception as e:
         return JSONResponse(
             {"error": f"Could not update auto upload: {type(e).__name__}: {e}"},

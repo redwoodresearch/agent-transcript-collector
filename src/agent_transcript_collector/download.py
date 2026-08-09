@@ -16,8 +16,10 @@ Pass ``--no-extract`` to keep the raw ``.zip`` archives instead (mirrored at the
 S3 key paths under ``<dest>``). Both modes are idempotent: re-running skips units
 already present, so an interrupted download resumes cleanly.
 
-Reading the bucket needs ``s3:GetObject`` + ``s3:ListBucket`` (the distributed
-*upload* key is ``s3:PutObject`` only and cannot download).
+Reading the bucket needs ``s3:GetObject`` + ``s3:ListBucket``. Uploading needs
+``s3:PutObject`` **and** ``s3:ListBucket``: every upload path lists the receipt
+prefix first to skip transcripts whose content was already archived. A
+PutObject-only credential cannot upload, and cannot download at all.
 """
 
 from __future__ import annotations
