@@ -104,7 +104,15 @@
     text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
   }
   .session-summary:hover { color: var(--text); }
-  .session-meta { color: var(--text-muted); font-size: 0.78rem; white-space: nowrap; }
+  .session-meta {
+    display: flex; align-items: center; gap: 9px; color: var(--text-muted);
+    font-size: 0.78rem; white-space: nowrap;
+  }
+  .session-stat { display: inline-flex; align-items: center; gap: 4px; }
+  .session-stat svg {
+    width: 14px; height: 14px; fill: none; stroke: currentColor;
+    stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+  }
   .session-actions {
     width: 104px; display: flex; align-items: center; justify-content: flex-end; gap: 8px;
   }
@@ -253,8 +261,25 @@
           {{ session.first_message }}
         </span>
         <span class="session-meta">
-          {{ session.message_count }} msgs
-          {% if session.modified %}&middot; {{ session.modified.strftime('%b %d') }}{% endif %}
+          <span class="session-stat" aria-label="{{ session.message_count }} messages"
+                title="{{ session.message_count }} messages">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path>
+            </svg>
+            <span aria-hidden="true">{{ session.message_count }}</span>
+          </span>
+          {% if session.modified %}
+          <time class="session-stat icon-tooltip" tabindex="0"
+                datetime="{{ session.modified.isoformat() }}"
+                aria-label="Modified {{ session.modified.strftime('%b %d, %Y at %I:%M:%S %p') }}"
+                data-tooltip="{{ session.modified.strftime('%b %d, %Y at %I:%M:%S %p') }}">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="9"></circle>
+              <path d="M12 7v5l3 2"></path>
+            </svg>
+            <span aria-hidden="true">{{ session.modified.strftime('%b %d') }}</span>
+          </time>
+          {% endif %}
         </span>
         <span class="session-actions">
           {% if session.is_subagent %}
