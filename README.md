@@ -55,7 +55,7 @@ Either way you get three commands:
 |---|---|
 | `agent-transcript-collector` | Local review UI, uploads, watcher setup |
 | `agent-transcript-watcher` | Watcher status and removal |
-| `agent-transcript-downloader` | List and download uploaded transcripts |
+| `rr-trans` | Browse, list, and download uploaded transcripts |
 
 Examples below use the short names. If you prefer `uvx`, prefix each one with
 `uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector'`.
@@ -129,19 +129,19 @@ Your folder choices are stored with user-only permissions:
 List what is available:
 
 ```bash
-agent-transcript-downloader --list
+rr-trans --list
 ```
 
 Download one source into `./transcripts`:
 
 ```bash
-agent-transcript-downloader --source claude_code
+rr-trans --source claude_code
 ```
 
 Download everything matched by your filters:
 
 ```bash
-agent-transcript-downloader --all
+rr-trans --all
 ```
 
 Given no download filter, the downloader only prints the catalog and a hint, so
@@ -154,12 +154,14 @@ it will not accidentally pull the whole bucket.
 | `--contributor N` | Download only contributor/collection `N`; repeatable. |
 | `--prefix P` | Download only keys under S3 prefix `P`, e.g. `--prefix claude_code/alice/`. |
 | `--all` | Download everything matched by the filters. |
-| `--tui` | Open a checkbox selector; needs `textual` installed (see below). |
+| `--tui` | Browse the S3 folder tree and select folders or archives; needs `textual` installed (see below). |
 | `--dest DIR` | Destination folder, default `./transcripts`. |
 | `--no-extract` | Keep raw `.zip` archives instead of extracting `.jsonl` files. |
 | `--concurrency N` | Parallel unit downloads, default `4`. |
 
-The `--tui` selector needs the optional `textual` dependency:
+The `--tui` browser uses Enter to expand folders, Space to select a folder or
+archive, and `d` to download the selection. It needs the optional `textual`
+dependency:
 
 ```bash
 uv tool install --with textual 'git+https://github.com/redwoodresearch/agent-transcript-collector'

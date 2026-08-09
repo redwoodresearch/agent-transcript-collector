@@ -167,7 +167,7 @@ def print_catalog(units: list[Unit], verbose: bool) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="agent-transcript-downloader",
+        prog="rr-trans",
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -212,7 +212,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--tui",
         action="store_true",
-        help="Open an interactive selector to pick sources (needs the 'tui' extra).",
+        help="Browse and select S3 folders or archives (needs the 'tui' extra).",
     )
     parser.add_argument(
         "--extract",
@@ -252,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.tui:
         try:
-            from .tui import select_sources
+            from .tui import select_units
         except ImportError:
             print(
                 "The --tui selector needs the 'tui' extra. Install it with:\n"
@@ -261,11 +261,11 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        chosen = select_sources(aggregate_by_source(units))
+        chosen = select_units(units)
         if not chosen:
             print("Nothing selected; aborting.", file=sys.stderr)
             return 1
-        units = filter_units(units, sources=chosen)
+        units = chosen
     elif not (args.all or args.source or args.contributor or args.prefix):
         print_catalog(units, args.verbose)
         print(
