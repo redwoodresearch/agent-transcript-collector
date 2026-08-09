@@ -95,7 +95,7 @@
   .sessions.open { display: block; }
 
   .session {
-    display: flex; align-items: center; gap: 10px; padding: 8px 16px 8px 72px;
+    display: flex; align-items: center; gap: 8px; padding: 8px 16px 8px 72px;
     border-bottom: 1px solid var(--border); font-size: 0.83rem;
   }
   .session:last-child { border-bottom: none; }
@@ -105,7 +105,7 @@
   }
   .session-summary:hover { color: var(--text); }
   .session-meta {
-    display: flex; align-items: center; gap: 9px; color: var(--text-muted);
+    display: flex; align-items: center; gap: 6px; color: var(--text-muted);
     font-size: 0.78rem; white-space: nowrap;
   }
   .session-stat { display: inline-flex; align-items: center; gap: 4px; }
@@ -114,7 +114,7 @@
     stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
   }
   .session-actions {
-    width: 104px; display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+    display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-shrink: 0;
   }
   .icon-tooltip { position: relative; }
   .icon-tooltip::after {
