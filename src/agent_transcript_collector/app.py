@@ -11,7 +11,6 @@ import re
 import shutil
 import socket
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -442,21 +441,16 @@ def _find_free_port(start: int, host: str = "127.0.0.1", tries: int = 20) -> int
     return None
 
 
-def main():
-    headless = "--all" in sys.argv
-    contributor_name = "anonymous"
-    for i, arg in enumerate(sys.argv):
-        if arg == "--name" and i + 1 < len(sys.argv):
-            contributor_name = sys.argv[i + 1]
-
+def main(headless: bool = False, contributor_name: str = "anonymous") -> int:
     if headless:
         headless_upload(contributor_name)
+        return 0
     else:
         base = int(os.environ.get("PORT", 8899))
         port = _find_free_port(base)
         if port is None:
             print(f"No free port found in {base}-{base + 19}; is something stuck?")
-            return
+            return 1
         if port != base:
             print(f"Port {base} is in use — using {port} instead.")
         threading.Timer(
@@ -465,7 +459,8 @@ def main():
         print(f"Opening browser at http://localhost:{port}")
         print("Press Ctrl+C to stop.")
         uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+        return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

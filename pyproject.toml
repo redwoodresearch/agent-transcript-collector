@@ -12,8 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-agent-transcript-collector = "agent_transcript_collector.app:main"
-rr-trans = "agent_transcript_collector.tui:main"
+rr-trans = "agent_transcript_collector.cli:main"
 agent-transcript-watcher = "agent_transcript_collector.watcher:main"
 
 [build-system]

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import sys
 from dataclasses import dataclass, field
 from typing import ClassVar
@@ -123,23 +122,9 @@ class TranscriptBrowser(App[None]):
         tree.focus()
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="rr-trans",
-        description="Browse uploaded transcript folders in S3.",
-    )
-    parser.add_argument(
-        "--prefix",
-        default=f"{STORAGE_PREFIX}/",
-        help=f"S3 prefix to browse (default: {STORAGE_PREFIX}/).",
-    )
-    return parser
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
-    print(f"Listing s3://{S3_BUCKET}/{args.prefix} ...", file=sys.stderr)
-    objects = list_objects(make_s3_client(), args.prefix)
+def main(prefix: str = f"{STORAGE_PREFIX}/") -> int:
+    print(f"Listing s3://{S3_BUCKET}/{prefix} ...", file=sys.stderr)
+    objects = list_objects(make_s3_client(), prefix)
     if not objects:
         print("No transcripts found.", file=sys.stderr)
         return 1

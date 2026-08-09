@@ -40,7 +40,7 @@ Run it directly with no install:
 
 ```bash
 uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
-  agent-transcript-collector
+  rr-trans ui
 ```
 
 Or install once so the commands are on your `PATH`:
@@ -49,13 +49,13 @@ Or install once so the commands are on your `PATH`:
 uv tool install 'git+https://github.com/redwoodresearch/agent-transcript-collector'
 ```
 
-Either way you get three commands:
+Either way you get two commands:
 
 | Command | Purpose |
 |---|---|
-| `agent-transcript-collector` | Local review UI, uploads, watcher setup |
+| `rr-trans ui` | Local review UI, uploads, watcher setup |
+| `rr-trans tui` | Explore uploaded transcript folders in S3 |
 | `agent-transcript-watcher` | Watcher status and removal |
-| `rr-trans` | Explore uploaded transcript folders in S3 |
 
 Examples below use the short names. If you prefer `uvx`, prefix each one with
 `uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector'`.
@@ -65,7 +65,7 @@ Examples below use the short names. If you prefer `uvx`, prefix each one with
 Open the local review UI:
 
 ```bash
-agent-transcript-collector
+rr-trans ui
 ```
 
 This serves a web UI at <http://localhost:8899> (if that port is busy, the next
@@ -76,7 +76,7 @@ under that contributor name are marked **uploaded**.
 To skip the UI and upload everything found on the machine:
 
 ```bash
-agent-transcript-collector --all --name <contributor>
+rr-trans ui --all --name <contributor>
 ```
 
 Use `--all` only when you intend a bulk upload without per-session review.
@@ -129,7 +129,7 @@ Your folder choices are stored with user-only permissions:
 Open the read-only terminal browser:
 
 ```bash
-rr-trans
+rr-trans tui
 ```
 
 Use Enter to expand folders and `q` to quit. It opens at `mts-trans/` by default;
