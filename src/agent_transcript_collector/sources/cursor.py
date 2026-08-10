@@ -75,7 +75,7 @@ def decode_project_name(encoded: str) -> str:
 
 
 def _fallback_project_label(encoded: str) -> str:
-    worktree = re.search(r"(?:^|-)codex-worktrees-[^-]+-(.+)$", encoded)
+    worktree = re.search(r"(?:^|-)\.?codex-worktrees-[^-]+-(.+)$", encoded)
     if worktree:
         return worktree.group(1)
     return decode_project_name(encoded)

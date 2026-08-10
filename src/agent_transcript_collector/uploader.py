@@ -189,7 +189,7 @@ def _build_transcript_zip(source, prepared: PreparedTranscript, contributor: str
     redaction_count += count
     group_key, count = redact_path_token(group_key)
     redaction_count += count
-    group_label, count = redact_path_token(group_label)
+    group_label, count = redact_identity(group_label)
     redaction_count += count
 
     suffix = Path(session.path).suffix.lower()

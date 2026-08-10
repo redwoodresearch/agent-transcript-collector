@@ -358,6 +358,14 @@ let watcherConfigured = false;
 let watcherGroups = new Set();
 let nameRevision = 0;
 let syncedNameRevision = 0;
+let watcherMutation = Promise.resolve();
+let watcherEnabledOverride = null;
+
+function runWatcherMutation(operation) {
+  const result = watcherMutation.catch(() => {}).then(operation);
+  watcherMutation = result;
+  return result;
+}
 
 function harnessKey(harness) {
   return `${harness.dataset.source}|${harness.dataset.group}`;
@@ -388,16 +396,17 @@ function selectedAutoUploadGroups() {
 async function updateAutoUploadConfig(enabled, removedGroups = []) {
   const submittedNameRevision = nameRevision;
   const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
-  const resp = await fetch('/api/watcher', {
+  const groups = selectedAutoUploadGroups();
+  const resp = await runWatcherMutation(() => fetch('/api/watcher', {
     method: 'PUT',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
-      groups: selectedAutoUploadGroups(),
+      groups,
       removed_groups: removedGroups,
       contributor_name: contributorName,
       enabled,
     }),
-  });
+  }));
   const data = await resp.json();
   if (!resp.ok) throw new Error(data.error || 'Could not update auto upload');
   const currentName = document.getElementById('contributor-name').value.trim() || 'anonymous';
@@ -483,7 +492,7 @@ async function loadWatcher() {
       cb.checked = harnesses.length > 0 && enabled === harnesses.length;
       cb.indeterminate = enabled > 0 && enabled < harnesses.length;
     });
-    autoUploadEnabled = Boolean(data.installed);
+    autoUploadEnabled = watcherEnabledOverride ?? Boolean(data.installed);
     const installedVersion = (data.config && data.config.auto_uploader_version) || 0;
     const currentVersion = data.current_version;
     version.textContent = data.needs_reinstall
@@ -556,9 +565,14 @@ async function toggleAutoUpload() {
   }
   button.disabled = true;
   button.textContent = autoUploadEnabled ? 'Disabling…' : 'Enabling…';
+  const disabling = autoUploadEnabled;
+  watcherEnabledOverride = !disabling;
   try {
-    if (autoUploadEnabled) {
-      const resp = await fetch('/api/watcher', {method: 'DELETE'});
+    if (disabling) {
+      clearTimeout(historyTimer);
+      autoUploadEnabled = false;
+      const resp = await runWatcherMutation(
+        () => fetch('/api/watcher', {method: 'DELETE'}));
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || 'Disable failed');
       showToast('Auto upload disabled');
@@ -567,7 +581,10 @@ async function toggleAutoUpload() {
       showToast('Auto upload enabled');
     }
     await loadWatcher();
+    watcherEnabledOverride = null;
   } catch (e) {
+    watcherEnabledOverride = null;
+    if (disabling) autoUploadEnabled = true;
     showToast(e.message, true);
     button.disabled = false;
     button.textContent = autoUploadEnabled ? 'Disable' : 'Enable';
