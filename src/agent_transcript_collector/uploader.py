@@ -109,12 +109,10 @@ def _safe_segment(value: str) -> str:
 
 
 def _project_segment(session) -> str:
-    name = (
+    return (
         re.sub(r"[^A-Za-z0-9._-]", "-", session.group_label.strip()).strip("-")
         or "project"
     )
-    identity = hashlib.sha256(session.group_key.encode("utf-8")).hexdigest()[:8]
-    return f"{name}--{identity}"
 
 
 def transcript_prefix(contributor: str, source_id: str, session) -> str:

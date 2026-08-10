@@ -185,15 +185,15 @@ what you select before uploading rather than treating redaction as a guarantee.
 Each transcript is stored in one ZIP at a stable key:
 
 ```text
-s3://rr-agent-transcripts/mts-trans/<contributor>/<project-name>--<project-hash>/<source>/<session>/transcript.zip
-s3://rr-agent-transcripts/mts-trans/<contributor>/<project-name>--<project-hash>/<source>/<parent>/subagents/<session>/transcript.zip
+s3://rr-agent-transcripts/mts-trans/<contributor>/<project-name>/<source>/<session>/transcript.zip
+s3://rr-agent-transcripts/mts-trans/<contributor>/<project-name>/<source>/<parent>/subagents/<session>/transcript.zip
 ```
 
-The readable project name is paired with a short identity hash so separate
-same-named repositories do not collide. Each ZIP contains one redacted
-transcript and a `manifest.json` with project, source, contributor, session,
-content-fingerprint, and redaction metadata. Resuming a session overwrites the
-same object only when the privacy-safe fingerprint changes.
+Transcripts with the same project name share one project directory. Each ZIP
+contains one redacted transcript and a `manifest.json` with project, source,
+contributor, session, content-fingerprint, and redaction metadata. Resuming a
+session overwrites the same object only when the privacy-safe fingerprint
+changes.
 
 ## Configuration
 
