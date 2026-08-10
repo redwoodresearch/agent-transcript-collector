@@ -4,13 +4,19 @@ Layout: $CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/<session-uuid>.jsonl
         (default $CLAUDE_CONFIG_DIR is ~/.claude)
 Format: JSONL; entries have type "user"/"assistant" and a `message.content`
         that is either a string or a list of content blocks.
+
+Oversized tool results and background-task output are written outside the
+transcript, which keeps only a pointer to them; see `sidecars` below.
 """
 
 from __future__ import annotations
 
 import os
+import re
+import tempfile
 from pathlib import Path
 
+from ..sidecars import SidecarBuilder, SidecarSet
 from .base import (
     Group,
     Session,
@@ -22,6 +28,20 @@ from .base import (
     truncate,
 )
 
+# Pointers appear inside JSON string values, so a backslash (an escaped newline
+# in the surrounding JSON) ends a path just as whitespace and quotes do. Both
+# folders are flat, so the file name itself cannot contain a separator.
+_PATH = r"[^\s\"'\\<>,)\]]"
+_NAME = r"[^\s\"'\\<>,)\]/]"
+
+# "<persisted-output>Output too large (44.9KB). Full output saved to:
+#  ~/.claude/projects/<project>/<session>/tool-results/<id>.txt"
+_TOOL_RESULT_RE = re.compile(rf"/{_PATH}*/tool-results/{_NAME}+")
+
+# "<output-file>/tmp/claude-501/<project>/<session>/tasks/<id>.output</output-file>",
+# emitted when a background command or task finishes.
+_TASK_OUTPUT_RE = re.compile(rf"/{_PATH}*/tasks/{_NAME}+\.output")
+
 
 def _config_dir() -> Path:
     override = os.environ.get("CLAUDE_CONFIG_DIR")
@@ -30,6 +50,18 @@ def _config_dir() -> Path:
 
 def _projects_dir() -> Path:
     return _config_dir() / "projects"
+
+
+def _task_output_roots() -> list[Path]:
+    """Per-user temp folders holding background-task output, e.g. /tmp/claude-501/."""
+    bases = {Path(tempfile.gettempdir()), Path("/tmp")}
+    return [
+        directory
+        for base in bases
+        if base.is_dir()
+        for directory in base.glob("claude-*")
+        if directory.is_dir()
+    ]
 
 
 def decode_project_name(encoded: str) -> str:
@@ -136,6 +168,26 @@ class ClaudeCodeSource:
                 if text:
                     first = truncate(text)
         return cwd, first or "(empty session)", count
+
+    def sidecars(self, session: Session, raw_text: str) -> SidecarSet:
+        """Resolve the oversized tool results and task output this session saw.
+
+        Pointers are followed rather than the session folder simply being
+        listed, because a resumed session inherits the earlier session's
+        folder and keeps pointing back at it.
+        """
+        builder = SidecarBuilder(roots=[_projects_dir(), *_task_output_roots()])
+        for pointer in _TOOL_RESULT_RE.findall(raw_text):
+            builder.add(pointer, "tool-results")
+        for pointer in _TASK_OUTPUT_RE.findall(raw_text):
+            builder.add(pointer, "task-outputs")
+        if not session.is_subagent:
+            # A session's own folder also holds output its subagents asked for,
+            # which the parent transcript never names.
+            builder.add_directory(
+                Path(session.path).with_suffix("") / "tool-results", "tool-results"
+            )
+        return builder.build()
 
     def parse_messages(self, raw: str) -> list[dict]:
         messages = []

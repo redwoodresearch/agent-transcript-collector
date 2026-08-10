@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from ..paths import project_identity_cache_path
+from ..sidecars import SidecarSet
 
 
 _CODEX_WORKTREE_RE = re.compile(
@@ -291,3 +292,19 @@ class Source(Protocol):
     def parse_messages(self, raw: str) -> list[dict]:
         """Parse raw (possibly redacted) transcript text into [{role, text}]."""
         ...
+
+
+@runtime_checkable
+class SidecarSource(Protocol):
+    """A source whose transcripts point at agent-visible files stored elsewhere."""
+
+    def sidecars(self, session: Session, raw_text: str) -> SidecarSet:
+        """Resolve the side files an unredacted transcript points at."""
+        ...
+
+
+def session_sidecars(source, session: Session, raw_text: str) -> SidecarSet:
+    """Return a source's side files, or none for harnesses that have no such files."""
+    if isinstance(source, SidecarSource):
+        return source.sidecars(session, raw_text)
+    return SidecarSet()

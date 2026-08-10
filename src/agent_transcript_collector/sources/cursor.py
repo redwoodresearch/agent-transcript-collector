@@ -10,6 +10,10 @@ Format: Composer 2 JSONL entries with top-level `role` and
         and tool-call inputs; tool outputs are intentionally not present in
         these files. The collector preserves the raw redacted transcript, while
         previews are best-effort.
+
+Shell output and oversized tool results are written per project under
+`terminals/` and `agent-tools/`, and the agent reads them back by path; see
+`sidecars` below.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ import re
 import sqlite3
 from pathlib import Path
 
+from ..sidecars import SidecarBuilder, SidecarSet
 from .base import (
     Group,
     Session,
@@ -28,6 +33,13 @@ from .base import (
     mtime,
     project_identity,
     truncate,
+)
+
+# Side-file paths reach the transcript as tool-call arguments (the agent reads
+# them back), so they sit inside JSON strings and end at a quote or separator.
+# Both folders are flat, so the file name itself cannot contain a separator.
+_SIDE_FILE_RE = re.compile(
+    r"/[^\s\"'\\<>,)\]]*/(agent-tools|terminals)/[^\s\"'\\<>,)\]/]+"
 )
 
 
@@ -294,6 +306,27 @@ class CursorSource:
         messages = self._parse_text_messages(raw)
         first = next((m["text"] for m in messages if m["role"] == "user" and m["text"].strip()), "")
         return truncate(first) if first else "(empty session)", len(messages)
+
+    def sidecars(self, session: Session, raw_text: str) -> SidecarSet:
+        """Resolve the terminal and tool-output files this session read back.
+
+        Both folders are shared by every session in a project, so only files
+        the transcript names are collected, and only from the project the
+        session belongs to.
+        """
+        project_dir = self._project_dir(Path(session.path))
+        if project_dir is None:
+            return SidecarSet()
+        builder = SidecarBuilder(roots=[project_dir])
+        for match in _SIDE_FILE_RE.finditer(raw_text):
+            builder.add(match.group(0), match.group(1))
+        return builder.build()
+
+    def _project_dir(self, path: Path) -> Path | None:
+        for parent in path.parents:
+            if parent.name == "agent-transcripts":
+                return parent.parent
+        return None
 
     def parse_messages(self, raw: str) -> list[dict]:
         messages = []

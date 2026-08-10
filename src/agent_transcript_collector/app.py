@@ -27,6 +27,7 @@ from jinja2 import Environment, PackageLoader
 from .redactor import redact_identity, redact_jsonl_content
 from .s3client import make_s3_client as _make_s3_client, selected_profile
 from .sources import SOURCES, detect_projects, find_session, get_source
+from .sources.base import human_size, session_sidecars
 from .uploader import (
     UploadBusy,
     UploadLock,
@@ -100,6 +101,9 @@ async def preview_session(source: str, group: str, session: str, parent: str = "
         return JSONResponse({"error": "Session not found"}, status_code=404)
 
     raw = Path(sess.path).read_text(encoding="utf-8", errors="replace")
+    # Side files are resolved from the original text: redaction rewrites the
+    # very paths the transcript points at.
+    sidecars = session_sidecars(src, sess, raw)
 
     raw, redaction_count = redact_jsonl_content(raw)
     raw, n = redact_identity(raw)
@@ -119,6 +123,15 @@ async def preview_session(source: str, group: str, session: str, parent: str = "
         "messages": messages,
         "redaction_count": redaction_count,
         "total_messages": len(messages),
+        "sidecars": [
+            {
+                "name": sidecar.arcname,
+                "kind": sidecar.kind,
+                "size_human": human_size(sidecar.size_bytes),
+            }
+            for sidecar in sidecars.files
+        ],
+        "sidecars_missing": len(sidecars.missing),
     }
 
 
@@ -164,7 +177,7 @@ def _run_upload_job(job_id, selected, contributor):
             job["total"] = sum(len(s) for _, s in to_upload)
             job["status"] = "running"
             s3 = _make_s3_client()
-            uploaded_fingerprints: dict[str, str | None] = {}
+            uploaded_metadata: dict[str, dict] = {}
             for source, sessions in to_upload:
                 try:
                     uploaded, upload_errors = _upload_transcripts(
@@ -173,7 +186,7 @@ def _run_upload_job(job_id, selected, contributor):
                         sessions,
                         contributor,
                         on_progress=lambda n: job.__setitem__("done", job["done"] + n),
-                        uploaded_fingerprints=uploaded_fingerprints,
+                        uploaded_metadata=uploaded_metadata,
                     )
                     with JOBS_LOCK:
                         job["uploads"].extend(uploaded)
@@ -222,7 +235,7 @@ async def uploaded_sessions(request: Request):
 
     try:
         s3 = _make_s3_client()
-        uploaded_fingerprints: dict[str, str | None] = {}
+        uploaded_metadata: dict[str, dict] = {}
         uploaded = []
         for source_id, source_sessions in by_source.items():
             source = get_source(source_id)
@@ -247,7 +260,7 @@ async def uploaded_sessions(request: Request):
                 source,
                 [session for _, session in resolved_items],
                 contributor,
-                uploaded_fingerprints,
+                uploaded_metadata,
             )
             found_ids = {
                 (session.group_key, session.parent or None, session.id)
