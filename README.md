@@ -150,6 +150,34 @@ tool-call inputs; Cursor does not record tool outputs in these native files.
 Subagents are collected and marked in the manifest. Monitor and scaffolding
 sessions are excluded where the source schema makes that distinction possible.
 
+### Tool output stored outside the transcript
+
+Harnesses move oversized tool output into separate files and leave only a
+pointer in the transcript, so a transcript on its own records that the agent
+saw something without recording what. Those files are collected alongside the
+transcript that points at them:
+
+| Source | Folder | Holds |
+|---|---|---|
+| Claude Code | `<project>/<session>/tool-results/` | Tool results too large to inline |
+| Claude Code | `<tmp>/claude-<uid>/<project>/<session>/tasks/` | Background command output |
+| Cursor | `<project>/agent-tools/` | Oversized tool results the agent reads back |
+| Cursor | `<project>/terminals/` | Shell output the agent reads back |
+
+Only files a transcript actually names are collected, resolved from the
+pointer rather than by listing a folder, because a resumed session keeps
+pointing at the folder it inherited from the session before it. A pointer is
+followed only when it stays inside the folder its harness owns, so a symlink
+leading elsewhere is ignored. Claude Code additionally points a finished task
+at the subagent transcript, which is collected as a session in its own right.
+
+Harnesses delete these files on their own schedule, so some pointers are
+already dead by the time a transcript is uploaded. Those are listed in the
+manifest instead, and an upload that has lost side files never overwrites an
+earlier upload that still had them.
+
+Codex and Pi keep tool output inline, so they have no such files.
+
 ## Privacy and redaction
 
 Redaction happens on your machine before anything is written to a ZIP, and the
@@ -195,6 +223,24 @@ contributor, session, content-fingerprint, and redaction metadata. Resuming a
 session overwrites the same object only when the privacy-safe fingerprint
 changes.
 
+Side files sit beside the transcript in the same ZIP, under the folder they
+came from:
+
+```text
+transcript.jsonl
+manifest.json
+tool-results/<name>.txt
+task-outputs/<name>.output
+agent-tools/<name>.txt
+terminals/<name>.txt
+```
+
+`manifest.json` records each one under `sidecars`, with the redacted path the
+transcript refers to it by, so a pointer in the transcript can be matched to
+its file. Pointers whose target was already gone are listed under
+`sidecars.missing`. A session with no side files keeps the fingerprint it
+always had, so this does not rewrite earlier uploads.
+
 ## Configuration
 
 Normally the only thing you set is the SSO profile from the
@@ -206,6 +252,7 @@ These knobs exist for overriding defaults:
 | `AWS_PROFILE` | _(unset)_ | Standard AWS profile selector; set it to your General Sandbox profile. |
 | `CTC_AWS_PROFILE` | _(unset)_ | Collector-specific profile override. |
 | `CTC_UPLOAD_CONCURRENCY` | `4` | Transcripts uploaded in parallel. |
+| `CTC_SIDECAR_MAX_BYTES` | `104857600` | Side-file bytes collected per session. |
 | `CTC_USERNAME_STOPLIST` | _(unset)_ | Comma-separated logins to never redact. |
 | `PORT` | `8899` | Local review UI port. |
 

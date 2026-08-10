@@ -198,14 +198,14 @@ def run_once(
     try:
         with UploadLock(lock_path):
             client = s3 or make_s3_client()
-            uploaded_fingerprints: dict[str, str | None] = {}
+            uploaded_metadata: dict[str, dict] = {}
             for source, sessions in discover_allowed(config):
                 uploaded, upload_errors = upload_transcripts(
                     client,
                     source,
                     sessions,
                     config.contributor,
-                    uploaded_fingerprints=uploaded_fingerprints,
+                    uploaded_metadata=uploaded_metadata,
                 )
                 result["sessions_uploaded"] += sum(
                     item["transcript_count"] for item in uploaded
