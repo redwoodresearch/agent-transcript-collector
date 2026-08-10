@@ -109,10 +109,10 @@ def _safe_segment(value: str) -> str:
 
 
 def _project_segment(session) -> str:
-    return (
-        re.sub(r"[^A-Za-z0-9._-]", "-", session.group_label.strip()).strip("-")
-        or "project"
-    )
+    value = session.group_label
+    if not value:
+        return "%00"
+    return value.replace("%", "%25").replace("/", "%2F").replace("\\", "%5C")
 
 
 def transcript_prefix(contributor: str, source_id: str, session) -> str:

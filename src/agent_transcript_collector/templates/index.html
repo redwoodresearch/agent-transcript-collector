@@ -656,13 +656,13 @@ function updatePendingCounts(available = historyAvailable) {
     label.classList.remove('complete');
     if (!available) {
       label.textContent = 'upload status unavailable';
-      return;
+    } else {
+      const pending = project.querySelectorAll('.session:not(.uploaded)').length;
+      label.textContent = pending
+        ? `${pending} not uploaded`
+        : 'all uploaded';
+      label.classList.toggle('complete', pending === 0);
     }
-    const pending = project.querySelectorAll('.session:not(.uploaded)').length;
-    label.textContent = pending
-      ? `${pending} not uploaded`
-      : 'all uploaded';
-    label.classList.toggle('complete', pending === 0);
     const consented = consentedHarnesses(project);
     if (consented.length) {
       selectedProjects += 1;
@@ -672,23 +672,21 @@ function updatePendingCounts(available = historyAvailable) {
   });
 
   document.querySelectorAll('.session-upload').forEach(upload => {
-    upload.disabled = uploadBusy || !available || upload.closest('.session').classList.contains('uploaded');
+    upload.disabled = uploadBusy
+      || (available && upload.closest('.session').classList.contains('uploaded'));
   });
 
   if (uploadBusy) {
     button.textContent = 'Uploading…';
     button.disabled = true;
-  } else if (!available) {
-    button.textContent = 'Upload now';
-    button.disabled = true;
   } else if (!selectedProjects) {
     button.textContent = 'Upload now';
     button.disabled = true;
-  } else if (!selectedPending) {
+  } else if (available && !selectedPending) {
     button.textContent = 'Everything uploaded';
     button.disabled = true;
   } else {
-    button.textContent = `Upload ${selectedPending} now`;
+    button.textContent = available ? `Upload ${selectedPending} now` : 'Upload now';
     button.disabled = false;
   }
 }
