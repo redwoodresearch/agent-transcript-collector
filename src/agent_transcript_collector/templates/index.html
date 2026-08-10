@@ -782,13 +782,13 @@ async function previewSession(el, offset = 0) {
     redactCount.textContent = data.redaction_count > 0
       ? `${data.redaction_count} redaction${data.redaction_count !== 1 ? 's' : ''}` : '';
 
-    if (data.messages.length === 0) {
+    if (data.messages.length === 0 && !data.sidecars.length) {
       if (offset === 0) body.innerHTML = '<p style="color: var(--text-muted)">(no messages)</p>';
       footer.replaceChildren();
       return;
     }
 
-    const html = data.messages.map(m => {
+    const html = (offset === 0 ? sidecarSummary(data) : '') + data.messages.map(m => {
       let text = escapeHtml(m.text);
       text = text.replace(/\[REDACTED\]/g, '<span class="redacted">[REDACTED]</span>');
       return `<div class="preview-msg ${escapeHtml(m.role)}"><div class="role">${escapeHtml(m.role)}</div>${text}</div>`;
@@ -818,6 +818,17 @@ async function previewSession(el, offset = 0) {
 
 function loadMorePreview() {
   if (currentPreview) previewSession(currentPreview.row, currentPreview.offset);
+}
+
+function sidecarSummary(data) {
+  if (!data.sidecars.length && !data.sidecars_missing) return '';
+  const files = data.sidecars
+    .map(f => `<div>${escapeHtml(f.name)} <span style="color: var(--text-muted)">${escapeHtml(f.size_human)}</span></div>`)
+    .join('');
+  const gone = data.sidecars_missing
+    ? `<div style="color: var(--text-muted)">${data.sidecars_missing} referenced file${data.sidecars_missing !== 1 ? 's are' : ' is'} no longer on disk</div>`
+    : '';
+  return `<div class="preview-msg system"><div class="role">Tool output files uploaded with this transcript</div>${files}${gone}</div>`;
 }
 
 function closePreview() {

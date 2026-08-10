@@ -26,11 +26,16 @@ from .redactor import (
     redact_path_token,
 )
 from .s3client import S3_BUCKET
+from .sidecars import EMPTY as NO_SIDECARS
+from .sidecars import SidecarSet
+from .sources.base import session_sidecars
 from .storage import STORAGE_PREFIX
 
-TRANSCRIPT_FORMAT_VERSION = 3
+TRANSCRIPT_FORMAT_VERSION = 4
 FINGERPRINT_VERSION = 2
 FINGERPRINT_METADATA = "content-fingerprint"
+BODY_FINGERPRINT_METADATA = "body-fingerprint"
+SIDECAR_COUNT_METADATA = "sidecar-count"
 _FINGERPRINT_CACHE_MAX = 4096
 _FINGERPRINT_CACHE: OrderedDict[tuple[str, int, int], str] = OrderedDict()
 _FINGERPRINT_CACHE_LOCK = threading.Lock()
@@ -92,8 +97,15 @@ class UploadLock:
 class PreparedTranscript:
     session: object
     raw_bytes: bytes
+    body_fingerprint: str
     fingerprint: str
     key: str
+    sidecars: SidecarSet = NO_SIDECARS
+
+
+def _privacy_safe_digest(text: str) -> str:
+    canonical, _ = redact_identity(canonicalize_secrets(text))
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def transcript_fingerprint(raw_bytes: bytes) -> str:
@@ -102,6 +114,24 @@ def transcript_fingerprint(raw_bytes: bytes) -> str:
     canonical = canonicalize_secrets(raw_bytes.decode("utf-8", errors="replace"))
     canonical, _ = redact_identity(canonical)
     return hashlib.sha256(policy.encode() + canonical.encode()).hexdigest()
+
+
+def content_fingerprint(body_fingerprint: str, sidecars: SidecarSet) -> str:
+    """Extend a transcript fingerprint to cover its side files.
+
+    A session without side files keeps the fingerprint it always had, so
+    collecting side files does not force every earlier upload to be rewritten.
+    """
+    if not sidecars.files:
+        return body_fingerprint
+    digest = hashlib.sha256(f"sidecars-v1\0{body_fingerprint}".encode())
+    for sidecar in sidecars.files:
+        try:
+            text = sidecar.path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        digest.update(f"{sidecar.arcname}\0{_privacy_safe_digest(text)}\0".encode())
+    return digest.hexdigest()
 
 
 def _safe_segment(value: str) -> str:
@@ -137,7 +167,7 @@ def transcript_key(contributor: str, source_id: str, session) -> str:
     return f"{transcript_prefix(contributor, source_id, session)}transcript.zip"
 
 
-def _uploaded_fingerprint(s3, key: str, cache: dict[str, str | None]) -> str | None:
+def _uploaded_metadata(s3, key: str, cache: dict[str, dict]) -> dict:
     if key in cache:
         return cache[key]
     try:
@@ -146,11 +176,28 @@ def _uploaded_fingerprint(s3, key: str, cache: dict[str, str | None]) -> str | N
         code = str(exc.response.get("Error", {}).get("Code", ""))
         if code not in {"404", "NoSuchKey", "NotFound"}:
             raise
-        fingerprint = None
+        metadata = {}
     else:
-        fingerprint = response.get("Metadata", {}).get(FINGERPRINT_METADATA)
-    cache[key] = fingerprint
-    return fingerprint
+        metadata = response.get("Metadata", {})
+    cache[key] = metadata
+    return metadata
+
+
+def _already_uploaded(prepared: PreparedTranscript, remote: dict) -> bool:
+    """Decide whether the stored object already holds this session's content."""
+    if remote.get(FINGERPRINT_METADATA) == prepared.fingerprint:
+        return True
+    # Harnesses delete their own side files on their own schedule, so a session
+    # can lose them while its transcript stays put. Leave the fuller upload
+    # alone rather than overwriting it with one that has less in it.
+    try:
+        uploaded_count = int(remote.get(SIDECAR_COUNT_METADATA, "0"))
+    except ValueError:
+        return False
+    return (
+        remote.get(BODY_FINGERPRINT_METADATA) == prepared.body_fingerprint
+        and len(prepared.sidecars.files) < uploaded_count
+    )
 
 
 def _prepare(source, session, contributor: str) -> PreparedTranscript:
@@ -159,18 +206,28 @@ def _prepare(source, session, contributor: str) -> PreparedTranscript:
     cache_key = (str(path), stat.st_size, stat.st_mtime_ns)
     raw_bytes = path.read_bytes()
     with _FINGERPRINT_CACHE_LOCK:
-        fingerprint = _FINGERPRINT_CACHE.get(cache_key)
-        if fingerprint is not None:
+        body_fingerprint = _FINGERPRINT_CACHE.get(cache_key)
+        if body_fingerprint is not None:
             _FINGERPRINT_CACHE.move_to_end(cache_key)
-    if fingerprint is None:
-        fingerprint = transcript_fingerprint(raw_bytes)
+    if body_fingerprint is None:
+        body_fingerprint = transcript_fingerprint(raw_bytes)
         with _FINGERPRINT_CACHE_LOCK:
-            _FINGERPRINT_CACHE[cache_key] = fingerprint
+            _FINGERPRINT_CACHE[cache_key] = body_fingerprint
             _FINGERPRINT_CACHE.move_to_end(cache_key)
             while len(_FINGERPRINT_CACHE) > _FINGERPRINT_CACHE_MAX:
                 _FINGERPRINT_CACHE.popitem(last=False)
+    sidecars = session_sidecars(
+        source, session, raw_bytes.decode("utf-8", errors="replace")
+    )
     key = transcript_key(contributor, source.id, session)
-    return PreparedTranscript(session, raw_bytes, fingerprint, key)
+    return PreparedTranscript(
+        session,
+        raw_bytes,
+        body_fingerprint,
+        content_fingerprint(body_fingerprint, sidecars),
+        key,
+        sidecars,
+    )
 
 
 def partition_transcripts(
@@ -178,11 +235,11 @@ def partition_transcripts(
     source,
     sessions,
     contributor: str,
-    uploaded_fingerprints: dict[str, str | None] | None = None,
+    uploaded_metadata: dict[str, dict] | None = None,
     on_status=None,
 ):
     """Split current transcripts into changed and already uploaded."""
-    existing = uploaded_fingerprints if uploaded_fingerprints is not None else {}
+    existing = uploaded_metadata if uploaded_metadata is not None else {}
     sessions = list(sessions)
     pending: list[PreparedTranscript] = []
     uploaded = []
@@ -197,7 +254,8 @@ def partition_transcripts(
             on_status("fingerprinting", index, len(sessions))
 
     def check_one(prepared):
-        return _uploaded_fingerprint(s3, prepared.key, existing) == prepared.fingerprint
+        remote = _uploaded_metadata(s3, prepared.key, existing)
+        return _already_uploaded(prepared, remote)
 
     if prepared_items:
         workers = min(upload_concurrency(), len(prepared_items))
@@ -224,12 +282,53 @@ def partition_transcripts(
     return pending, uploaded, errors
 
 
+def _redact(text: str) -> tuple[str, int]:
+    text, redaction_count = redact_jsonl_content(text)
+    text, count = redact_identity(text)
+    return text, redaction_count + count
+
+
+def _redacted_sidecars(
+    prepared: PreparedTranscript,
+) -> tuple[list[tuple[str, str]], dict, int]:
+    """Return (arcname, text) pairs to archive plus the manifest section."""
+    contents: list[tuple[str, str]] = []
+    entries = []
+    missing = list(prepared.sidecars.missing)
+    redaction_count = 0
+    for sidecar in prepared.sidecars.files:
+        try:
+            text = sidecar.path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            missing.append(sidecar.reference)
+            continue
+        text, count = _redact(text)
+        redaction_count += count
+        contents.append((sidecar.arcname, text))
+        entries.append({
+            "path": sidecar.arcname,
+            "kind": sidecar.kind,
+            # The transcript names side files by absolute path, so the redacted
+            # form of that path is what joins a pointer to its archived file.
+            "referenced_as": redact_identity(sidecar.reference)[0],
+            "size_bytes": len(text.encode("utf-8")),
+            "sha256": hashlib.sha256(text.encode()).hexdigest(),
+        })
+    section = {
+        "files": entries,
+        "missing": [redact_identity(path)[0] for path in sorted(missing)],
+        "skipped_too_large": [
+            redact_identity(path)[0] for path in prepared.sidecars.skipped
+        ],
+    }
+    return contents, section, redaction_count
+
+
 def _build_transcript_zip(source, prepared: PreparedTranscript, contributor: str):
     session = prepared.session
-    raw = prepared.raw_bytes.decode("utf-8", errors="replace")
-    raw, redaction_count = redact_jsonl_content(raw)
+    raw, redaction_count = _redact(prepared.raw_bytes.decode("utf-8", errors="replace"))
     group_key, group_label = session.group_key, session.group_label
-    raw, count = redact_identity(raw)
+    sidecar_contents, sidecar_section, count = _redacted_sidecars(prepared)
     redaction_count += count
     group_key, count = redact_path_token(group_key)
     redaction_count += count
@@ -252,17 +351,21 @@ def _build_transcript_zip(source, prepared: PreparedTranscript, contributor: str
         },
         "version": {
             "fingerprint": prepared.fingerprint,
+            "body_fingerprint": prepared.body_fingerprint,
             "content_sha256": hashlib.sha256(raw.encode()).hexdigest(),
             "redact_identity": True,
             "uploaded_at": datetime.now(timezone.utc).isoformat(),
         },
         "size_bytes": len(raw.encode("utf-8")),
         "redactions": redaction_count,
+        "sidecars": sidecar_section,
     }
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(f"transcript{suffix}", raw)
         archive.writestr("manifest.json", json.dumps(manifest, indent=2))
+        for arcname, text in sidecar_contents:
+            archive.writestr(arcname, text)
     return buffer.getvalue(), manifest
 
 
@@ -273,10 +376,10 @@ def upload_transcripts(
     contributor: str,
     on_progress=None,
     on_status=None,
-    uploaded_fingerprints: dict[str, str | None] | None = None,
+    uploaded_metadata: dict[str, dict] | None = None,
 ):
     """Overwrite each session object only when its redacted content changes."""
-    existing = uploaded_fingerprints if uploaded_fingerprints is not None else {}
+    existing = uploaded_metadata if uploaded_metadata is not None else {}
     pending, uploaded, errors = partition_transcripts(
         s3, source, list(sessions), contributor, existing, on_status=on_status
     )
@@ -287,12 +390,17 @@ def upload_transcripts(
 
     def upload_one(prepared: PreparedTranscript):
         zip_bytes, manifest = _build_transcript_zip(source, prepared, contributor)
+        sidecar_count = len(manifest["sidecars"]["files"])
         s3.put_object(
             Bucket=S3_BUCKET,
             Key=prepared.key,
             Body=zip_bytes,
             ContentType="application/zip",
-            Metadata={FINGERPRINT_METADATA: prepared.fingerprint},
+            Metadata={
+                FINGERPRINT_METADATA: prepared.fingerprint,
+                BODY_FINGERPRINT_METADATA: prepared.body_fingerprint,
+                SIDECAR_COUNT_METADATA: str(sidecar_count),
+            },
         )
         return {
             "source": source.id,
@@ -303,6 +411,7 @@ def upload_transcripts(
             "transcript_count": 1,
             "zip_size_bytes": len(zip_bytes),
             "redactions": manifest["redactions"],
+            "sidecar_count": sidecar_count,
         }
 
     local_usernames()
@@ -318,7 +427,11 @@ def upload_transcripts(
             try:
                 result = future.result()
                 results.append(result)
-                existing[prepared.key] = prepared.fingerprint
+                existing[prepared.key] = {
+                    FINGERPRINT_METADATA: prepared.fingerprint,
+                    BODY_FINGERPRINT_METADATA: prepared.body_fingerprint,
+                    SIDECAR_COUNT_METADATA: str(result["sidecar_count"]),
+                }
             except Exception as exc:
                 errors.append(
                     {"source": source.id, "error": f"{type(exc).__name__}: {exc}"}
