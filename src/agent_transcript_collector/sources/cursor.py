@@ -74,10 +74,19 @@ def decode_project_name(encoded: str) -> str:
     return "/" + normalized.replace("-", "/")
 
 
-def _fallback_project_label(encoded: str) -> str:
-    worktree = re.search(r"(?:^|-)\.?codex-worktrees-[^-]+-(.+)$", encoded)
+def _fallback_project_path(encoded: str) -> str:
+    worktree = re.match(
+        r"^(?:(?P<prefix>.*)-)?\.?codex-worktrees-"
+        r"(?P<worktree>[^-]+)-(?P<repository>.+)$",
+        encoded,
+    )
     if worktree:
-        return worktree.group(1)
+        encoded_prefix = worktree.group("prefix")
+        prefix = decode_project_name(encoded_prefix).rstrip("/") if encoded_prefix else ""
+        return (
+            f"{prefix}/.codex/worktrees/{worktree.group('worktree')}/"
+            f"{worktree.group('repository')}"
+        )
     return decode_project_name(encoded)
 
 
@@ -183,7 +192,7 @@ class CursorSource:
                 if exact_cwd is None
                 else None
             )
-            cwd = exact_cwd or recovered or _fallback_project_label(project_dir.name)
+            cwd = exact_cwd or recovered or _fallback_project_path(project_dir.name)
             key, label = project_identity(cwd)
             directory = (
                 canonical_project_directory(cwd)
