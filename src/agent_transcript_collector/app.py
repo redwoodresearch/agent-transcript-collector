@@ -335,6 +335,15 @@ def _run_upload_job(job_id, selected, contributor):
                 _active_job["id"] = None
 
 
+def _upload_history_error(error: str) -> str:
+    if "TokenRetrievalError" in error or "token has expired" in error.lower():
+        return (
+            "AWS login expired. Run: "
+            f"aws sso login --profile {selected_profile()}"
+        )
+    return error
+
+
 def _uploaded_sessions(body: dict):
     contributor = _safe_name(body.get("contributor_name", "anonymous"))
     sessions = body.get("sessions", [])
@@ -348,6 +357,7 @@ def _uploaded_sessions(body: dict):
         s3 = _make_s3_client()
         uploaded_metadata: dict[str, dict] = {}
         uploaded = []
+        errors = []
         for source_id, source_sessions in by_source.items():
             source = get_source(source_id)
             with SCAN_LOCK:
@@ -368,13 +378,14 @@ def _uploaded_sessions(body: dict):
                 )
                 if session is not None:
                     resolved_items.append((item, session))
-            _, found, _ = partition_transcripts(
+            _, found, source_errors = partition_transcripts(
                 s3,
                 source,
                 [session for _, session in resolved_items],
                 contributor,
                 uploaded_metadata,
             )
+            errors.extend(source_errors)
             found_ids = {
                 (session.group_key, session.parent or None, session.id)
                 for session in found
@@ -384,11 +395,25 @@ def _uploaded_sessions(body: dict):
                 for item, session in resolved_items
                 if (session.group_key, session.parent or None, session.id) in found_ids
             )
+            if source_errors:
+                break
+        if errors:
+            # Never turn a failed metadata request into "nothing is uploaded".
+            # That false negative both misleads the user and enables needless
+            # re-uploads. The browser preserves its last known state on 503.
+            first = _upload_history_error(
+                errors[0].get("error", "unknown error")
+            )
+            return JSONResponse(
+                {"error": f"Upload history unavailable: {first}"},
+                status_code=503,
+            )
         return {"uploaded": uploaded}
     except Exception as e:
+        error = _upload_history_error(f"{type(e).__name__}: {e}")
         return JSONResponse(
-            {"error": f"Could not check upload history: {type(e).__name__}: {e}"},
-            status_code=502,
+            {"error": f"Upload history unavailable: {error}"},
+            status_code=503,
         )
 
 
@@ -443,7 +468,37 @@ async def upload(request: Request):
 
 @app.get("/api/watcher")
 def get_watcher_status():
-    return watcher_status()
+    result = watcher_status()
+    config = result.get("config")
+    if not config:
+        return result
+    with SCAN_LOCK:
+        discovered = {
+            (source_id, group.key): group.label
+            for source_id, groups in SCAN_CACHE["groups_by_source"].items()
+            for group in groups
+        }
+    configured = {
+        (item.get("source", ""), item.get("group", ""))
+        for item in config.get("groups", [])
+    }
+    active_labels = {
+        (source, label)
+        for (source, group), label in discovered.items()
+        if (source, group) in configured
+    }
+    # Stable project IDs gained a hash during the identity migration. Once the
+    # replacement ID is configured, hide its obsolete alias instead of showing
+    # a wall of duplicate "unavailable" folders.
+    groups = [
+        item
+        for item in config.get("groups", [])
+        if (item.get("source", ""), item.get("group", "")) in discovered
+        or (item.get("source", ""), item.get("label", "")) not in active_labels
+    ]
+    result["ignored_migrated_groups"] = len(config.get("groups", [])) - len(groups)
+    config["groups"] = groups
+    return result
 
 
 def _put_watcher(body: dict):
@@ -476,11 +531,15 @@ def _put_watcher(body: dict):
             for source, group in sorted(requested)
         ]
         if existing:
+            requested_labels = {
+                (source, discovered[(source, group)]) for source, group in requested
+            }
             groups.extend(
                 group
                 for group in existing.groups
                 if (group.source, group.group) not in discovered
                 and (group.source, group.group) not in removed
+                and (group.source, group.label) not in requested_labels
             )
         config = WatcherConfig(
             auto_uploader_version=(

@@ -7,6 +7,7 @@ credential handling is defined once.
 import os
 
 import boto3
+from botocore.config import Config
 
 S3_BUCKET = "rr-agent-transcripts"
 S3_REGION = "us-east-1"
@@ -31,4 +32,22 @@ def make_s3_client():
     or ``AWS_DEFAULT_PROFILE``.
     """
     profile = selected_profile()
-    return boto3.Session(profile_name=profile, region_name=S3_REGION).client("s3")
+    session = boto3.Session(profile_name=profile, region_name=S3_REGION)
+    credentials = session.get_credentials()
+    if credentials is None:
+        raise RuntimeError(
+            f"AWS credentials not found. Run: aws sso login --profile {profile}"
+        )
+    # Resolve refreshable credentials once before fan-out. Otherwise an expired
+    # SSO token can make every parallel HEAD request retry credential refresh
+    # independently, leaving the UI apparently stuck for minutes.
+    credentials.get_frozen_credentials()
+    return session.client(
+        "s3",
+        config=Config(
+            connect_timeout=4,
+            read_timeout=8,
+            max_pool_connections=20,
+            retries={"max_attempts": 2, "mode": "standard"},
+        ),
+    )

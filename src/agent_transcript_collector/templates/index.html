@@ -33,6 +33,8 @@
   #unavailable-watcher-groups {
     flex-basis: 100%; color: var(--yellow); font-size: 0.75rem;
   }
+  #unavailable-watcher-groups summary { cursor: pointer; width: fit-content; }
+  .unavailable-watcher-list { margin-top: 4px; }
   .unavailable-watcher-group {
     display: inline-flex; align-items: center; gap: 6px; margin: 4px 8px 0 0;
   }
@@ -445,9 +447,13 @@ function renderUnavailableGroups(groups) {
   container.hidden = unavailable.length === 0;
   if (!unavailable.length) return;
 
-  const heading = document.createElement('span');
-  heading.textContent = 'Saved folders not currently available: ';
-  container.appendChild(heading);
+  const details = document.createElement('details');
+  const heading = document.createElement('summary');
+  heading.textContent = `${unavailable.length} saved auto-upload folder${unavailable.length === 1 ? '' : 's'} unavailable`;
+  const list = document.createElement('div');
+  list.className = 'unavailable-watcher-list';
+  details.append(heading, list);
+  container.appendChild(details);
   unavailable.forEach(item => {
     const entry = document.createElement('span');
     entry.className = 'unavailable-watcher-group';
@@ -458,7 +464,7 @@ function renderUnavailableGroups(groups) {
     remove.textContent = 'Remove';
     remove.onclick = () => removeUnavailableGroup(item, remove);
     entry.append(label, remove);
-    container.appendChild(entry);
+    list.appendChild(entry);
   });
 }
 
@@ -527,13 +533,20 @@ async function loadWatcher() {
       status.textContent = data.error;
     } else {
       const last = data.state || {};
+      const lastError = (last.errors || [])[0];
       const lastUploaded = formatUploadTime(last.last_uploaded_at);
       const nextUpload = autoUploadEnabled && last.finished_at
         ? formatUploadTime(new Date(
             new Date(last.finished_at).getTime() + data.interval_seconds * 1000))
         : autoUploadEnabled ? 'soon' : 'disabled';
-      status.textContent = `Last uploaded ${lastUploaded} · Next upload ${nextUpload}`;
-      status.title = last.finished_at
+      status.textContent = last.status === 'failed' && lastError
+        ? (lastError.includes('TokenRetrievalError')
+          ? `AWS login expired — run aws sso login --profile ${(data.config && data.config.aws_profile) || 'rw-eng'}`
+          : `Auto upload failed: ${lastError}`)
+        : `Last uploaded ${lastUploaded} · Next upload ${nextUpload}`;
+      status.title = last.status === 'failed' && lastError
+        ? status.textContent
+        : last.finished_at
         ? `Last run: ${last.status}, ${last.sessions_uploaded || 0} uploaded`
         : status.textContent;
     }
@@ -614,6 +627,7 @@ async function toggleAutoUpload() {
 
 let historyTimer = null;
 let historyRevision = 0;
+let historyController = null;
 function onNameInput() {
   nameRevision += 1;
   historyRevision += 1;
@@ -650,17 +664,26 @@ async function refreshUploaded() {
   projects.forEach(project => project.classList.add('history-checking'));
   setHistoryStatus('Checking upload history…');
   updatePendingCounts();
+  if (historyController) historyController.abort();
+  const controller = new AbortController();
+  historyController = controller;
+  const timeout = setTimeout(() => controller.abort(), 10000);
   try {
     const resp = await fetch('/api/uploaded', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
+      signal: controller.signal,
       body: JSON.stringify({
         contributor_name: contributorName,
         sessions: rows.map(sessionDescriptor),
       }),
     });
     const data = await resp.json();
-    if (request !== historyRevision) return;
+    if (request !== historyRevision || historyController !== controller) {
+      projects.forEach(project => project.classList.remove('history-checking'));
+      updatePendingCounts();
+      return;
+    }
     if (!resp.ok) {
       projects.forEach(project => project.classList.remove('history-checking'));
       setHistoryStatus(data.error || 'Could not refresh upload history', true);
@@ -677,10 +700,18 @@ async function refreshUploaded() {
     setHistoryStatus('');
     updatePendingCounts();
   } catch (e) {
-    if (request !== historyRevision) return;
     projects.forEach(project => project.classList.remove('history-checking'));
-    setHistoryStatus(`Could not refresh upload history: ${e.message}`, true);
+    if (request !== historyRevision || historyController !== controller) {
+      updatePendingCounts();
+      return;
+    }
+    setHistoryStatus(e.name === 'AbortError'
+      ? 'Upload history timed out. Existing upload state was left unchanged.'
+      : `Could not refresh upload history: ${e.message}`, true);
     updatePendingCounts();
+  } finally {
+    clearTimeout(timeout);
+    if (historyController === controller) historyController = null;
   }
 }
 
@@ -706,6 +737,7 @@ function updatePendingCounts() {
   const button = document.getElementById('upload-btn');
   let selectedPending = 0;
   let selectedProjects = 0;
+  let selectedHistoryUnknown = false;
 
   document.querySelectorAll('.project').forEach(project => {
     const label = project.querySelector('.project-pending');
@@ -717,14 +749,18 @@ function updatePendingCounts() {
     } else {
       const pending = project.querySelectorAll('.session:not(.uploaded)').length;
       label.textContent = pending
-        ? `${pending} not uploaded`
+        ? `${pending} new or changed`
         : 'all uploaded';
       label.classList.toggle('complete', pending === 0);
     }
     const consented = consentedRows(project);
     if (consented.length) {
       selectedProjects += 1;
-      selectedPending += consented.filter(row => !row.classList.contains('uploaded')).length;
+      if (available) {
+        selectedPending += consented.filter(row => !row.classList.contains('uploaded')).length;
+      } else {
+        selectedHistoryUnknown = true;
+      }
     }
   });
 
@@ -738,6 +774,9 @@ function updatePendingCounts() {
   } else if (!selectedProjects) {
     button.textContent = 'Upload now';
     button.disabled = true;
+  } else if (selectedHistoryUnknown) {
+    button.textContent = 'Upload selected projects';
+    button.disabled = false;
   } else if (!selectedPending) {
     button.textContent = 'Everything uploaded';
     button.disabled = true;

@@ -45,6 +45,11 @@ def upload_concurrency() -> int:
     return max(1, int(os.environ.get("CTC_UPLOAD_CONCURRENCY", "4")))
 
 
+def metadata_concurrency() -> int:
+    """Use more workers for small, read-only S3 metadata requests."""
+    return max(1, int(os.environ.get("CTC_METADATA_CONCURRENCY", "16")))
+
+
 class UploadBusy(RuntimeError):
     """Raised when another collector process owns the upload lock."""
 
@@ -258,7 +263,7 @@ def partition_transcripts(
         return _already_uploaded(prepared, remote)
 
     if prepared_items:
-        workers = min(upload_concurrency(), len(prepared_items))
+        workers = min(metadata_concurrency(), len(prepared_items))
         completed = 0
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
