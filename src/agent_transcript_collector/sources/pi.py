@@ -20,7 +20,14 @@ import json
 import os
 from pathlib import Path
 
-from .base import Group, Session, mtime, truncate
+from .base import (
+    Group,
+    Session,
+    canonical_project_directory,
+    mtime,
+    project_identity,
+    truncate,
+)
 
 _CONTENT_ROLES = ("user", "assistant")
 
@@ -35,10 +42,6 @@ def _session_dir() -> Path:
     if override:
         return Path(override)
     return _agent_dir() / "sessions"
-
-
-def _encode_cwd(cwd: str) -> str:
-    return cwd.replace("\\", "/").lstrip("/").replace("/", "-") or "_root"
 
 
 def _short_id(name: str) -> str:
@@ -137,8 +140,8 @@ class PiSource:
                 continue
             header = objs[0]
             cwd = header.get("cwd") or ""
-            key = _encode_cwd(cwd) if cwd else "_ungrouped"
-            label = cwd or "(unknown working dir)"
+            key, label = project_identity(cwd) if cwd else ("_ungrouped", "(unknown project)")
+            directory = canonical_project_directory(cwd) if cwd else None
             first, count = self._summary(objs)
 
             # Subagent if it came from a run-*/session.jsonl path, or it's a
@@ -160,7 +163,14 @@ class PiSource:
 
             group = by_group.get(key)
             if group is None:
-                group = by_group[key] = Group(key=key, label=label, sessions=[])
+                group = by_group[key] = Group(
+                    key=key,
+                    label=label,
+                    sessions=[],
+                    directory=directory,
+                )
+            elif group.directory is None and directory is not None:
+                group.directory = directory
             group.sessions.append(Session(
                 source=self.id,
                 id=sid,

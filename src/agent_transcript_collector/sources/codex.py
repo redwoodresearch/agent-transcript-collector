@@ -17,17 +17,28 @@ import os
 import re
 from pathlib import Path
 
-from .base import Group, Session, iter_jsonl, mtime, truncate
+from .base import (
+    Group,
+    Session,
+    canonical_project_directory,
+    iter_jsonl,
+    mtime,
+    project_identity,
+    truncate,
+)
 
 _UUID_RE = re.compile(
     r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", re.I
 )
 
 
-def _sessions_dir() -> Path:
+def _codex_home() -> Path:
     override = os.environ.get("CODEX_HOME")
-    base = Path(override) if override else Path.home() / ".codex"
-    return base / "sessions"
+    return Path(override) if override else Path.home() / ".codex"
+
+
+def _sessions_dir() -> Path:
+    return _codex_home() / "sessions"
 
 
 def _session_id(path: Path) -> str:
@@ -50,10 +61,6 @@ def _find_cwd(obj: dict) -> str | None:
             if found:
                 return found
     return None
-
-
-def _encode_cwd(cwd: str) -> str:
-    return cwd.replace("\\", "/").lstrip("/").replace("/", "-") or "_root"
 
 
 def _extract_message(obj: dict) -> tuple[str, str] | None:
@@ -149,11 +156,18 @@ class CodexSource:
             if kind == "drop":
                 continue  # review/compact/memory_consolidation/internal scaffolding
             cwd, first, count = self._summary(f)
-            key = _encode_cwd(cwd) if cwd else "_ungrouped"
-            label = cwd or "(unknown working dir)"
+            key, label = project_identity(cwd) if cwd else ("_ungrouped", "(unknown project)")
+            directory = canonical_project_directory(cwd) if cwd else None
             group = by_group.get(key)
             if group is None:
-                group = by_group[key] = Group(key=key, label=label, sessions=[])
+                group = by_group[key] = Group(
+                    key=key,
+                    label=label,
+                    sessions=[],
+                    directory=directory,
+                )
+            elif group.directory is None and directory is not None:
+                group.directory = directory
             group.sessions.append(Session(
                 source=self.id,
                 id=_session_id(f),

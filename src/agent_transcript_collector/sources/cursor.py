@@ -16,10 +16,19 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 
-from .base import Group, Session, mtime, truncate
+from .base import (
+    Group,
+    Session,
+    canonical_project_directory,
+    decode_existing_project_path,
+    mtime,
+    project_identity,
+    truncate,
+)
 
 
 def _cursor_home() -> Path:
@@ -63,6 +72,22 @@ def decode_project_name(encoded: str) -> str:
     if not normalized:
         return "/"
     return "/" + normalized.replace("-", "/")
+
+
+def _fallback_project_path(encoded: str) -> str:
+    worktree = re.match(
+        r"^(?:(?P<prefix>.*)-)?\.?codex-worktrees-"
+        r"(?P<worktree>[^-]+)-(?P<repository>.+)$",
+        encoded,
+    )
+    if worktree:
+        encoded_prefix = worktree.group("prefix")
+        prefix = decode_project_name(encoded_prefix).rstrip("/") if encoded_prefix else ""
+        return (
+            f"{prefix}/.codex/worktrees/{worktree.group('worktree')}/"
+            f"{worktree.group('repository')}"
+        )
+    return decode_project_name(encoded)
 
 
 def _extract_paths(obj) -> list[str]:
@@ -156,20 +181,41 @@ class CursorSource:
             return []
 
         label_by_key = _project_label_map()
-        groups: list[Group] = []
+        by_group: dict[str, Group] = {}
         for project_dir in sorted(projects_dir.iterdir()):
             transcripts_dir = project_dir / "agent-transcripts"
             if not project_dir.is_dir() or not transcripts_dir.exists():
                 continue
-            label = label_by_key.get(project_dir.name) or decode_project_name(project_dir.name)
-            sessions: list[Session] = []
+            exact_cwd = label_by_key.get(project_dir.name)
+            recovered = (
+                decode_existing_project_path(project_dir.name)
+                if exact_cwd is None
+                else None
+            )
+            cwd = exact_cwd or recovered or _fallback_project_path(project_dir.name)
+            key, label = project_identity(cwd)
+            directory = (
+                canonical_project_directory(cwd)
+                if exact_cwd is not None or recovered is not None
+                else None
+            )
+            group = by_group.get(key)
+            if group is None:
+                group = by_group[key] = Group(
+                    key=key,
+                    label=label,
+                    sessions=[],
+                    directory=directory,
+                )
+            elif group.directory is None and directory is not None:
+                group.directory = directory
             for f in self._transcript_files(transcripts_dir):
                 first, count = self._summary(f)
                 parent = self._parent_id(transcripts_dir, f)
-                sessions.append(Session(
+                group.sessions.append(Session(
                     source=self.id,
                     id=self._session_id(transcripts_dir, f),
-                    group_key=project_dir.name,
+                    group_key=key,
                     group_label=label,
                     path=f,
                     size_bytes=f.stat().st_size,
@@ -179,9 +225,7 @@ class CursorSource:
                     is_subagent=parent is not None,
                     parent=parent,
                 ))
-            if sessions:
-                groups.append(Group(key=project_dir.name, label=label, sessions=sessions))
-        return groups
+        return [group for group in by_group.values() if group.sessions]
 
     def _transcript_files(self, transcripts_dir: Path) -> list[Path]:
         files = []
@@ -194,7 +238,9 @@ class CursorSource:
 
     def _session_id(self, transcripts_dir: Path, path: Path) -> str:
         rel = path.relative_to(transcripts_dir)
-        if len(rel.parts) > 1 and rel.parts[0] != "subagents":
+        if "subagents" in rel.parts:
+            return path.stem
+        if len(rel.parts) > 1:
             return rel.parts[-2]
         return path.stem
 

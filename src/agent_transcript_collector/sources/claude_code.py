@@ -11,7 +11,16 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .base import Group, Session, iter_jsonl, mtime, truncate
+from .base import (
+    Group,
+    Session,
+    canonical_project_directory,
+    decode_existing_project_path,
+    iter_jsonl,
+    mtime,
+    project_identity,
+    truncate,
+)
 
 
 def _config_dir() -> Path:
@@ -65,43 +74,60 @@ class ClaudeCodeSource:
         if not projects_dir.exists():
             return []
 
-        groups: list[Group] = []
+        by_group: dict[str, Group] = {}
         for project_dir in sorted(projects_dir.iterdir()):
             if not project_dir.is_dir():
                 continue
-            label = decode_project_name(project_dir.name)
-            sessions: list[Session] = []
-            # Top-level sessions.
-            for f in sorted(project_dir.glob("*.jsonl")):
-                first, count = self._summary(f)
-                sessions.append(Session(
+            files = [(f, None) for f in sorted(project_dir.glob("*.jsonl"))]
+            files.extend(
+                (f, f.parent.parent.name)
+                for f in sorted(project_dir.glob("*/subagents/*.jsonl"))
+            )
+            records = [
+                (f, parent, *self._summary(f))
+                for f, parent in files
+            ]
+            container_cwd = next((cwd for _, _, cwd, _, _ in records if cwd), None)
+            for f, parent, cwd, first, count in records:
+                fallback = decode_project_name(project_dir.name)
+                recovered = (
+                    decode_existing_project_path(project_dir.name)
+                    if cwd is None and container_cwd is None
+                    else None
+                )
+                observed_cwd = cwd or container_cwd or recovered or fallback
+                key, label = project_identity(observed_cwd)
+                directory = (
+                    canonical_project_directory(observed_cwd)
+                    if cwd is not None or container_cwd is not None or recovered is not None
+                    else None
+                )
+                group = by_group.get(key)
+                if group is None:
+                    group = by_group[key] = Group(
+                        key=key,
+                        label=label,
+                        sessions=[],
+                        directory=directory,
+                    )
+                elif group.directory is None and directory is not None:
+                    group.directory = directory
+                group.sessions.append(Session(
                     source=self.id, id=f.stem,
-                    group_key=project_dir.name, group_label=label,
+                    group_key=key, group_label=label,
                     path=f, size_bytes=f.stat().st_size,
                     first_message=first, message_count=count, modified=mtime(f),
+                    is_subagent=parent is not None, parent=parent,
                 ))
-            # Task subagents, stored as <session-id>/subagents/agent-*.jsonl.
-            for f in sorted(project_dir.glob("*/subagents/*.jsonl")):
-                first, count = self._summary(f)
-                sessions.append(Session(
-                    source=self.id, id=f.stem,
-                    group_key=project_dir.name, group_label=label,
-                    path=f, size_bytes=f.stat().st_size,
-                    first_message=first, message_count=count, modified=mtime(f),
-                    is_subagent=True, parent=f.parent.parent.name,
-                ))
-            if sessions:
-                groups.append(Group(
-                    key=project_dir.name,
-                    label=decode_project_name(project_dir.name),
-                    sessions=sessions,
-                ))
-        return groups
+        return list(by_group.values())
 
-    def _summary(self, path: Path) -> tuple[str, int]:
+    def _summary(self, path: Path) -> tuple[str | None, str, int]:
+        cwd = None
         first = ""
         count = 0
         for entry in iter_jsonl(path):
+            if cwd is None and isinstance(entry.get("cwd"), str):
+                cwd = entry["cwd"]
             etype = entry.get("type")
             if etype in ("user", "assistant"):
                 count += 1
@@ -109,7 +135,7 @@ class ClaudeCodeSource:
                 text = _block_text(entry.get("message", {}).get("content", "")).strip()
                 if text:
                     first = truncate(text)
-        return first or "(empty session)", count
+        return cwd, first or "(empty session)", count
 
     def parse_messages(self, raw: str) -> list[dict]:
         messages = []

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Agent Transcript Collector</title>
+<title>Redwood Research Transcript Collector</title>
 <style>
   :root {
     --bg: #0d1117; --surface: #161b22; --border: #30363d;
@@ -20,15 +20,39 @@
   h1 { font-size: 1.5rem; margin-bottom: 4px; }
   .subtitle { color: var(--text-muted); margin-bottom: 24px; font-size: 0.9rem; }
 
-  .controls {
-    display: flex; gap: 12px; align-items: center; margin-bottom: 20px;
-    flex-wrap: wrap;
+  .auto-upload-controls {
+    display: flex; gap: 8px; align-items: center; margin: 0 0 20px;
+    padding: 8px 10px; background: rgba(88,166,255,0.05);
+    border: 1px solid var(--border); border-radius: 8px; flex-wrap: wrap;
   }
-  .controls label { font-size: 0.85rem; display: flex; align-items: center; gap: 6px; }
+  .auto-upload-controls .label { font-size: 0.8rem; font-weight: 600; }
+  .auto-upload-controls button { padding: 5px 10px; font-size: 0.78rem; }
+  .auto-upload-heading { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+  .auto-upload-description, #watcher-version { color: var(--text-muted); font-size: 0.72rem; }
+  #watcher-version.mismatch { color: var(--yellow); }
+  #unavailable-watcher-groups {
+    flex-basis: 100%; color: var(--yellow); font-size: 0.75rem;
+  }
+  .unavailable-watcher-group {
+    display: inline-flex; align-items: center; gap: 6px; margin: 4px 8px 0 0;
+  }
+  .unavailable-watcher-group button { padding: 2px 7px; font-size: 0.7rem; }
+  .name-setting {
+    display: flex; align-items: center; gap: 6px; color: var(--text-muted);
+    font-size: 0.78rem; white-space: nowrap;
+  }
+  #watcher-status {
+    color: var(--text-muted); font-size: 0.78rem; flex: 1; min-width: 160px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .auto-upload {
+    display: flex; align-items: center; gap: 4px; color: var(--text-muted);
+    font-size: 0.72rem; white-space: nowrap;
+  }
   #contributor-name:placeholder-shown { border-color: var(--yellow); }
-  .controls input[type="text"] {
+  #contributor-name {
     background: var(--surface); border: 1px solid var(--border); color: var(--text);
-    padding: 6px 10px; border-radius: 6px; font-size: 0.85rem;
+    width: 150px; padding: 4px 8px; border-radius: 6px; font-size: 0.8rem;
   }
   button {
     background: var(--accent); color: #000; border: none; padding: 8px 16px;
@@ -39,36 +63,46 @@
   button.secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
   button.secondary:hover { border-color: var(--accent); }
 
-  .source { margin-bottom: 28px; }
-  .source-header {
-    display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
-    padding-bottom: 6px; border-bottom: 2px solid var(--border);
+  .project-list {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; overflow: hidden;
   }
-  .source-label { font-size: 1.05rem; font-weight: 600; }
-  .source-meta { color: var(--text-muted); font-size: 0.8rem; }
-
-  .project {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-    margin-bottom: 12px; overflow: hidden;
-  }
+  .project { border-bottom: 1px solid var(--border); }
+  .project:last-child { border-bottom: none; }
   .project-header {
     display: flex; align-items: center; gap: 10px; padding: 12px 16px;
     cursor: pointer; user-select: none;
   }
   .project-header:hover { background: rgba(88,166,255,0.04); }
-  .project-path {
+  .project-title { flex: 1; min-width: 0; }
+  .project-name { font-size: 0.95rem; font-weight: 600; }
+  .project-directory {
     font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.85rem;
-    flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--text-muted); overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .project-meta { color: var(--text-muted); font-size: 0.8rem; white-space: nowrap; }
+  .project-pending { color: var(--yellow); }
+  .project-pending.complete { color: var(--green); }
   .arrow { color: var(--text-muted); transition: transform 0.15s; font-size: 0.7rem; }
   .arrow.open { transform: rotate(90deg); }
 
+  .project-body { display: none; border-top: 1px solid var(--border); }
+  .project-body.open { display: block; }
+  .harness { border-bottom: 1px solid var(--border); }
+  .harness:last-child { border-bottom: none; }
+  .harness-header {
+    display: flex; align-items: center; gap: 10px; padding: 10px 16px 10px 42px;
+    cursor: pointer; user-select: none; background: rgba(255,255,255,0.015);
+  }
+  .harness-header:hover { background: rgba(88,166,255,0.04); }
+  .harness-label { flex: 1; font-size: 0.85rem; font-weight: 600; }
+  .harness-meta { color: var(--text-muted); font-size: 0.78rem; white-space: nowrap; }
   .sessions { display: none; border-top: 1px solid var(--border); }
   .sessions.open { display: block; }
 
   .session {
-    display: flex; align-items: flex-start; gap: 10px; padding: 10px 16px 10px 42px;
+    display: flex; align-items: center; gap: 8px; padding: 8px 16px 8px 72px;
     border-bottom: 1px solid var(--border); font-size: 0.83rem;
   }
   .session:last-child { border-bottom: none; }
@@ -77,7 +111,43 @@
     text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
   }
   .session-summary:hover { color: var(--text); }
-  .session-meta { color: var(--text-muted); font-size: 0.78rem; white-space: nowrap; }
+  .session-meta {
+    display: flex; align-items: center; gap: 6px; color: var(--text-muted);
+    font-size: 0.78rem; white-space: nowrap;
+  }
+  .session-stat { display: inline-flex; align-items: center; gap: 4px; }
+  .session-stat svg {
+    width: 14px; height: 14px; fill: none; stroke: currentColor;
+    stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+  }
+  .session-actions {
+    display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-shrink: 0;
+  }
+  .icon-tooltip { position: relative; }
+  .icon-tooltip::after {
+    content: attr(data-tooltip); position: absolute; right: 0; bottom: calc(100% + 7px);
+    z-index: 20; padding: 5px 8px; border: 1px solid var(--border); border-radius: 5px;
+    background: #010409; color: var(--text); font-size: 0.72rem; font-weight: 400;
+    line-height: 1.2; white-space: nowrap; pointer-events: none;
+    opacity: 0; visibility: hidden; transform: translateY(2px);
+    transition: opacity 0.12s, transform 0.12s, visibility 0.12s;
+  }
+  .icon-tooltip:hover::after, .icon-tooltip:focus-visible::after {
+    opacity: 1; visibility: visible; transform: translateY(0);
+  }
+  .session-upload { padding: 4px 10px; font-size: 0.75rem; }
+  .subagent-icon {
+    display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px;
+    color: var(--yellow); border: 1px solid var(--yellow); border-radius: 50%;
+    font-weight: 700; line-height: 1; flex-shrink: 0;
+  }
+  .uploaded-icon {
+    display: none; align-items: center; justify-content: center; width: 24px; height: 24px;
+    color: var(--green); border: 1px solid var(--green); border-radius: 50%;
+    font-weight: 700; line-height: 1;
+  }
+  .session.uploaded .session-upload { display: none; }
+  .session.uploaded .uploaded-icon { display: inline-flex; }
 
   .preview-pane {
     position: fixed; top: 0; right: 0; width: 480px; height: 100vh;
@@ -103,15 +173,9 @@
   .preview-msg .role { font-weight: 600; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 4px; }
   .redacted { background: rgba(248,81,73,0.15); color: var(--red); padding: 1px 4px; border-radius: 3px; }
 
-  .status-bar {
-    position: fixed; bottom: 0; left: 0; right: 0;
-    background: var(--surface); border-top: 1px solid var(--border);
-    padding: 10px 24px; display: flex; justify-content: space-between; align-items: center;
-    z-index: 101;
+  .progress {
+    display: none; align-items: center; gap: 8px; flex: 0 1 260px; min-width: 180px;
   }
-  .status-left { font-size: 0.85rem; }
-  .status-count { color: var(--accent); font-weight: 600; }
-  .progress { display: none; align-items: center; gap: 8px; flex: 1; margin: 0 16px; }
   .progress.show { display: flex; }
   .bar { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
   .bar-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.3s; }
@@ -126,192 +190,505 @@
   .toast.show { display: block; }
 
   .empty { color: var(--text-muted); padding: 40px 0; text-align: center; }
-  .badge {
-    font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.03em;
-    background: rgba(210,153,34,0.15); color: var(--yellow);
-    border: 1px solid var(--yellow); border-radius: 4px; padding: 1px 5px; flex-shrink: 0;
-  }
   input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
-  .spacer { flex: 1; }
-  .body-pad { padding-bottom: 60px; }
 </style>
 </head>
-<body class="body-pad">
+<body>
 
-<h1>Agent Transcript Collector</h1>
+<h1>Redwood Research Transcript Collector</h1>
 <p class="subtitle">Select the transcripts you'd like to share. Preview any session before deciding. Secrets and credentials are always redacted.</p>
 
-<div class="controls">
-  <label>
+<div class="auto-upload-controls">
+  <span class="auto-upload-heading">
+    <span class="label">Auto upload</span>
+    <span class="auto-upload-description">Uploads changed transcripts every hour.</span>
+    <span id="watcher-version" title="Auto uploader version"></span>
+  </span>
+  <label class="name-setting">
     Your name:
-    <input type="text" id="contributor-name" placeholder="your name" value=""
+    <input type="text" id="contributor-name" placeholder="your name"
+           value="{{ default_contributor_name }}"
            oninput="onNameInput()">
   </label>
-  <label>
-    <input type="checkbox" id="identity-toggle" checked>
-    Redact my username &amp; paths
-  </label>
-  <div class="spacer"></div>
-  <button class="secondary" onclick="selectAll()">Select All</button>
-  <button class="secondary" onclick="deselectAll()">Deselect All</button>
+  <span id="watcher-status">Checking status…</span>
+  <div class="progress" id="upload-progress">
+    <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
+    <span id="progress-text"></span>
+  </div>
+  <button id="upload-btn" onclick="uploadNow()"
+          title="Upload pending transcripts from selected projects" disabled>Upload now</button>
+  <button class="secondary" id="auto-upload-toggle" onclick="toggleAutoUpload()"
+          title="Enable or disable automatic uploads every hour" disabled>Enable</button>
+  <button class="secondary" id="reinstall-watcher" onclick="reinstallWatcher()"
+          title="Reinstall the current auto uploader version" hidden>Reinstall</button>
+  <div id="unavailable-watcher-groups" hidden></div>
 </div>
 
-{% if not sources %}
+{% if not projects %}
 <p class="empty">No transcripts found for any supported agent (Claude Code, Codex, Pi) on this machine.</p>
 {% endif %}
 
-{% for source in sources %}
-<div class="source" data-source="{{ source.id }}">
-  <div class="source-header">
-    <input type="checkbox" class="source-checkbox" data-source="{{ source.id }}"
-           onclick="toggleSourceCheckbox(this)" title="Select all in {{ source.label }}">
-    <span class="source-label">{{ source.label }}</span>
-    <span class="source-meta">{{ source.session_count }} session{{ 's' if source.session_count != 1 else '' }} &middot; {{ source.total_size_human }}</span>
-  </div>
-
-  {% for group in source.groups %}
-  <div class="project" data-source="{{ source.id }}" data-group="{{ group.key }}">
-    <div class="project-header" onclick="toggleProject(this)">
-      <input type="checkbox" class="group-checkbox"
-             onclick="event.stopPropagation(); toggleGroupCheckbox(this)">
-      <span class="arrow">&#9654;</span>
-      <span class="project-path" title="{{ group.label }}">{{ group.label }}</span>
-      <span class="project-meta">{{ group.session_count }} session{{ 's' if group.session_count != 1 else '' }} &middot; {{ group.total_size_human }}</span>
+{% if projects %}<div class="project-list">{% endif %}
+{% for project in projects %}
+<div class="project" data-project="{{ project.key }}">
+  <div class="project-header" onclick="toggleProject(this)" title="Expand or collapse this project">
+    <span class="arrow project-arrow">&#9654;</span>
+    <div class="project-title">
+      <div class="project-name">{{ project.label }}</div>
+      <div class="project-directory" title="{{ project.directory or 'Directory unavailable' }}">
+        {{ project.directory or 'Directory unavailable' }}
+      </div>
     </div>
-    <div class="sessions">
-      {% for session in group.sessions %}
+    <span class="project-meta">
+      {{ project.session_count }} session{{ 's' if project.session_count != 1 else '' }}
+      &middot; <span class="project-pending">checking uploads…</span>
+    </span>
+    <label class="auto-upload" title="Automatically upload new transcripts from this project"
+           onclick="event.stopPropagation()">
+      <input type="checkbox" class="auto-upload-checkbox"
+             onchange="saveAutoUploadProjects(this)">
+      auto upload
+    </label>
+  </div>
+  <div class="project-body">
+    {% for harness in project.harnesses %}
+    <div class="harness" data-source="{{ harness.source }}" data-group="{{ harness.group }}">
+      <div class="harness-header" onclick="toggleHarness(this)" title="Expand or collapse {{ harness.source_label }} transcripts">
+        <span class="arrow harness-arrow">&#9654;</span>
+        <span class="harness-label">{{ harness.source_label }}</span>
+        <span class="harness-meta">{{ harness.session_count }} session{{ 's' if harness.session_count != 1 else '' }}</span>
+      </div>
+      <div class="sessions">
+      {% for session in harness.sessions %}
       <div class="session"
-           data-source="{{ source.id }}"
-           data-group="{{ group.key }}"
+           data-source="{{ harness.source }}"
+           data-group="{{ harness.group }}"
            data-session="{{ session.id }}"
            data-parent="{{ session.parent or '' }}">
-        <input type="checkbox" class="session-checkbox" onchange="updateCounts()">
-        {% if session.is_subagent %}<span class="badge" title="Spawned task subagent">subagent</span>{% endif %}
         <span class="session-summary" onclick="previewSession(this)" title="Click to preview">
           {{ session.first_message }}
         </span>
         <span class="session-meta">
-          {{ session.message_count }} msgs &middot; {{ session.size_human }}
-          {% if session.modified %}&middot; {{ session.modified.strftime('%b %d') }}{% endif %}
+          <span class="session-stat" aria-label="{{ session.message_count }} messages"
+                title="{{ session.message_count }} messages">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path>
+            </svg>
+            <span aria-hidden="true">{{ session.message_count }}</span>
+          </span>
+          {% if session.modified %}
+          <time class="session-stat icon-tooltip" tabindex="0"
+                datetime="{{ session.modified.isoformat() }}"
+                aria-label="Modified {{ session.modified.strftime('%b %d, %Y at %I:%M:%S %p') }}"
+                data-tooltip="{{ session.modified.strftime('%b %d, %Y at %I:%M:%S %p') }}">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="9"></circle>
+              <path d="M12 7v5l3 2"></path>
+            </svg>
+            <span aria-hidden="true">{{ session.modified.strftime('%b %d') }}</span>
+          </time>
+          {% endif %}
+        </span>
+        <span class="session-actions">
+          {% if session.is_subagent %}
+          <span class="subagent-icon icon-tooltip" role="img" tabindex="0"
+                aria-label="Subagent transcript" data-tooltip="Created by a subagent">&#8627;</span>
+          {% endif %}
+          <button class="session-upload secondary" onclick="uploadTranscript(this); event.stopPropagation()"
+                  title="Upload only this transcript">Upload</button>
+          <span class="uploaded-icon icon-tooltip" role="img" tabindex="0"
+                aria-label="Uploaded" data-tooltip="Already uploaded">&#10003;</span>
         </span>
       </div>
       {% endfor %}
+      </div>
     </div>
+    {% endfor %}
   </div>
-  {% endfor %}
 </div>
 {% endfor %}
+{% if projects %}</div>{% endif %}
 
 <div class="preview-pane" id="preview-pane">
   <div class="preview-header">
     <span id="preview-title">Preview</span>
     <span id="preview-redaction-count" style="color: var(--yellow); font-size: 0.8rem;"></span>
-    <button class="secondary" onclick="closePreview()">Close</button>
+    <button class="secondary" onclick="closePreview()" title="Close transcript preview">Close</button>
   </div>
   <div class="preview-body" id="preview-body"></div>
-</div>
-
-<div class="status-bar">
-  <div class="status-left">
-    <span class="status-count" id="selected-count">0</span> sessions selected
-    (<span id="selected-size">0 B</span>)
-  </div>
-  <div class="progress" id="upload-progress">
-    <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
-    <span id="progress-text"></span>
-  </div>
-  <button id="upload-btn" onclick="uploadSelected()" disabled>Upload Selected</button>
 </div>
 
 <div class="toast" id="toast"></div>
 
 <script>
-const sessionSizes = {};
-{% for source in sources %}
-  {% for group in source.groups %}
-    {% for session in group.sessions %}
-      sessionSizes["{{ source.id }}|{{ group.key }}|{{ session.parent or '' }}|{{ session.id }}"] = {{ session.size_bytes }};
-    {% endfor %}
-  {% endfor %}
-{% endfor %}
-
 function sessionKey(row) {
   return [row.dataset.source, row.dataset.group, row.dataset.parent || '', row.dataset.session].join('|');
 }
 
+function sessionDescriptor(row) {
+  return {
+    source: row.dataset.source,
+    group: row.dataset.group,
+    session: row.dataset.session,
+    parent: row.dataset.parent || null,
+  };
+}
+
 function toggleProject(header) {
-  const arrow = header.querySelector('.arrow');
+  const arrow = header.querySelector('.project-arrow');
   const project = header.closest('.project');
   arrow.classList.toggle('open');
-  project.querySelector('.sessions').classList.toggle('open');
+  project.querySelector('.project-body').classList.toggle('open');
 }
 
-function toggleGroupCheckbox(cb) {
-  const project = cb.closest('.project');
-  project.querySelectorAll('.session-checkbox').forEach(s => s.checked = cb.checked);
-  updateCounts();
-}
-
-function toggleSourceCheckbox(cb) {
-  const source = cb.closest('.source');
-  source.querySelectorAll('.session-checkbox').forEach(s => s.checked = cb.checked);
-  updateCounts();
-}
-
-function selectAll() {
-  document.querySelectorAll('.session-checkbox, .group-checkbox, .source-checkbox')
-    .forEach(cb => cb.checked = true);
-  updateCounts();
-}
-
-function deselectAll() {
-  document.querySelectorAll('.session-checkbox, .group-checkbox, .source-checkbox')
-    .forEach(cb => { cb.checked = false; cb.indeterminate = false; });
-  updateCounts();
+function toggleHarness(header) {
+  const arrow = header.querySelector('.harness-arrow');
+  const harness = header.closest('.harness');
+  arrow.classList.toggle('open');
+  harness.querySelector('.sessions').classList.toggle('open');
 }
 
 // localStorage is best-effort (it throws in Safari private mode / when site
 // storage is blocked) — never let it break the upload flow.
-function saveName(v) { try { if (v) localStorage.setItem('ctc_name', v); } catch (e) {} }
+function saveName(v) { try { localStorage.setItem('ctc_name', v); } catch (e) {} }
 function loadName() { try { return localStorage.getItem('ctc_name'); } catch (e) { return null; } }
 
+let autoUploadEnabled = false;
+let watcherConfigured = false;
+let watcherGroups = new Set();
+let nameRevision = 0;
+let syncedNameRevision = 0;
+let watcherMutation = Promise.resolve();
+let watcherEnabledOverride = null;
+
+function runWatcherMutation(operation) {
+  const result = watcherMutation.catch(() => {}).then(operation);
+  watcherMutation = result;
+  return result;
+}
+
+function harnessKey(harness) {
+  return `${harness.dataset.source}|${harness.dataset.group}`;
+}
+
+// The harnesses a project has consented to. A project whose saved config covers
+// only some of its harnesses renders indeterminate — keep exactly those groups,
+// so saving an unrelated project can't quietly revoke them.
+function consentedHarnesses(project) {
+  const cb = project.querySelector('.auto-upload-checkbox');
+  const harnesses = Array.from(project.querySelectorAll('.harness'));
+  if (cb.checked) return harnesses;
+  if (cb.indeterminate) return harnesses.filter(h => watcherGroups.has(harnessKey(h)));
+  return [];
+}
+
+function consentedProjects() {
+  return Array.from(document.querySelectorAll('.project'))
+    .filter(project => consentedHarnesses(project).length > 0);
+}
+
+function selectedAutoUploadGroups() {
+  return Array.from(document.querySelectorAll('.project'))
+    .flatMap(project => consentedHarnesses(project))
+    .map(harness => ({source: harness.dataset.source, group: harness.dataset.group}));
+}
+
+async function updateAutoUploadConfig(enabled, removedGroups = []) {
+  const submittedNameRevision = nameRevision;
+  const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
+  const groups = selectedAutoUploadGroups();
+  const resp = await runWatcherMutation(() => fetch('/api/watcher', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      groups,
+      removed_groups: removedGroups,
+      contributor_name: contributorName,
+      enabled,
+    }),
+  }));
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || 'Could not update auto upload');
+  const currentName = document.getElementById('contributor-name').value.trim() || 'anonymous';
+  if (nameRevision === submittedNameRevision && currentName === contributorName) {
+    syncedNameRevision = submittedNameRevision;
+  }
+  return data;
+}
+
+function renderUnavailableGroups(groups) {
+  const container = document.getElementById('unavailable-watcher-groups');
+  const visible = new Set(
+    Array.from(document.querySelectorAll('.harness')).map(harnessKey));
+  const unavailable = groups.filter(item => !visible.has(`${item.source}|${item.group}`));
+  container.replaceChildren();
+  container.hidden = unavailable.length === 0;
+  if (!unavailable.length) return;
+
+  const heading = document.createElement('span');
+  heading.textContent = 'Saved folders not currently available: ';
+  container.appendChild(heading);
+  unavailable.forEach(item => {
+    const entry = document.createElement('span');
+    entry.className = 'unavailable-watcher-group';
+    const label = document.createElement('span');
+    label.textContent = `${item.label || item.group} (${item.source})`;
+    const remove = document.createElement('button');
+    remove.className = 'secondary';
+    remove.textContent = 'Remove';
+    remove.onclick = () => removeUnavailableGroup(item, remove);
+    entry.append(label, remove);
+    container.appendChild(entry);
+  });
+}
+
+async function removeUnavailableGroup(item, button) {
+  button.disabled = true;
+  try {
+    await updateAutoUploadConfig(autoUploadEnabled, [item]);
+    showToast('Saved folder removed from auto upload');
+    await loadWatcher();
+  } catch (e) {
+    showToast(e.message, true);
+    button.disabled = false;
+  }
+}
+
+function formatUploadTime(value) {
+  if (!value) return 'never';
+  const date = new Date(value);
+  const today = new Date();
+  const sameDay = date.toDateString() === today.toDateString();
+  return date.toLocaleString([], sameDay
+    ? {hour: 'numeric', minute: '2-digit', second: '2-digit'}
+    : {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'});
+}
+
+async function loadWatcher() {
+  const status = document.getElementById('watcher-status');
+  const toggle = document.getElementById('auto-upload-toggle');
+  const reinstall = document.getElementById('reinstall-watcher');
+  const version = document.getElementById('watcher-version');
+  try {
+    const resp = await fetch('/api/watcher');
+    const data = await resp.json();
+    watcherConfigured = Boolean(data.config);
+    if (data.config) {
+      const name = data.config.contributor || 'anonymous';
+      if (nameRevision === syncedNameRevision) {
+        const settingsChanged = document.getElementById('contributor-name').value !== name;
+        document.getElementById('contributor-name').value = name;
+        saveName(name);
+        if (settingsChanged) refreshUploaded();
+      }
+    }
+    watcherGroups = new Set(
+      ((data.config && data.config.groups) || []).map(item => `${item.source}|${item.group}`));
+    renderUnavailableGroups((data.config && data.config.groups) || []);
+    document.querySelectorAll('.project').forEach(project => {
+      const cb = project.querySelector('.auto-upload-checkbox');
+      const harnesses = Array.from(project.querySelectorAll('.harness'));
+      const enabled = harnesses.filter(harness => watcherGroups.has(harnessKey(harness))).length;
+      cb.checked = harnesses.length > 0 && enabled === harnesses.length;
+      cb.indeterminate = enabled > 0 && enabled < harnesses.length;
+    });
+    autoUploadEnabled = watcherEnabledOverride ?? Boolean(data.installed);
+    const installedVersion = (data.config && data.config.auto_uploader_version) || 0;
+    const currentVersion = data.current_version;
+    version.textContent = data.needs_reinstall
+      ? `v${installedVersion} → v${currentVersion}`
+      : `v${currentVersion}`;
+    version.classList.toggle('mismatch', Boolean(data.needs_reinstall));
+    reinstall.hidden = !data.needs_reinstall;
+    toggle.disabled = false;
+    toggle.textContent = autoUploadEnabled ? 'Disable' : 'Enable';
+    if (data.error) {
+      status.textContent = data.error;
+    } else {
+      const last = data.state || {};
+      const lastUploaded = formatUploadTime(last.last_uploaded_at);
+      const nextUpload = autoUploadEnabled && last.finished_at
+        ? formatUploadTime(new Date(
+            new Date(last.finished_at).getTime() + data.interval_seconds * 1000))
+        : autoUploadEnabled ? 'soon' : 'disabled';
+      status.textContent = `Last uploaded ${lastUploaded} · Next upload ${nextUpload}`;
+      status.title = last.finished_at
+        ? `Last run: ${last.status}, ${last.sessions_uploaded || 0} uploaded`
+        : status.textContent;
+    }
+    updatePendingCounts();
+  } catch (e) {
+    status.textContent = 'Watcher status unavailable';
+    toggle.disabled = true;
+    reinstall.hidden = true;
+  }
+}
+
+async function reinstallWatcher() {
+  const button = document.getElementById('reinstall-watcher');
+  button.disabled = true;
+  button.textContent = 'Reinstalling…';
+  try {
+    const resp = await fetch('/api/watcher/reinstall', {method: 'POST'});
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Reinstall failed');
+    showToast('Auto uploader reinstalled');
+    await loadWatcher();
+  } catch (e) {
+    showToast(e.message, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Reinstall';
+  }
+}
+
+async function saveAutoUploadProjects(changed) {
+  changed.disabled = true;
+  document.getElementById('watcher-status').textContent = 'Saving project selection…';
+  try {
+    await updateAutoUploadConfig(autoUploadEnabled);
+    showToast(changed.checked ? 'Project added to auto upload' : 'Project removed from auto upload');
+    await loadWatcher();
+  } catch (e) {
+    showToast(e.message, true);
+    await loadWatcher();
+  } finally {
+    changed.disabled = false;
+  }
+}
+
+async function toggleAutoUpload() {
+  const button = document.getElementById('auto-upload-toggle');
+  if (!autoUploadEnabled && !selectedAutoUploadGroups().length) {
+    showToast('Select at least one project for auto upload', true);
+    return;
+  }
+  button.disabled = true;
+  button.textContent = autoUploadEnabled ? 'Disabling…' : 'Enabling…';
+  const disabling = autoUploadEnabled;
+  watcherEnabledOverride = !disabling;
+  try {
+    if (disabling) {
+      clearTimeout(historyTimer);
+      autoUploadEnabled = false;
+      const resp = await runWatcherMutation(
+        () => fetch('/api/watcher', {method: 'DELETE'}));
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || 'Disable failed');
+      showToast('Auto upload disabled');
+    } else {
+      await updateAutoUploadConfig(true);
+      showToast('Auto upload enabled');
+    }
+    await loadWatcher();
+    watcherEnabledOverride = null;
+  } catch (e) {
+    watcherEnabledOverride = null;
+    if (disabling) autoUploadEnabled = true;
+    showToast(e.message, true);
+    button.disabled = false;
+    button.textContent = autoUploadEnabled ? 'Disable' : 'Enable';
+  }
+}
+
+let historyTimer = null;
+let historyRequest = 0;
+let historyAvailable = false;
 function onNameInput() {
+  nameRevision += 1;
   saveName(document.getElementById('contributor-name').value.trim());
+  clearTimeout(historyTimer);
+  historyTimer = setTimeout(refreshSettings, 400);
 }
 
-function updateCounts() {
-  const checked = document.querySelectorAll('.session-checkbox:checked');
-  let totalSize = 0;
-  checked.forEach(cb => { totalSize += sessionSizes[sessionKey(cb.closest('.session'))] || 0; });
-  document.getElementById('selected-count').textContent = checked.length;
-  document.getElementById('selected-size').textContent = humanSize(totalSize);
-  document.getElementById('upload-btn').disabled = checked.length === 0;
+async function refreshSettings() {
+  refreshUploaded();
+  if (!watcherConfigured) return;
+  try {
+    await updateAutoUploadConfig(autoUploadEnabled);
+    await loadWatcher();
+  } catch (e) {
+    showToast(e.message, true);
+  }
+}
 
-  // Roll up group checkboxes
+async function refreshUploaded() {
+  const request = ++historyRequest;
+  const rows = Array.from(document.querySelectorAll('.session'));
+  const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
+  historyAvailable = false;
+  updatePendingCounts(false);
+  try {
+    const resp = await fetch('/api/uploaded', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        contributor_name: contributorName,
+        sessions: rows.map(sessionDescriptor),
+      }),
+    });
+    const data = await resp.json();
+    if (request !== historyRequest) return;
+    if (!resp.ok) {
+      rows.forEach(row => row.classList.remove('uploaded'));
+      updatePendingCounts(false);
+      return;
+    }
+    const uploaded = new Set((data.uploaded || []).map(item =>
+      [item.source, item.group, item.parent || '', item.session].join('|')));
+    rows.forEach(row => row.classList.toggle('uploaded', uploaded.has(sessionKey(row))));
+    historyAvailable = true;
+    updatePendingCounts(true);
+  } catch (e) {
+    if (request !== historyRequest) return;
+    rows.forEach(row => row.classList.remove('uploaded'));
+    updatePendingCounts(false);
+  }
+}
+
+function updatePendingCounts(available = historyAvailable) {
+  const button = document.getElementById('upload-btn');
+  let selectedPending = 0;
+  let selectedProjects = 0;
+
   document.querySelectorAll('.project').forEach(project => {
-    const gcb = project.querySelector('.group-checkbox');
-    const all = project.querySelectorAll('.session-checkbox');
-    const on = project.querySelectorAll('.session-checkbox:checked');
-    gcb.checked = all.length > 0 && all.length === on.length;
-    gcb.indeterminate = on.length > 0 && on.length < all.length;
+    const label = project.querySelector('.project-pending');
+    label.classList.remove('complete');
+    if (!available) {
+      label.textContent = 'upload status unavailable';
+    } else {
+      const pending = project.querySelectorAll('.session:not(.uploaded)').length;
+      label.textContent = pending
+        ? `${pending} not uploaded`
+        : 'all uploaded';
+      label.classList.toggle('complete', pending === 0);
+    }
+    const consented = consentedHarnesses(project);
+    if (consented.length) {
+      selectedProjects += 1;
+      selectedPending += consented.reduce(
+        (total, harness) => total + harness.querySelectorAll('.session:not(.uploaded)').length, 0);
+    }
   });
 
-  // Roll up source checkboxes
-  document.querySelectorAll('.source').forEach(source => {
-    const scb = source.querySelector('.source-checkbox');
-    const all = source.querySelectorAll('.session-checkbox');
-    const on = source.querySelectorAll('.session-checkbox:checked');
-    scb.checked = all.length > 0 && all.length === on.length;
-    scb.indeterminate = on.length > 0 && on.length < all.length;
+  document.querySelectorAll('.session-upload').forEach(upload => {
+    upload.disabled = uploadBusy
+      || (available && upload.closest('.session').classList.contains('uploaded'));
   });
-}
 
-function humanSize(bytes) {
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let i = 0;
-  let size = bytes;
-  while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
-  return size.toFixed(1) + ' ' + units[i];
+  if (uploadBusy) {
+    button.textContent = 'Uploading…';
+    button.disabled = true;
+  } else if (!selectedProjects) {
+    button.textContent = 'Upload now';
+    button.disabled = true;
+  } else if (available && !selectedPending) {
+    button.textContent = 'Everything uploaded';
+    button.disabled = true;
+  } else {
+    button.textContent = available ? `Upload ${selectedPending} now` : 'Upload now';
+    button.disabled = false;
+  }
 }
 
 async function previewSession(el) {
@@ -322,14 +699,13 @@ async function previewSession(el) {
   const body = document.getElementById('preview-body');
   const title = document.getElementById('preview-title');
   const redactCount = document.getElementById('preview-redaction-count');
-  const identity = document.getElementById('identity-toggle').checked;
 
   body.innerHTML = '<p style="color: var(--text-muted)">Loading...</p>';
   pane.classList.add('open');
   title.textContent = session.substring(0, 8) + '...';
 
   try {
-    const q = new URLSearchParams({ source, group, session, parent, identity });
+    const q = new URLSearchParams({ source, group, session, parent });
     const resp = await fetch('/api/preview?' + q.toString());
     const data = await resp.json();
 
@@ -376,20 +752,32 @@ function showToast(msg, isError) {
 // Upload runs as a background job on the server; the page starts it, then polls
 // for progress. Closing the tab doesn't abort it — reopening re-attaches.
 let pollTimer = null;
+let uploadBusy = false;
 
 function saveJob(id) { try { localStorage.setItem('ctc_job', id); } catch (e) {} }
 function clearJob() { try { localStorage.removeItem('ctc_job'); } catch (e) {} }
 function loadJob() { try { return localStorage.getItem('ctc_job'); } catch (e) { return null; } }
 
-async function uploadSelected() {
-  const btn = document.getElementById('upload-btn');
-  btn.disabled = true;
-  btn.textContent = 'Starting…';
+function uploadNow() {
+  const rows = Array.from(document.querySelectorAll('.project'))
+    .flatMap(project => consentedHarnesses(project))
+    .flatMap(harness => Array.from(harness.querySelectorAll('.session:not(.uploaded)')));
+  startUpload(rows);
+}
 
-  const selected = Array.from(document.querySelectorAll('.session-checkbox:checked')).map(cb => {
-    const row = cb.closest('.session');
-    return { source: row.dataset.source, group: row.dataset.group, session: row.dataset.session, parent: row.dataset.parent || null };
-  });
+function uploadTranscript(button) {
+  startUpload([button.closest('.session')]);
+}
+
+async function startUpload(rows) {
+  const selected = rows.map(sessionDescriptor);
+  if (!selected.length) {
+    showToast('Selected projects are already uploaded');
+    resetUploadBtn();
+    return;
+  }
+  uploadBusy = true;
+  updatePendingCounts();
 
   let contributorName = document.getElementById('contributor-name').value.trim();
   if (!contributorName) {
@@ -399,17 +787,16 @@ async function uploadSelected() {
     if (entered) {
       contributorName = entered;
       document.getElementById('contributor-name').value = entered;
+      onNameInput();
     }
   }
   saveName(contributorName);
   contributorName = contributorName || 'anonymous';
-  const redactIdentity = document.getElementById('identity-toggle').checked;
-
   try {
     const resp = await fetch('/api/upload', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ selected, contributor_name: contributorName, redact_identity: redactIdentity }),
+      body: JSON.stringify({ selected, contributor_name: contributorName }),
     });
     const data = await resp.json();
     if (resp.status === 409) {            // already running — attach to it
@@ -427,7 +814,8 @@ async function uploadSelected() {
 }
 
 function trackJob(jobId) {
-  document.getElementById('upload-btn').disabled = true;
+  uploadBusy = true;
+  updatePendingCounts();
   showProgress(true);
   clearInterval(pollTimer);
   pollTimer = setInterval(async () => {
@@ -442,7 +830,7 @@ function trackJob(jobId) {
       stopTracking();
       clearJob();
       finishToast(j);
-      if (j.status !== 'failed') deselectAll();
+      if (j.status !== 'failed') refreshUploaded();
       resetUploadBtn();
     }
   }, 1000);
@@ -463,10 +851,9 @@ function renderProgress(j) {
 function finishToast(j) {
   const up = j.uploads.length, failed = (j.errors || []).length;
   if (!up && failed) { showToast((j.errors[0] && j.errors[0].error) || 'Upload failed', true); return; }
-  const sessions = j.uploads.reduce((a, u) => a + u.session_count, 0);
-  const bytes = j.uploads.reduce((a, u) => a + u.zip_size_bytes, 0);
-  const red = j.uploads.reduce((a, u) => a + u.total_redactions, 0);
-  let msg = `Uploaded ${sessions} sessions in ${up} part${up !== 1 ? 's' : ''} (${humanSize(bytes)}, ${red} redactions)`;
+  const sessions = j.uploads.reduce((a, u) => a + u.transcript_count, 0);
+  const red = j.uploads.reduce((a, u) => a + u.redactions, 0);
+  let msg = `Uploaded ${sessions} transcript${sessions !== 1 ? 's' : ''} (${red} redactions)`;
   if (failed) msg += ` — ${failed} failed`;
   showToast(msg, failed > 0);
 }
@@ -477,16 +864,19 @@ function showProgress(on) {
 }
 function stopTracking() { clearInterval(pollTimer); pollTimer = null; showProgress(false); }
 function resetUploadBtn() {
-  document.getElementById('upload-btn').textContent = 'Upload Selected';
-  updateCounts();
+  uploadBusy = false;
+  updatePendingCounts();
 }
 
 // Restore a remembered name, set the initial button state, and re-attach to an
 // upload that's still running (e.g. after a tab reopen).
 (function init() {
   const saved = loadName();
-  if (saved) document.getElementById('contributor-name').value = saved;
-  updateCounts();
+  if (saved !== null) document.getElementById('contributor-name').value = saved;
+  updatePendingCounts(false);
+  refreshUploaded();
+  loadWatcher();
+  setInterval(loadWatcher, 15000);
   const job = loadJob();
   if (job) trackJob(job);
 })();

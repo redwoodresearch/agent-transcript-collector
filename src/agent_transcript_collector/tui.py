@@ -1,80 +1,154 @@
-"""Interactive terminal selector for choosing which sources to download.
-
-Optional — requires the ``tui`` extra (Textual). :func:`select_sources` shows a
-checkbox list of the sources present in the bucket (with unit counts and sizes),
-and returns the source ids the user picked, or ``None`` if they cancelled.
-
-Selection is at the source level on purpose: it's the one segment that is
-human-meaningful across every key layout in the bucket. For finer slices
-(a single contributor or prefix) use the CLI's ``--contributor`` / ``--prefix``.
-"""
+"""Lazy S3 transcript browser for the ``rr-trans`` command."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import ClassVar
+
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Footer, Header, SelectionList
-from textual.widgets.selection_list import Selection
+from textual.widgets import Footer, Header, Tree
+from textual.widgets.tree import TreeNode
 
-from .catalog import Aggregate
-
-
-def _build_selections(source_aggs: dict[str, Aggregate]) -> list[Selection]:
-    selections: list[Selection] = []
-    for source, agg in source_aggs.items():
-        prompt = f"{source}  ({agg.count} zips, {agg.size_human})"
-        selections.append(Selection(prompt, source, False))
-    return selections
+from .s3client import S3_BUCKET, make_s3_client
+from .storage import STORAGE_PREFIX
 
 
-class SourceSelector(App[list[str] | None]):
-    """Check the sources to download; press ``d`` to confirm, ``q`` to cancel."""
+@dataclass(frozen=True)
+class S3Entry:
+    """One immediate child of an S3 prefix."""
+
+    name: str
+    key: str
+    is_folder: bool
+
+
+def list_folder(s3, prefix: str) -> list[S3Entry]:
+    """List only the immediate folders and transcript ZIPs under ``prefix``."""
+    paginator = s3.get_paginator("list_objects_v2")
+    folders: dict[str, S3Entry] = {}
+    objects: dict[str, S3Entry] = {}
+    for page in paginator.paginate(
+        Bucket=S3_BUCKET,
+        Prefix=prefix,
+        Delimiter="/",
+    ):
+        for item in page.get("CommonPrefixes", []):
+            key = item["Prefix"]
+            name = key.removeprefix(prefix).rstrip("/")
+            if name:
+                folders[key] = S3Entry(name=name, key=key, is_folder=True)
+        for item in page.get("Contents", []):
+            key = item["Key"]
+            name = key.removeprefix(prefix)
+            if name and "/" not in name and key.endswith(".zip"):
+                objects[key] = S3Entry(name=name, key=key, is_folder=False)
+    return [
+        *sorted(folders.values(), key=lambda entry: entry.name.lower()),
+        *sorted(objects.values(), key=lambda entry: entry.name.lower()),
+    ]
+
+
+class TranscriptBrowser(App[None]):
+    """Explore transcript folders, loading one S3 level when it is opened."""
 
     CSS = """
-    SelectionList {
+    Tree {
         height: 1fr;
         border: round $accent;
         padding: 1 2;
     }
     """
 
-    BINDINGS = [
-        Binding("a", "all", "All"),
-        Binding("n", "none", "None"),
-        Binding("d", "confirm", "Download"),
-        Binding("q", "cancel", "Cancel"),
-        Binding("escape", "cancel", "Cancel"),
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("q", "quit", "Quit"),
+        Binding("escape", "quit", "Quit"),
     ]
 
-    def __init__(self, source_aggs: dict[str, Aggregate]) -> None:
+    def __init__(self, prefix: str) -> None:
         super().__init__()
-        self._source_aggs = source_aggs
+        self._prefix = prefix
+        self._s3 = None
+        self._loading: set[int] = set()
+        self._loaded: set[int] = set()
 
     def compose(self) -> ComposeResult:
+        tree: Tree[S3Entry] = Tree("Connecting to S3…", id="transcripts")
+        tree.root.expand()
         yield Header()
-        yield SelectionList[str](*_build_selections(self._source_aggs), id="sources")
+        yield tree
         yield Footer()
 
     def on_mount(self) -> None:
-        self.title = "Transcript downloader"
-        self.sub_title = "space toggles · a=all · n=none · d=download · q=cancel"
-        self.query_one(SelectionList).focus()
+        self.title = "Redwood Research Transcript Collector"
+        self.sub_title = "enter=expand · q=quit"
+        tree = self.query_one("#transcripts", Tree)
+        tree.focus()
+        self._load(tree.root, self._prefix)
 
-    def action_all(self) -> None:
-        self.query_one(SelectionList).select_all()
+    def on_tree_node_expanded(self, event: Tree.NodeExpanded[S3Entry]) -> None:
+        entry = event.node.data
+        if entry is not None and entry.is_folder:
+            self._load(event.node, entry.key)
 
-    def action_none(self) -> None:
-        self.query_one(SelectionList).deselect_all()
+    def _load(self, node: TreeNode[S3Entry], prefix: str) -> None:
+        node_id = node.id
+        if node_id in self._loading or node_id in self._loaded:
+            return
+        self._loading.add(node_id)
+        node.remove_children()
+        node.add_leaf(Text("Loading…", style="dim"))
 
-    def action_confirm(self) -> None:
-        self.exit(list(self.query_one(SelectionList).selected))
+        def fetch() -> None:
+            try:
+                if self._s3 is None:
+                    self._s3 = make_s3_client()
+                entries = list_folder(self._s3, prefix)
+            except Exception as exc:
+                self.call_from_thread(self._show_error, node, exc)
+            else:
+                self.call_from_thread(self._show_entries, node, entries)
 
-    def action_cancel(self) -> None:
-        self.exit(None)
+        self.run_worker(
+            fetch,
+            thread=True,
+            exit_on_error=False,
+            group="s3-listing",
+        )
+
+    def _show_entries(
+        self,
+        node: TreeNode[S3Entry],
+        entries: list[S3Entry],
+    ) -> None:
+        self._loading.discard(node.id)
+        self._loaded.add(node.id)
+        node.remove_children()
+        if node is self.query_one("#transcripts", Tree).root:
+            node.set_label(Text(f"s3://{S3_BUCKET}/{self._prefix}", style="cyan"))
+        if not entries:
+            node.add_leaf(Text("No transcripts found", style="dim"))
+            return
+        for entry in entries:
+            label = Text(entry.name, style="cyan" if entry.is_folder else "")
+            if entry.is_folder:
+                child = node.add(label, data=entry)
+                child.add_leaf(Text("Open to load", style="dim"))
+            else:
+                node.add_leaf(label, data=entry)
+
+    def _show_error(self, node: TreeNode[S3Entry], error: Exception) -> None:
+        self._loading.discard(node.id)
+        node.remove_children()
+        node.add_leaf(Text(f"Unable to load: {error}", style="red"))
 
 
-def select_sources(source_aggs: dict[str, Aggregate]) -> list[str] | None:
-    """Run the selector. Returns chosen source ids, or ``None`` if cancelled/empty."""
-    if not source_aggs:
-        return None
-    return SourceSelector(source_aggs).run()
+def main(prefix: str = f"{STORAGE_PREFIX}/") -> int:
+    normalized = prefix.rstrip("/") + "/"
+    TranscriptBrowser(normalized).run()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
