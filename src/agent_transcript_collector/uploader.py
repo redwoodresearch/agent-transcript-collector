@@ -7,7 +7,9 @@ import io
 import json
 import os
 import re
+import threading
 import zipfile
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -29,6 +31,9 @@ from .storage import STORAGE_PREFIX
 TRANSCRIPT_FORMAT_VERSION = 3
 FINGERPRINT_VERSION = 2
 FINGERPRINT_METADATA = "content-fingerprint"
+_FINGERPRINT_CACHE_MAX = 4096
+_FINGERPRINT_CACHE: OrderedDict[tuple[str, int, int], str] = OrderedDict()
+_FINGERPRINT_CACHE_LOCK = threading.Lock()
 
 
 def upload_concurrency() -> int:
@@ -149,8 +154,21 @@ def _uploaded_fingerprint(s3, key: str, cache: dict[str, str | None]) -> str | N
 
 
 def _prepare(source, session, contributor: str) -> PreparedTranscript:
-    raw_bytes = Path(session.path).read_bytes()
-    fingerprint = transcript_fingerprint(raw_bytes)
+    path = Path(session.path)
+    stat = path.stat()
+    cache_key = (str(path), stat.st_size, stat.st_mtime_ns)
+    raw_bytes = path.read_bytes()
+    with _FINGERPRINT_CACHE_LOCK:
+        fingerprint = _FINGERPRINT_CACHE.get(cache_key)
+        if fingerprint is not None:
+            _FINGERPRINT_CACHE.move_to_end(cache_key)
+    if fingerprint is None:
+        fingerprint = transcript_fingerprint(raw_bytes)
+        with _FINGERPRINT_CACHE_LOCK:
+            _FINGERPRINT_CACHE[cache_key] = fingerprint
+            _FINGERPRINT_CACHE.move_to_end(cache_key)
+            while len(_FINGERPRINT_CACHE) > _FINGERPRINT_CACHE_MAX:
+                _FINGERPRINT_CACHE.popitem(last=False)
     key = transcript_key(contributor, source.id, session)
     return PreparedTranscript(session, raw_bytes, fingerprint, key)
 
@@ -161,22 +179,48 @@ def partition_transcripts(
     sessions,
     contributor: str,
     uploaded_fingerprints: dict[str, str | None] | None = None,
+    on_status=None,
 ):
     """Split current transcripts into changed and already uploaded."""
     existing = uploaded_fingerprints if uploaded_fingerprints is not None else {}
+    sessions = list(sessions)
     pending: list[PreparedTranscript] = []
     uploaded = []
     errors = []
-    for session in sessions:
+    prepared_items = []
+    for index, session in enumerate(sessions, start=1):
         try:
-            prepared = _prepare(source, session, contributor)
+            prepared_items.append(_prepare(source, session, contributor))
         except OSError as exc:
             errors.append({"source": source.id, "error": f"{session.id}: {exc}"})
-            continue
-        if _uploaded_fingerprint(s3, prepared.key, existing) == prepared.fingerprint:
-            uploaded.append(session)
-        else:
-            pending.append(prepared)
+        if on_status:
+            on_status("fingerprinting", index, len(sessions))
+
+    def check_one(prepared):
+        return _uploaded_fingerprint(s3, prepared.key, existing) == prepared.fingerprint
+
+    if prepared_items:
+        workers = min(upload_concurrency(), len(prepared_items))
+        completed = 0
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(check_one, item): item for item in prepared_items
+            }
+            for future in as_completed(futures):
+                prepared = futures[future]
+                completed += 1
+                try:
+                    already_uploaded = future.result()
+                except Exception as exc:
+                    errors.append({
+                        "source": source.id,
+                        "error": f"{prepared.session.id}: {type(exc).__name__}: {exc}",
+                    })
+                else:
+                    (uploaded if already_uploaded else pending).append(
+                        prepared.session if already_uploaded else prepared)
+                if on_status:
+                    on_status("checking", completed, len(prepared_items))
     return pending, uploaded, errors
 
 
@@ -228,12 +272,13 @@ def upload_transcripts(
     sessions,
     contributor: str,
     on_progress=None,
+    on_status=None,
     uploaded_fingerprints: dict[str, str | None] | None = None,
 ):
     """Overwrite each session object only when its redacted content changes."""
     existing = uploaded_fingerprints if uploaded_fingerprints is not None else {}
     pending, uploaded, errors = partition_transcripts(
-        s3, source, list(sessions), contributor, existing
+        s3, source, list(sessions), contributor, existing, on_status=on_status
     )
     if on_progress:
         on_progress(len(uploaded) + len(errors))
@@ -251,6 +296,9 @@ def upload_transcripts(
         )
         return {
             "source": source.id,
+            "group": prepared.session.group_key,
+            "session": prepared.session.id,
+            "parent": prepared.session.parent,
             "s3_key": prepared.key,
             "transcript_count": 1,
             "zip_size_bytes": len(zip_bytes),
@@ -259,6 +307,9 @@ def upload_transcripts(
 
     local_usernames()
     results = []
+    completed = 0
+    if on_status:
+        on_status("uploading", 0, len(pending))
     workers = min(upload_concurrency(), len(pending))
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {executor.submit(upload_one, item): item for item in pending}
@@ -274,4 +325,7 @@ def upload_transcripts(
                 )
             if on_progress:
                 on_progress(1)
+            completed += 1
+            if on_status:
+                on_status("uploading", completed, len(pending))
     return results, errors

@@ -8,9 +8,7 @@ adapters in `.sources`. Each transcript is uploaded as one ZIP under
 import getpass
 import os
 import re
-import shutil
 import socket
-import subprocess
 import threading
 import time
 import uuid
@@ -21,26 +19,40 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Environment, PackageLoader
 
 from .redactor import redact_identity, redact_jsonl_content
-from .s3client import make_s3_client as _make_s3_client, selected_profile
-from .sources import SOURCES, detect_projects, find_session, get_source
+from .s3client import make_s3_client as _make_s3_client
+from .s3client import selected_profile
+from .sources import SOURCES, get_source, projects_from_groups
 from .uploader import (
     UploadBusy,
     UploadLock,
     partition_transcripts,
+)
+from .uploader import (
     upload_transcripts as _upload_transcripts,
 )
 from .watcher import (
     AllowedGroup,
     WatcherConfig,
     capture_source_env,
+)
+from .watcher import (
     install as install_watcher,
+)
+from .watcher import (
     load_config as load_watcher_config,
+)
+from .watcher import (
     save_config as save_watcher_config,
+)
+from .watcher import (
     status as watcher_status,
+)
+from .watcher import (
     uninstall as uninstall_watcher,
 )
 
@@ -62,52 +74,148 @@ jinja_env = Environment(
 
 @lru_cache(maxsize=1)
 def _default_contributor_name() -> str:
-    """Prefer the authenticated GitHub login, then the local OS username."""
-    gh = shutil.which("gh")
-    if gh:
-        try:
-            result = subprocess.run(
-                [gh, "api", "user", "--jq", ".login"],
-                capture_output=True,
-                check=True,
-                text=True,
-                timeout=2,
-            )
-            login = result.stdout.strip()
-            if login:
-                return login
-        except (OSError, subprocess.SubprocessError):
-            pass
+    """Return a local fallback without delaying the first page on a subprocess."""
     return getpass.getuser()
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index():
-    projects = detect_projects()
+def index():
+    """Return the application shell immediately; discovery starts in-browser."""
     template = jinja_env.get_template("index.html")
     return template.render(
-        projects=projects,
+        projects=None,
         default_contributor_name=_default_contributor_name(),
     )
 
 
+# One process-local discovery snapshot serves every UI operation. Scanning is
+# intentionally background work so the application shell never waits on disk.
+SCAN_LOCK = threading.Lock()
+SCAN_STATE = {
+    "status": "idle",
+    "completed_sources": 0,
+    "total_sources": len(SOURCES),
+    "source": None,
+    "session_count": 0,
+    "error": None,
+    "started_at": None,
+    "finished_at": None,
+}
+SCAN_CACHE = {"projects": None, "groups_by_source": {}, "sessions": {}}
+
+
+def _scan_status_unlocked() -> dict:
+    result = dict(SCAN_STATE)
+    result["ready"] = SCAN_CACHE["projects"] is not None
+    return result
+
+
+def _scan_status() -> dict:
+    with SCAN_LOCK:
+        return _scan_status_unlocked()
+
+
+def _run_scan() -> None:
+    discovered = []
+    groups_by_source = {}
+    sessions = {}
+    try:
+        for position, source in enumerate(SOURCES, start=1):
+            with SCAN_LOCK:
+                SCAN_STATE["source"] = source.label
+            groups = source.discover()
+            groups_by_source[source.id] = groups
+            discovered.extend((source, group) for group in groups)
+            for group in groups:
+                for session in group.sessions:
+                    key = (source.id, group.key, session.parent or None, session.id)
+                    sessions[key] = session
+            with SCAN_LOCK:
+                SCAN_STATE["completed_sources"] = position
+                SCAN_STATE["session_count"] = len(sessions)
+        projects = projects_from_groups(discovered)
+        with SCAN_LOCK:
+            SCAN_CACHE.update({
+                "projects": projects,
+                "groups_by_source": groups_by_source,
+                "sessions": sessions,
+            })
+            SCAN_STATE["status"] = "ready"
+            SCAN_STATE["error"] = None
+    except Exception as exc:
+        with SCAN_LOCK:
+            SCAN_STATE["status"] = "failed"
+            SCAN_STATE["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        with SCAN_LOCK:
+            SCAN_STATE["source"] = None
+            SCAN_STATE["finished_at"] = time.time()
+
+
+def _start_scan(force: bool = False) -> dict:
+    with SCAN_LOCK:
+        if SCAN_STATE["status"] == "scanning":
+            return _scan_status_unlocked()
+        if SCAN_CACHE["projects"] is not None and not force:
+            return _scan_status_unlocked()
+        SCAN_STATE.update({
+            "status": "scanning",
+            "completed_sources": 0,
+            "source": None,
+            "session_count": 0,
+            "error": None,
+            "started_at": time.time(),
+            "finished_at": None,
+        })
+        status = _scan_status_unlocked()
+    threading.Thread(target=_run_scan, daemon=True, name="transcript-scan").start()
+    return status
+
+
+def _cached_session(source: str, group: str, session: str, parent: str | None):
+    with SCAN_LOCK:
+        return SCAN_CACHE["sessions"].get((source, group, parent or None, session))
+
+
+@app.post("/api/scan")
+def start_scan(force: bool = False):
+    return _start_scan(force)
+
+
+@app.get("/api/scan")
+def scan_status():
+    return _scan_status()
+
+
+@app.get("/api/projects", response_class=HTMLResponse)
+def project_list():
+    with SCAN_LOCK:
+        projects = SCAN_CACHE["projects"]
+    if projects is None:
+        return JSONResponse(_scan_status(), status_code=202)
+    return jinja_env.get_template("_projects.html").render(projects=projects)
+
+
 @app.get("/api/preview")
-async def preview_session(source: str, group: str, session: str, parent: str = ""):
-    """Preview a session's messages with secrets and identity redacted."""
-    sess = find_session(source, group, session, parent or None)
+def preview_session(source: str, group: str, session: str, parent: str = "",
+                    offset: int = 0, limit: int = 100):
+    """Preview one bounded page of messages with displayed text redacted."""
+    sess = _cached_session(source, group, session, parent or None)
     src = get_source(source)
     if sess is None or src is None:
-        return JSONResponse({"error": "Session not found"}, status_code=404)
+        return JSONResponse({"error": "Session not found; try Rescan"}, status_code=404)
 
     raw = Path(sess.path).read_text(encoding="utf-8", errors="replace")
-
-    raw, redaction_count = redact_jsonl_content(raw)
-    raw, n = redact_identity(raw)
-    redaction_count += n
-
+    parsed = src.parse_messages(raw)
+    offset = max(0, offset)
+    limit = max(1, min(limit, 100))
     messages = []
-    for m in src.parse_messages(raw):
-        text = m["text"]
+    redaction_count = 0
+    for m in parsed[offset:offset + limit]:
+        text, count = redact_jsonl_content(m["text"])
+        redaction_count += count
+        text, count = redact_identity(text)
+        redaction_count += count
         messages.append(
             {
                 "role": m["role"],
@@ -118,7 +226,9 @@ async def preview_session(source: str, group: str, session: str, parent: str = "
     return {
         "messages": messages,
         "redaction_count": redaction_count,
-        "total_messages": len(messages),
+        "total_messages": len(parsed),
+        "next_offset": offset + len(messages),
+        "has_more": offset + len(messages) < len(parsed),
     }
 
 
@@ -144,11 +254,13 @@ def _resolve_selection(selected):
         source = get_source(source_id)
         if source is None:
             continue
-        resolved = {
-            (g.key, s.parent or None, s.id): s
-            for g in source.discover()
-            for s in g.sessions
-        }
+        with SCAN_LOCK:
+            resolved = {
+                (group, parent, session): value
+                for (sid, group, parent, session), value in
+                SCAN_CACHE["sessions"].items()
+                if sid == source_id
+            }
         sessions = [resolved[p] for p in picks if p in resolved]
         if sessions:
             out.append((source, sessions))
@@ -163,6 +275,7 @@ def _run_upload_job(job_id, selected, contributor):
             to_upload = _resolve_selection(selected)
             job["total"] = sum(len(s) for _, s in to_upload)
             job["status"] = "running"
+            job["stage"] = "connecting"
             s3 = _make_s3_client()
             uploaded_fingerprints: dict[str, str | None] = {}
             for source, sessions in to_upload:
@@ -173,6 +286,8 @@ def _run_upload_job(job_id, selected, contributor):
                         sessions,
                         contributor,
                         on_progress=lambda n: job.__setitem__("done", job["done"] + n),
+                        on_status=lambda stage, done, total: job.update(
+                            stage=stage, stage_done=done, stage_total=total),
                         uploaded_fingerprints=uploaded_fingerprints,
                     )
                     with JOBS_LOCK:
@@ -208,10 +323,7 @@ def _run_upload_job(job_id, selected, contributor):
                 _active_job["id"] = None
 
 
-@app.post("/api/uploaded")
-async def uploaded_sessions(request: Request):
-    """Return local sessions whose current fingerprint is in S3."""
-    body = await request.json()
+def _uploaded_sessions(body: dict):
     contributor = _safe_name(body.get("contributor_name", "anonymous"))
     sessions = body.get("sessions", [])
     by_source: dict[str, list[dict]] = defaultdict(list)
@@ -226,11 +338,13 @@ async def uploaded_sessions(request: Request):
         uploaded = []
         for source_id, source_sessions in by_source.items():
             source = get_source(source_id)
-            resolved = {
-                (group.key, session.parent or None, session.id): session
-                for group in source.discover()
-                for session in group.sessions
-            }
+            with SCAN_LOCK:
+                resolved = {
+                    (group, parent, session): value
+                    for (sid, group, parent, session), value in
+                    SCAN_CACHE["sessions"].items()
+                    if sid == source_id
+                }
             resolved_items = []
             for item in source_sessions:
                 session = resolved.get(
@@ -266,6 +380,13 @@ async def uploaded_sessions(request: Request):
         )
 
 
+@app.post("/api/uploaded")
+async def uploaded_sessions(request: Request):
+    """Check remote history in a worker so it never stalls the UI event loop."""
+    body = await request.json()
+    return await run_in_threadpool(_uploaded_sessions, body)
+
+
 @app.post("/api/upload")
 async def upload(request: Request):
     """Start a background upload job; returns a job id to poll."""
@@ -289,6 +410,9 @@ async def upload(request: Request):
         _active_job["id"] = job_id
         JOBS[job_id] = {
             "status": "preparing",
+            "stage": "preparing",
+            "stage_done": 0,
+            "stage_total": None,
             "total": None,
             "done": 0,
             "errors": [],
@@ -306,14 +430,11 @@ async def upload(request: Request):
 
 
 @app.get("/api/watcher")
-async def get_watcher_status():
+def get_watcher_status():
     return watcher_status()
 
 
-@app.put("/api/watcher")
-async def put_watcher(request: Request):
-    """Persist project consent and optionally enable the scheduled job."""
-    body = await request.json()
+def _put_watcher(body: dict):
     requested = {
         (str(item.get("source", "")), str(item.get("group", "")))
         for item in body.get("groups", [])
@@ -323,11 +444,12 @@ async def put_watcher(request: Request):
         for item in body.get("removed_groups", [])
     }
     requested -= removed
-    discovered = {
-        (source.id, group.key): group.label
-        for source in SOURCES
-        for group in source.discover()
-    }
+    with SCAN_LOCK:
+        discovered = {
+            (source_id, group.key): group.label
+            for source_id, groups in SCAN_CACHE["groups_by_source"].items()
+            for group in groups
+        }
     invalid = sorted(requested - discovered.keys())
     if invalid:
         return JSONResponse(
@@ -380,8 +502,15 @@ async def put_watcher(request: Request):
         )
 
 
+@app.put("/api/watcher")
+async def put_watcher(request: Request):
+    """Persist project consent without blocking unrelated UI requests."""
+    body = await request.json()
+    return await run_in_threadpool(_put_watcher, body)
+
+
 @app.post("/api/watcher/reinstall")
-async def reinstall_watcher():
+def reinstall_watcher():
     """Reinstall the configured auto uploader with the current version."""
     try:
         watcher = watcher_status()
@@ -401,7 +530,7 @@ async def reinstall_watcher():
 
 
 @app.delete("/api/watcher")
-async def delete_watcher():
+def delete_watcher():
     try:
         return uninstall_watcher()
     except Exception as e:
@@ -412,7 +541,7 @@ async def delete_watcher():
 
 
 @app.get("/api/upload/{job_id}")
-async def upload_status(job_id: str):
+def upload_status(job_id: str):
     job = JOBS.get(job_id)
     if job is None:
         return JSONResponse({"error": "Unknown job"}, status_code=404)

@@ -69,9 +69,11 @@ rr-trans ui
 ```
 
 This serves a web UI at <http://localhost:8899> (if that port is busy, the next
-free port is used). Preview the transcripts, select the ones you want to share,
-enter your name, and click **Upload Selected**. Transcripts already uploaded
-under that contributor name are marked **uploaded**.
+free port is used). The page opens immediately and scans local transcript folders
+in the background; use **Rescan** after creating or moving sessions. Preview the
+transcripts, select the projects you want to share, enter your name, and click
+**Upload now**. Upload history is checked lazily when you expand a project, and
+transcripts already uploaded under that contributor name are marked **uploaded**.
 
 ## Automatic uploads
 
