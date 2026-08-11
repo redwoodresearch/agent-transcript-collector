@@ -6,7 +6,9 @@ adapters in `.sources`. Each transcript is uploaded as one ZIP under
 """
 
 import getpass
+import multiprocessing
 import os
+import queue
 import re
 import socket
 import threading
@@ -279,60 +281,113 @@ def _resolve_selection(selected):
     return out
 
 
-def _run_upload_job(job_id, selected, contributor):
-    """Upload selected transcripts while updating job progress."""
-    job = JOBS[job_id]
+def _upload_worker(to_upload, contributor, events):
+    """Run CPU-heavy preparation and uploading outside the web process."""
+    uploads = []
+    errors = []
+    status = "failed"
     try:
         with UploadLock():
-            to_upload = _resolve_selection(selected)
-            job["total"] = sum(len(s) for _, s in to_upload)
-            job["status"] = "running"
-            job["stage"] = "connecting"
+            events.put(
+                {"type": "progress", "status": "running", "stage": "connecting"}
+            )
             s3 = _make_s3_client()
             uploaded_metadata: dict[str, dict] = {}
-            for source, sessions in to_upload:
+            for source_id, sessions in to_upload:
+                source = get_source(source_id)
+                if source is None:
+                    errors.append({"source": source_id, "error": "Unknown source"})
+                    continue
                 try:
                     uploaded, upload_errors = _upload_transcripts(
                         s3,
                         source,
                         sessions,
                         contributor,
-                        on_progress=lambda n: job.__setitem__("done", job["done"] + n),
-                        on_status=lambda stage, done, total: job.update(
-                            stage=stage, stage_done=done, stage_total=total),
+                        on_progress=lambda n: events.put(
+                            {"type": "advance", "count": n}
+                        ),
+                        on_status=lambda stage, completed, total: events.put(
+                            {
+                                "type": "progress",
+                                "stage": stage,
+                                "stage_done": completed,
+                                "stage_total": total,
+                            }
+                        ),
                         uploaded_metadata=uploaded_metadata,
                     )
-                    with JOBS_LOCK:
-                        job["uploads"].extend(uploaded)
-                        job["errors"].extend(upload_errors)
+                    uploads.extend(uploaded)
+                    errors.extend(upload_errors)
                 except Exception as e:
-                    with JOBS_LOCK:
-                        job["errors"].append(
-                            {
-                                "source": source.id,
-                                "error": f"{type(e).__name__}: {e}",
-                            }
-                        )
-            job["status"] = (
+                    errors.append(
+                        {
+                            "source": source.id,
+                            "error": f"{type(e).__name__}: {e}",
+                        }
+                    )
+            status = (
                 "completed"
-                if not job["errors"]
+                if not errors
                 else "partial"
-                if job["uploads"]
+                if uploads
                 else "failed"
             )
     except UploadBusy as e:
-        with JOBS_LOCK:
-            job["errors"].append({"error": str(e)})
-        job["status"] = "failed"
+        errors.append({"error": str(e)})
+        status = "failed"
     except Exception as e:
-        with JOBS_LOCK:
-            job["errors"].append({"error": f"{type(e).__name__}: {e}"})
-        job["status"] = "failed"
+        errors.append({"error": f"{type(e).__name__}: {e}"})
+        status = "failed"
     finally:
-        job["finished_at"] = time.time()
+        events.put(
+            {
+                "type": "finished",
+                "status": status,
+                "uploads": uploads,
+                "errors": errors,
+            }
+        )
+
+
+def _monitor_upload_worker(job_id, process, events):
+    """Mirror child-process events into the parent process's job registry."""
+    finished = False
+    while process.is_alive() or not finished:
+        try:
+            event = events.get(timeout=0.25)
+        except queue.Empty:
+            if not process.is_alive():
+                break
+            continue
         with JOBS_LOCK:
-            if _active_job["id"] == job_id:
-                _active_job["id"] = None
+            job = JOBS.get(job_id)
+            if job is None:
+                continue
+            if event["type"] == "advance":
+                job["done"] += event["count"]
+            elif event["type"] == "progress":
+                for key in ("status", "stage", "stage_done", "stage_total"):
+                    if key in event:
+                        job[key] = event[key]
+            elif event["type"] == "finished":
+                job["status"] = event["status"]
+                job["uploads"].extend(event["uploads"])
+                job["errors"].extend(event["errors"])
+                finished = True
+    process.join()
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if job is not None:
+            if not finished:
+                job["status"] = "failed"
+                job["errors"].append(
+                    {"error": f"Upload worker exited unexpectedly ({process.exitcode})"}
+                )
+            job["finished_at"] = time.time()
+        if _active_job["id"] == job_id:
+            _active_job["id"] = None
+    events.close()
 
 
 def _upload_history_error(error: str) -> str:
@@ -430,6 +485,14 @@ async def upload(request: Request):
     contributor = _safe_name(body.get("contributor_name", "anonymous"))
     if not selected:
         return JSONResponse({"error": "Nothing selected"}, status_code=400)
+    to_upload = [
+        (source.id, sessions) for source, sessions in _resolve_selection(selected)
+    ]
+    if not to_upload:
+        return JSONResponse(
+            {"error": "Selected transcripts are no longer available"},
+            status_code=400,
+        )
 
     with JOBS_LOCK:
         if _active_job["id"] is not None:
@@ -448,7 +511,7 @@ async def upload(request: Request):
             "stage": "preparing",
             "stage_done": 0,
             "stage_total": None,
-            "total": None,
+            "total": sum(len(sessions) for _, sessions in to_upload),
             "done": 0,
             "errors": [],
             "uploads": [],
@@ -456,9 +519,27 @@ async def upload(request: Request):
             "finished_at": None,
         }
 
+    try:
+        context = multiprocessing.get_context("spawn")
+        events = context.Queue()
+        process = context.Process(
+            target=_upload_worker,
+            args=(to_upload, contributor, events),
+            daemon=True,
+        )
+        process.start()
+    except Exception as e:
+        with JOBS_LOCK:
+            job = JOBS[job_id]
+            job["status"] = "failed"
+            job["errors"].append({"error": f"Could not start upload worker: {e}"})
+            job["finished_at"] = time.time()
+            if _active_job["id"] == job_id:
+                _active_job["id"] = None
+        return JSONResponse({"error": job["errors"][0]["error"]}, status_code=500)
     threading.Thread(
-        target=_run_upload_job,
-        args=(job_id, selected, contributor),
+        target=_monitor_upload_worker,
+        args=(job_id, process, events),
         daemon=True,
     ).start()
     return JSONResponse({"job_id": job_id}, status_code=202)

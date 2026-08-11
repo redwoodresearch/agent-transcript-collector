@@ -839,7 +839,7 @@ function renderHistoryProgress(status, checked, total, message = '') {
   controls.dataset.status = status;
   controls.classList.toggle('failed', status === 'failed');
   fill.style.width = `${total ? Math.round((checked / total) * 100) : 0}%`;
-  refresh.disabled = status === 'checking';
+  refresh.disabled = status === 'checking' || status === 'paused';
   refresh.textContent = status === 'failed' ? 'Retry' : 'Refresh status';
   if (status === 'checking') {
     title.textContent = 'Checking upload status…';
@@ -850,6 +850,9 @@ function renderHistoryProgress(status, checked, total, message = '') {
   } else if (status === 'ready') {
     title.textContent = 'Upload status ready';
     detail.textContent = `${total} transcript${total === 1 ? '' : 's'} checked`;
+  } else if (status === 'paused') {
+    title.textContent = 'Upload status refresh paused';
+    detail.textContent = message;
   } else {
     title.textContent = 'Upload status unavailable';
     detail.textContent = message;
@@ -920,11 +923,21 @@ async function startHistoryScan(force = false) {
   if (run !== historyRun || result.superseded) return;
   if (!result.ok) {
     renderHistoryProgress('failed', 0, total, result.error);
-    setHistoryStatus(result.error, true, startHistoryScan);
     return;
   }
   saveHistoryCache(rows);
   renderHistoryProgress('ready', total, total);
+}
+
+function pauseHistoryScanForUpload() {
+  historyRun += 1;
+  const controller = historyController;
+  historyController = null;
+  if (controller) controller.abort();
+  const total = document.querySelectorAll('.session').length;
+  renderHistoryProgress('paused', 0, total,
+    'Upload status will refresh when this upload finishes');
+  setHistoryStatus('');
 }
 
 function setHistoryStatus(message, retry = false, retryAction = refreshUploaded) {
@@ -1169,6 +1182,7 @@ async function startUpload(rows) {
 
 function trackJob(jobId) {
   uploadBusy = true;
+  pauseHistoryScanForUpload();
   updatePendingCounts();
   showProgress(true);
   clearInterval(pollTimer);
