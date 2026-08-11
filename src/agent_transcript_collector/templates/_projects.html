@@ -1,0 +1,87 @@
+{% if projects is none %}
+<p class="empty">Scanning local transcript folders…</p>
+{% elif not projects %}
+<p class="empty">No transcripts found for any supported agent (Claude Code, Codex, Cursor, Pi) on this machine.</p>
+{% else %}
+<div class="project-list">
+{% for project in projects %}
+<div class="project" data-project="{{ project.key }}">
+  <div class="project-header" onclick="toggleProject(this)" title="Expand or collapse this project">
+    <span class="arrow project-arrow">&#9654;</span>
+    <div class="project-title">
+      <div class="project-name">{{ project.label }}</div>
+      <div class="project-directory" title="{{ project.directory or 'Directory unavailable' }}">
+        {{ project.directory or 'Directory unavailable' }}
+      </div>
+    </div>
+    <span class="project-meta">
+      {{ project.session_count }} session{{ 's' if project.session_count != 1 else '' }}
+      &middot; <span class="project-pending">preparation pending</span>
+    </span>
+    <label class="auto-upload" title="Automatically upload new transcripts from this project"
+           onclick="event.stopPropagation()">
+      <input type="checkbox" class="auto-upload-checkbox"
+             onchange="saveAutoUploadProjects(this)">
+      auto upload
+    </label>
+  </div>
+  <div class="project-body">
+    {% for harness in project.harnesses %}
+    <div class="harness" data-source="{{ harness.source }}"
+         data-groups='{{ harness.groups | tojson }}'>
+      <div class="harness-header" onclick="toggleHarness(this)" title="Expand or collapse {{ harness.source_label }} transcripts">
+        <span class="arrow harness-arrow">&#9654;</span>
+        <span class="harness-label">{{ harness.source_label }}</span>
+        <span class="harness-meta">{{ harness.session_count }} session{{ 's' if harness.session_count != 1 else '' }}</span>
+      </div>
+      <div class="sessions">
+      {% for session in harness.sessions %}
+      <div class="session"
+           data-source="{{ harness.source }}"
+           data-group="{{ session.group_key }}"
+           data-session="{{ session.id }}"
+           data-parent="{{ session.parent or '' }}">
+        <span class="session-summary" onclick="previewSession(this)" title="Click to preview">
+          {{ session.first_message }}
+        </span>
+        <span class="session-meta">
+          <span class="session-stat" aria-label="{{ session.message_count }} messages"
+                title="{{ session.message_count }} messages">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path>
+            </svg>
+            <span aria-hidden="true">{{ session.message_count }}</span>
+          </span>
+          {% if session.modified %}
+          <time class="session-stat icon-tooltip" tabindex="0"
+                datetime="{{ session.modified.isoformat() }}"
+                aria-label="Modified {{ session.modified.strftime('%b %d, %Y at %I:%M:%S %p') }}"
+                data-tooltip="{{ session.modified.strftime('%b %d, %Y at %I:%M:%S %p') }}">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="9"></circle>
+              <path d="M12 7v5l3 2"></path>
+            </svg>
+            <span aria-hidden="true">{{ session.modified.strftime('%b %d') }}</span>
+          </time>
+          {% endif %}
+        </span>
+        <span class="session-actions">
+          {% if session.is_subagent %}
+          <span class="subagent-icon icon-tooltip" role="img" tabindex="0"
+                aria-label="Subagent transcript" data-tooltip="Created by a subagent">&#8627;</span>
+          {% endif %}
+          <button class="session-upload secondary" onclick="uploadTranscript(this); event.stopPropagation()"
+                  title="Upload this transcript after preparation">Upload</button>
+          <span class="uploaded-icon icon-tooltip" role="img" tabindex="0"
+                aria-label="Uploaded" data-tooltip="Already uploaded">&#10003;</span>
+        </span>
+      </div>
+      {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endfor %}
+</div>
+{% endif %}

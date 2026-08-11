@@ -20,31 +20,55 @@
   h1 { font-size: 1.5rem; margin-bottom: 4px; }
   .subtitle { color: var(--text-muted); margin-bottom: 24px; font-size: 0.9rem; }
 
-  .auto-upload-controls {
-    display: flex; gap: 8px; align-items: center; margin: 0 0 20px;
-    padding: 8px 10px; background: rgba(88,166,255,0.05);
-    border: 1px solid var(--border); border-radius: 8px; flex-wrap: wrap;
+  .control-card {
+    margin-bottom: 12px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface); overflow: hidden;
   }
-  .auto-upload-controls .label { font-size: 0.8rem; font-weight: 600; }
+  .auto-upload-controls {
+    background: rgba(88,166,255,0.035);
+  }
+  .sharing-settings {
+    display: flex; flex-direction: column;
+  }
+  .setting-label { color: var(--text); font-size: 0.74rem; font-weight: 600; }
+  .setting-hint { color: var(--text-muted); font-size: 0.7rem; }
   .auto-upload-controls button { padding: 5px 10px; font-size: 0.78rem; }
-  .auto-upload-heading { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
-  .auto-upload-description, #watcher-version { color: var(--text-muted); font-size: 0.72rem; }
+  .auto-upload-setting {
+    display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+    border-top: 1px solid var(--border);
+  }
+  .auto-upload-setting-copy { display: flex; flex-direction: column; flex: 1; }
+  #watcher-schedule { color: var(--text-muted); font-size: 0.7rem; }
+  #watcher-schedule.running { color: var(--accent); }
+  #watcher-version { color: var(--text-muted); font-size: 0.68rem; font-weight: 400; }
   #watcher-version.mismatch { color: var(--yellow); }
   #unavailable-watcher-groups {
-    flex-basis: 100%; color: var(--yellow); font-size: 0.75rem;
+    margin: 0 16px 12px; color: var(--yellow); font-size: 0.75rem;
+  }
+  #unavailable-watcher-groups summary { cursor: pointer; width: fit-content; }
+  .unavailable-watcher-explanation {
+    color: var(--text-muted); margin-top: 5px; max-width: 760px;
+  }
+  .unavailable-watcher-list {
+    display: flex; flex-direction: column; align-items: flex-start; margin-top: 3px;
   }
   .unavailable-watcher-group {
-    display: inline-flex; align-items: center; gap: 6px; margin: 4px 8px 0 0;
+    display: inline-flex; align-items: center; gap: 8px; margin-top: 5px;
   }
   .unavailable-watcher-group button { padding: 2px 7px; font-size: 0.7rem; }
   .name-setting {
-    display: flex; align-items: center; gap: 6px; color: var(--text-muted);
-    font-size: 0.78rem; white-space: nowrap;
+    display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+    white-space: nowrap;
   }
+  .name-setting .setting-label { width: 130px; flex-shrink: 0; }
   #watcher-status {
-    color: var(--text-muted); font-size: 0.78rem; flex: 1; min-width: 160px;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    display: block; margin: 0 16px 12px; padding: 7px 9px; border-radius: 6px;
+    color: var(--text-muted); background: rgba(139,148,158,0.07); font-size: 0.74rem;
   }
+  #watcher-status.error {
+    color: var(--yellow); background: rgba(210,153,34,0.08);
+  }
+  #watcher-status[hidden] { display: none; }
   .auto-upload {
     display: flex; align-items: center; gap: 4px; color: var(--text-muted);
     font-size: 0.72rem; white-space: nowrap;
@@ -52,7 +76,8 @@
   #contributor-name:placeholder-shown { border-color: var(--yellow); }
   #contributor-name {
     background: var(--surface); border: 1px solid var(--border); color: var(--text);
-    width: 150px; padding: 4px 8px; border-radius: 6px; font-size: 0.8rem;
+    width: min(340px, 100%); min-width: 0; padding: 5px 8px;
+    border-radius: 6px; font-size: 0.8rem;
   }
   button {
     background: var(--accent); color: #000; border: none; padding: 8px 16px;
@@ -62,6 +87,26 @@
   button:disabled { opacity: 0.4; cursor: not-allowed; }
   button.secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
   button.secondary:hover { border-color: var(--accent); }
+
+  .readiness-controls {
+    display: flex; align-items: center; gap: 14px; padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .readiness-copy { display: flex; flex-direction: column; min-width: 190px; }
+  .readiness-copy strong { font-size: 0.84rem; }
+  #readiness-status, .inline-status {
+    color: var(--text-muted); font-size: 0.76rem;
+  }
+  .readiness-progress { flex: 1; }
+  .readiness-progress .bar { width: 100%; }
+  .readiness-actions { display: flex; gap: 8px; margin-left: auto; }
+  .readiness-controls.failed { background: rgba(210,153,34,0.05); }
+  .readiness-controls.failed #readiness-title,
+  .readiness-controls.failed #readiness-status { color: var(--yellow); }
+  .inline-status {
+    margin: -2px 0 12px; padding: 7px 10px; border-radius: 6px;
+    background: rgba(210,153,34,0.08); color: var(--yellow);
+  }
 
   .project-list {
     background: var(--surface); border: 1px solid var(--border);
@@ -146,8 +191,8 @@
     color: var(--green); border: 1px solid var(--green); border-radius: 50%;
     font-weight: 700; line-height: 1;
   }
-  .session.uploaded .session-upload { display: none; }
   .session.uploaded .uploaded-icon { display: inline-flex; }
+  .session.uploaded .session-upload { display: none; }
 
   .preview-pane {
     position: fixed; top: 0; right: 0; width: 480px; height: 100vh;
@@ -161,6 +206,8 @@
     padding: 12px 16px; border-bottom: 1px solid var(--border);
   }
   .preview-body { flex: 1; overflow-y: auto; padding: 16px; }
+  .preview-footer { padding: 10px 16px; border-top: 1px solid var(--border); }
+  .preview-footer:empty { display: none; }
   .preview-msg {
     margin-bottom: 12px; padding: 10px; border-radius: 6px;
     font-size: 0.82rem; white-space: pre-wrap; word-break: break-word;
@@ -173,13 +220,20 @@
   .preview-msg .role { font-weight: 600; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 4px; }
   .redacted { background: rgba(248,81,73,0.15); color: var(--red); padding: 1px 4px; border-radius: 3px; }
 
-  .progress {
-    display: none; align-items: center; gap: 8px; flex: 0 1 260px; min-width: 180px;
+  .upload-progress-row {
+    display: none; align-items: center; gap: 14px; padding: 10px 12px;
+    border-top: 1px solid var(--border);
   }
-  .progress.show { display: flex; }
+  .upload-progress-row.show { display: flex; }
+  .upload-progress-copy {
+    display: flex; flex-direction: column; min-width: 190px;
+  }
+  .upload-progress-copy strong { font-size: 0.84rem; }
+  .upload-progress-bar { flex: 1; }
+  .upload-progress-bar .bar { width: 100%; }
   .bar { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
   .bar-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.3s; }
-  #progress-text { font-size: 0.8rem; color: var(--text-muted); white-space: nowrap; }
+  #progress-text { font-size: 0.76rem; color: var(--text-muted); white-space: nowrap; }
 
   .toast {
     position: fixed; top: 24px; right: 24px; background: var(--green);
@@ -191,6 +245,10 @@
 
   .empty { color: var(--text-muted); padding: 40px 0; text-align: center; }
   input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
+  @media (max-width: 720px) {
+    .auto-upload-setting { align-items: flex-start; flex-wrap: wrap; }
+    .auto-upload-setting-copy { flex-basis: 100%; }
+  }
 </style>
 </head>
 <body>
@@ -198,116 +256,56 @@
 <h1>Redwood Research Transcript Collector</h1>
 <p class="subtitle">Select the transcripts you'd like to share. Preview any session before deciding. Secrets and credentials are always redacted.</p>
 
-<div class="auto-upload-controls">
-  <span class="auto-upload-heading">
-    <span class="label">Auto upload</span>
-    <span class="auto-upload-description">Uploads changed transcripts every hour.</span>
-    <span id="watcher-version" title="Auto uploader version"></span>
-  </span>
-  <label class="name-setting">
-    Your name:
-    <input type="text" id="contributor-name" placeholder="your name"
-           value="{{ default_contributor_name }}"
-           oninput="onNameInput()">
-  </label>
-  <span id="watcher-status">Checking status…</span>
-  <div class="progress" id="upload-progress">
-    <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
-    <span id="progress-text"></span>
+<div class="control-card">
+  <div class="readiness-controls" id="readiness-controls" data-status="scanning">
+    <div class="readiness-copy">
+      <strong id="readiness-title">Finding transcripts…</strong>
+      <span id="readiness-status">Starting local scan</span>
+    </div>
+    <div class="readiness-progress" id="readiness-progress">
+      <div class="bar"><div class="bar-fill" id="readiness-bar-fill"></div></div>
+    </div>
+    <div class="readiness-actions">
+      <button class="secondary" id="refresh-btn" onclick="startScan(true)"
+              title="Scan transcripts and prepare uploads again" disabled>Refresh</button>
+    </div>
   </div>
-  <button id="upload-btn" onclick="uploadNow()"
-          title="Upload pending transcripts from selected projects" disabled>Upload now</button>
-  <button class="secondary" id="auto-upload-toggle" onclick="toggleAutoUpload()"
-          title="Enable or disable automatic uploads every hour" disabled>Enable</button>
-  <button class="secondary" id="reinstall-watcher" onclick="reinstallWatcher()"
-          title="Reinstall the current auto uploader version" hidden>Reinstall</button>
+<div class="auto-upload-controls">
+  <div class="sharing-settings">
+    <label class="name-setting">
+      <span class="setting-label">Contributor</span>
+      <input type="text" id="contributor-name" placeholder="your name"
+             value="{{ default_contributor_name }}"
+             oninput="onNameInput()">
+    </label>
+    <div class="auto-upload-setting">
+      <div class="auto-upload-setting-copy">
+        <span class="setting-label">Automatic uploads <span id="watcher-version" title="Auto uploader version"></span></span>
+        <span id="watcher-schedule">Checking last and next upload…</span>
+      </div>
+      <button id="upload-btn" onclick="uploadNow()"
+              title="Upload prepared transcripts from projects selected for automatic upload" disabled>Upload 0 transcripts now</button>
+      <button class="secondary" id="auto-upload-toggle" onclick="toggleAutoUpload()"
+              title="Enable or disable automatic uploads every hour" disabled>Enable</button>
+      <button class="secondary" id="reinstall-watcher" onclick="reinstallWatcher()"
+              title="Reinstall the current auto uploader version" hidden>Reinstall</button>
+    </div>
+  </div>
+  <span id="watcher-status" hidden></span>
   <div id="unavailable-watcher-groups" hidden></div>
 </div>
-
-{% if not projects %}
-<p class="empty">No transcripts found for any supported agent (Claude Code, Codex, Pi) on this machine.</p>
-{% endif %}
-
-{% if projects %}<div class="project-list">{% endif %}
-{% for project in projects %}
-<div class="project" data-project="{{ project.key }}">
-  <div class="project-header" onclick="toggleProject(this)" title="Expand or collapse this project">
-    <span class="arrow project-arrow">&#9654;</span>
-    <div class="project-title">
-      <div class="project-name">{{ project.label }}</div>
-      <div class="project-directory" title="{{ project.directory or 'Directory unavailable' }}">
-        {{ project.directory or 'Directory unavailable' }}
-      </div>
+  <div class="upload-progress-row" id="upload-progress">
+    <div class="upload-progress-copy">
+      <strong>Uploading transcripts…</strong>
+      <span id="progress-text">Preparing…</span>
     </div>
-    <span class="project-meta">
-      {{ project.session_count }} session{{ 's' if project.session_count != 1 else '' }}
-      &middot; <span class="project-pending">checking uploads…</span>
-    </span>
-    <label class="auto-upload" title="Automatically upload new transcripts from this project"
-           onclick="event.stopPropagation()">
-      <input type="checkbox" class="auto-upload-checkbox"
-             onchange="saveAutoUploadProjects(this)">
-      auto upload
-    </label>
-  </div>
-  <div class="project-body">
-    {% for harness in project.harnesses %}
-    <div class="harness" data-source="{{ harness.source }}" data-group="{{ harness.group }}">
-      <div class="harness-header" onclick="toggleHarness(this)" title="Expand or collapse {{ harness.source_label }} transcripts">
-        <span class="arrow harness-arrow">&#9654;</span>
-        <span class="harness-label">{{ harness.source_label }}</span>
-        <span class="harness-meta">{{ harness.session_count }} session{{ 's' if harness.session_count != 1 else '' }}</span>
-      </div>
-      <div class="sessions">
-      {% for session in harness.sessions %}
-      <div class="session"
-           data-source="{{ harness.source }}"
-           data-group="{{ harness.group }}"
-           data-session="{{ session.id }}"
-           data-parent="{{ session.parent or '' }}">
-        <span class="session-summary" onclick="previewSession(this)" title="Click to preview">
-          {{ session.first_message }}
-        </span>
-        <span class="session-meta">
-          <span class="session-stat" aria-label="{{ session.message_count }} messages"
-                title="{{ session.message_count }} messages">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path>
-            </svg>
-            <span aria-hidden="true">{{ session.message_count }}</span>
-          </span>
-          {% if session.modified %}
-          <time class="session-stat icon-tooltip" tabindex="0"
-                datetime="{{ session.modified.isoformat() }}"
-                aria-label="Modified {{ session.modified.strftime('%b %d, %Y at %I:%M:%S %p') }}"
-                data-tooltip="{{ session.modified.strftime('%b %d, %Y at %I:%M:%S %p') }}">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <circle cx="12" cy="12" r="9"></circle>
-              <path d="M12 7v5l3 2"></path>
-            </svg>
-            <span aria-hidden="true">{{ session.modified.strftime('%b %d') }}</span>
-          </time>
-          {% endif %}
-        </span>
-        <span class="session-actions">
-          {% if session.is_subagent %}
-          <span class="subagent-icon icon-tooltip" role="img" tabindex="0"
-                aria-label="Subagent transcript" data-tooltip="Created by a subagent">&#8627;</span>
-          {% endif %}
-          <button class="session-upload secondary" onclick="uploadTranscript(this); event.stopPropagation()"
-                  title="Upload only this transcript">Upload</button>
-          <span class="uploaded-icon icon-tooltip" role="img" tabindex="0"
-                aria-label="Uploaded" data-tooltip="Already uploaded">&#10003;</span>
-        </span>
-      </div>
-      {% endfor %}
-      </div>
+    <div class="upload-progress-bar">
+      <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
     </div>
-    {% endfor %}
   </div>
 </div>
-{% endfor %}
-{% if projects %}</div>{% endif %}
+<div id="pipeline-status" class="inline-status" hidden></div>
+<div id="projects-container">{% include "_projects.html" %}</div>
 
 <div class="preview-pane" id="preview-pane">
   <div class="preview-header">
@@ -316,6 +314,7 @@
     <button class="secondary" onclick="closePreview()" title="Close transcript preview">Close</button>
   </div>
   <div class="preview-body" id="preview-body"></div>
+  <div class="preview-footer" id="preview-footer"></div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -332,6 +331,97 @@ function sessionDescriptor(row) {
     session: row.dataset.session,
     parent: row.dataset.parent || null,
   };
+}
+
+let scanRequest = 0;
+let projectsLoaded = false;
+
+function renderScanStatus(state) {
+  const controls = document.getElementById('readiness-controls');
+  const title = document.getElementById('readiness-title');
+  const status = document.getElementById('readiness-status');
+  const progress = document.getElementById('readiness-progress');
+  const fill = document.getElementById('readiness-bar-fill');
+  const button = document.getElementById('refresh-btn');
+  const total = state.total_sources || 1;
+  const percent = state.status === 'ready' ? 100
+    : Math.round(((state.completed_sources || 0) / total) * 100);
+  fill.style.width = `${percent}%`;
+  controls.dataset.status = state.status;
+  controls.classList.toggle('failed', state.status === 'failed');
+  progress.hidden = state.status !== 'scanning';
+  // A successful scan is only the first half of refresh; preparation enables it.
+  button.disabled = state.status !== 'failed';
+  if (state.status === 'scanning') {
+    title.textContent = 'Finding transcripts…';
+    status.textContent = `${state.source ? `Scanning ${state.source}` : 'Starting scan'} · ${state.session_count || 0} found`;
+  } else if (state.status === 'failed') {
+    title.textContent = state.ready ? 'Showing previous scan' : 'Scan failed';
+    status.textContent = state.error || 'Could not scan transcripts';
+  } else if (state.status === 'ready') {
+    title.textContent = `${state.session_count || 0} transcripts found`;
+    status.textContent = 'Scan complete';
+  }
+}
+
+async function loadProjects(request = scanRequest) {
+  const response = await fetch('/api/projects');
+  if (!response.ok) throw new Error('Transcript list is not ready');
+  const html = await response.text();
+  if (request !== scanRequest) return;
+  document.getElementById('projects-container').innerHTML = html;
+  projectsLoaded = true;
+  updatePendingCounts();
+  await loadWatcher(false);
+  if (uploadBusy) {
+    pausePipelineForUpload();
+    return;
+  }
+  if (watcherRunning) {
+    renderPipelineProgress('paused', 0, 0, 'Automatic uploader is running');
+    updatePendingCounts();
+    return;
+  }
+  if (nameRevision !== syncedNameRevision) {
+    refreshSettings();
+  } else {
+    startPipeline();
+  }
+}
+
+function renderProjectScanFailure(message) {
+  projectsLoaded = false;
+  const error = document.createElement('p');
+  error.className = 'empty';
+  error.textContent = `Scan failed: ${message || 'Could not scan transcripts'} Press Refresh to try again.`;
+  document.getElementById('projects-container').replaceChildren(error);
+}
+
+async function startScan(force = false) {
+  const request = ++scanRequest;
+  try {
+    const response = await fetch(`/api/scan?force=${force ? 'true' : 'false'}`, {method: 'POST'});
+    let state = await response.json();
+    renderScanStatus(state);
+    while (state.status === 'scanning') {
+      await new Promise(resolve => setTimeout(resolve, 250));
+      if (request !== scanRequest) return;
+      const poll = await fetch('/api/scan');
+      state = await poll.json();
+      renderScanStatus(state);
+    }
+    if (request !== scanRequest) return;
+    if (state.ready) await loadProjects(request);
+    if (state.status === 'failed') {
+      if (!state.ready) renderProjectScanFailure(state.error);
+      showToast(state.error || 'Scan failed', true);
+    }
+  } catch (e) {
+    if (request !== scanRequest) return;
+    renderScanStatus({status: 'failed', error: e.message, ready: false});
+    if (!projectsLoaded) renderProjectScanFailure(e.message);
+    showToast(`Scan failed: ${e.message}`, true);
+  }
 }
 
 function toggleProject(header) {
@@ -355,6 +445,7 @@ function loadName() { try { return localStorage.getItem('ctc_name'); } catch (e)
 
 let autoUploadEnabled = false;
 let watcherConfigured = false;
+let watcherRunning = false;
 let watcherGroups = new Set();
 let nameRevision = 0;
 let syncedNameRevision = 0;
@@ -367,30 +458,41 @@ function runWatcherMutation(operation) {
   return result;
 }
 
-function harnessKey(harness) {
-  return `${harness.dataset.source}|${harness.dataset.group}`;
+function harnessGroups(harness) {
+  try { return JSON.parse(harness.dataset.groups || '[]'); } catch (e) { return []; }
 }
 
-// The harnesses a project has consented to. A project whose saved config covers
-// only some of its harnesses renders indeterminate — keep exactly those groups,
-// so saving an unrelated project can't quietly revoke them.
-function consentedHarnesses(project) {
+function projectGroups(project) {
+  return Array.from(project.querySelectorAll('.harness')).flatMap(harness =>
+    harnessGroups(harness).map(group => ({source: harness.dataset.source, group})));
+}
+
+// A partially selected project keeps exactly its previously consented source
+// groups, so saving another project cannot quietly broaden or revoke consent.
+function consentedGroups(project) {
   const cb = project.querySelector('.auto-upload-checkbox');
-  const harnesses = Array.from(project.querySelectorAll('.harness'));
-  if (cb.checked) return harnesses;
-  if (cb.indeterminate) return harnesses.filter(h => watcherGroups.has(harnessKey(h)));
+  const groups = projectGroups(project);
+  if (cb.checked) return groups;
+  if (cb.indeterminate) {
+    return groups.filter(item => watcherGroups.has(`${item.source}|${item.group}`));
+  }
   return [];
+}
+
+function consentedRows(project) {
+  const allowed = new Set(consentedGroups(project).map(item => `${item.source}|${item.group}`));
+  return Array.from(project.querySelectorAll('.session')).filter(row =>
+    allowed.has(`${row.dataset.source}|${row.dataset.group}`));
 }
 
 function consentedProjects() {
   return Array.from(document.querySelectorAll('.project'))
-    .filter(project => consentedHarnesses(project).length > 0);
+    .filter(project => consentedGroups(project).length > 0);
 }
 
 function selectedAutoUploadGroups() {
   return Array.from(document.querySelectorAll('.project'))
-    .flatMap(project => consentedHarnesses(project))
-    .map(harness => ({source: harness.dataset.source, group: harness.dataset.group}));
+    .flatMap(project => consentedGroups(project));
 }
 
 async function updateAutoUploadConfig(enabled, removedGroups = []) {
@@ -418,35 +520,57 @@ async function updateAutoUploadConfig(enabled, removedGroups = []) {
 
 function renderUnavailableGroups(groups) {
   const container = document.getElementById('unavailable-watcher-groups');
-  const visible = new Set(
-    Array.from(document.querySelectorAll('.harness')).map(harnessKey));
+  if (!projectsLoaded) {
+    container.hidden = true;
+    return;
+  }
+  const visible = new Set(Array.from(document.querySelectorAll('.project'))
+    .flatMap(project => projectGroups(project))
+    .map(item => `${item.source}|${item.group}`));
   const unavailable = groups.filter(item => !visible.has(`${item.source}|${item.group}`));
   container.replaceChildren();
   container.hidden = unavailable.length === 0;
   if (!unavailable.length) return;
 
-  const heading = document.createElement('span');
-  heading.textContent = 'Saved folders not currently available: ';
-  container.appendChild(heading);
+  const details = document.createElement('details');
+  const heading = document.createElement('summary');
+  heading.textContent = `${unavailable.length} old auto-upload selection${unavailable.length === 1 ? '' : 's'} need cleanup`;
+  const explanation = document.createElement('p');
+  explanation.className = 'unavailable-watcher-explanation';
+  explanation.textContent = 'These saved selections no longer match a transcript folder found on this machine, usually because a folder was renamed or its internal ID changed. Removing them only cleans up auto-upload settings; it does not delete local or uploaded transcripts.';
+  const list = document.createElement('div');
+  list.className = 'unavailable-watcher-list';
+  details.append(heading, explanation, list);
+  container.appendChild(details);
+  const sourceNames = {
+    claude_code: 'Claude Code', codex: 'Codex', cursor: 'Cursor', pi: 'Pi',
+  };
+  const grouped = new Map();
   unavailable.forEach(item => {
+    const key = `${item.source}|${item.label || item.group}`;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(item);
+  });
+  grouped.forEach(items => {
+    const item = items[0];
     const entry = document.createElement('span');
     entry.className = 'unavailable-watcher-group';
     const label = document.createElement('span');
-    label.textContent = `${item.label || item.group} (${item.source})`;
+    label.textContent = `${item.label || item.group} · ${sourceNames[item.source] || item.source}${items.length > 1 ? ` · ${items.length} old entries` : ''}`;
     const remove = document.createElement('button');
     remove.className = 'secondary';
-    remove.textContent = 'Remove';
-    remove.onclick = () => removeUnavailableGroup(item, remove);
+    remove.textContent = items.length > 1 ? `Remove all ${items.length}` : 'Remove';
+    remove.onclick = () => removeUnavailableGroups(items, remove);
     entry.append(label, remove);
-    container.appendChild(entry);
+    list.appendChild(entry);
   });
 }
 
-async function removeUnavailableGroup(item, button) {
+async function removeUnavailableGroups(items, button) {
   button.disabled = true;
   try {
-    await updateAutoUploadConfig(autoUploadEnabled, [item]);
-    showToast('Saved folder removed from auto upload');
+    await updateAutoUploadConfig(autoUploadEnabled, items);
+    showToast(`${items.length} old auto-upload selection${items.length === 1 ? '' : 's'} removed`);
     await loadWatcher();
   } catch (e) {
     showToast(e.message, true);
@@ -464,8 +588,20 @@ function formatUploadTime(value) {
     : {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'});
 }
 
-async function loadWatcher() {
+function nextScheduledUpload(lastFinished, intervalSeconds) {
+  const finishedAt = new Date(lastFinished).getTime();
+  const interval = Number(intervalSeconds) * 1000;
+  if (!Number.isFinite(finishedAt) || !Number.isFinite(interval) || interval <= 0) {
+    return null;
+  }
+  const intervalsElapsed = Math.max(0, Math.floor((Date.now() - finishedAt) / interval));
+  return new Date(finishedAt + (intervalsElapsed + 1) * interval);
+}
+
+async function loadWatcher(refreshPipeline = true) {
+  const wasWatcherRunning = watcherRunning;
   const status = document.getElementById('watcher-status');
+  const schedule = document.getElementById('watcher-schedule');
   const toggle = document.getElementById('auto-upload-toggle');
   const reinstall = document.getElementById('reinstall-watcher');
   const version = document.getElementById('watcher-version');
@@ -479,7 +615,7 @@ async function loadWatcher() {
         const settingsChanged = document.getElementById('contributor-name').value !== name;
         document.getElementById('contributor-name').value = name;
         saveName(name);
-        if (settingsChanged) refreshUploaded();
+        if (settingsChanged && projectsLoaded && refreshPipeline) startPipeline();
       }
     }
     watcherGroups = new Set(
@@ -487,12 +623,14 @@ async function loadWatcher() {
     renderUnavailableGroups((data.config && data.config.groups) || []);
     document.querySelectorAll('.project').forEach(project => {
       const cb = project.querySelector('.auto-upload-checkbox');
-      const harnesses = Array.from(project.querySelectorAll('.harness'));
-      const enabled = harnesses.filter(harness => watcherGroups.has(harnessKey(harness))).length;
-      cb.checked = harnesses.length > 0 && enabled === harnesses.length;
-      cb.indeterminate = enabled > 0 && enabled < harnesses.length;
+      const groups = projectGroups(project);
+      const enabled = groups.filter(item =>
+        watcherGroups.has(`${item.source}|${item.group}`)).length;
+      cb.checked = groups.length > 0 && enabled === groups.length;
+      cb.indeterminate = enabled > 0 && enabled < groups.length;
     });
     autoUploadEnabled = watcherEnabledOverride ?? Boolean(data.installed);
+    watcherRunning = Boolean(data.running);
     const installedVersion = (data.config && data.config.auto_uploader_version) || 0;
     const currentVersion = data.current_version;
     version.textContent = data.needs_reinstall
@@ -502,23 +640,48 @@ async function loadWatcher() {
     reinstall.hidden = !data.needs_reinstall;
     toggle.disabled = false;
     toggle.textContent = autoUploadEnabled ? 'Disable' : 'Enable';
-    if (data.error) {
-      status.textContent = data.error;
-    } else {
-      const last = data.state || {};
-      const lastUploaded = formatUploadTime(last.last_uploaded_at);
-      const nextUpload = autoUploadEnabled && last.finished_at
-        ? formatUploadTime(new Date(
-            new Date(last.finished_at).getTime() + data.interval_seconds * 1000))
-        : autoUploadEnabled ? 'soon' : 'disabled';
-      status.textContent = `Last uploaded ${lastUploaded} · Next upload ${nextUpload}`;
-      status.title = last.finished_at
-        ? `Last run: ${last.status}, ${last.sessions_uploaded || 0} uploaded`
-        : status.textContent;
-    }
+    const last = data.state || {};
+    const lastError = (last.errors || [])[0];
+    const lastUploaded = formatUploadTime(last.last_uploaded_at);
+    const intervalMs = Number(data.interval_seconds) * 1000;
+    const lastFinishedMs = new Date(last.finished_at).getTime();
+    const runOverdue = autoUploadEnabled && !data.running && Number.isFinite(lastFinishedMs)
+      && Number.isFinite(intervalMs) && Date.now() - lastFinishedMs > intervalMs * 2;
+    const nextScheduled = autoUploadEnabled && last.finished_at
+      ? nextScheduledUpload(last.finished_at, data.interval_seconds)
+      : null;
+    const nextUpload = nextScheduled
+      ? formatUploadTime(nextScheduled)
+      : autoUploadEnabled ? 'soon' : 'disabled';
+    schedule.textContent = data.running
+      ? `Last uploaded ${lastUploaded} · Automatic upload running now…`
+      : `Last uploaded ${lastUploaded} · ${runOverdue ? 'Next scheduled attempt' : 'Next upload'} ${nextUpload}`;
+    schedule.classList.toggle('running', Boolean(data.running));
+    const error = data.error
+      || (runOverdue
+        ? `Automatic uploader has not reported a completed run since ${formatUploadTime(last.finished_at)}. The scheduler will keep retrying.`
+        : last.status === 'failed' && lastError
+        ? (lastError.includes('TokenRetrievalError')
+          ? `Last automatic upload failed ${formatUploadTime(last.finished_at)} because AWS credentials were unavailable during that run. The next scheduled run will retry.`
+          : `Last automatic upload failed ${formatUploadTime(last.finished_at)}: ${lastError}`)
+        : '');
+    status.textContent = error;
+    status.hidden = !error;
+    status.classList.toggle('error', Boolean(error));
+    status.title = error || (last.finished_at
+      ? `Last run: ${last.status}, ${last.sessions_uploaded || 0} uploaded`
+      : schedule.textContent);
     updatePendingCounts();
+    if (refreshPipeline && wasWatcherRunning && !watcherRunning
+        && projectsLoaded && !uploadBusy) {
+      // Reconcile the UI with whatever the background uploader just changed.
+      startPipeline();
+    }
   } catch (e) {
+    schedule.textContent = 'Upload schedule unavailable';
     status.textContent = 'Watcher status unavailable';
+    status.hidden = false;
+    status.classList.add('error');
     toggle.disabled = true;
     reinstall.hidden = true;
   }
@@ -544,7 +707,10 @@ async function reinstallWatcher() {
 
 async function saveAutoUploadProjects(changed) {
   changed.disabled = true;
-  document.getElementById('watcher-status').textContent = 'Saving project selection…';
+  const status = document.getElementById('watcher-status');
+  status.textContent = 'Saving project selection…';
+  status.hidden = false;
+  status.classList.remove('error');
   try {
     await updateAutoUploadConfig(autoUploadEnabled);
     showToast(changed.checked ? 'Project added to auto upload' : 'Project removed from auto upload');
@@ -569,7 +735,7 @@ async function toggleAutoUpload() {
   watcherEnabledOverride = !disabling;
   try {
     if (disabling) {
-      clearTimeout(historyTimer);
+      clearTimeout(pipelineTimer);
       autoUploadEnabled = false;
       const resp = await runWatcherMutation(
         () => fetch('/api/watcher', {method: 'DELETE'}));
@@ -591,18 +757,25 @@ async function toggleAutoUpload() {
   }
 }
 
-let historyTimer = null;
-let historyRequest = 0;
-let historyAvailable = false;
+let pipelineTimer = null;
+let pipelineRevision = 0;
+let pipelineController = null;
 function onNameInput() {
   nameRevision += 1;
+  pipelineRevision += 1;
+  if (pipelineController) pipelineController.abort();
+  document.querySelectorAll('.project').forEach(project =>
+    project.classList.remove('pipeline-ready', 'pipeline-running'));
+  document.querySelectorAll('.session').forEach(row =>
+    row.classList.remove('uploaded', 'pipeline-prepared', 'pipeline-error'));
   saveName(document.getElementById('contributor-name').value.trim());
-  clearTimeout(historyTimer);
-  historyTimer = setTimeout(refreshSettings, 400);
+  clearTimeout(pipelineTimer);
+  pipelineTimer = setTimeout(refreshSettings, 400);
 }
 
 async function refreshSettings() {
-  refreshUploaded();
+  if (!projectsLoaded) return;
+  startPipeline();
   if (!watcherConfigured) return;
   try {
     await updateAutoUploadConfig(autoUploadEnabled);
@@ -612,124 +785,347 @@ async function refreshSettings() {
   }
 }
 
-async function refreshUploaded() {
-  const request = ++historyRequest;
-  const rows = Array.from(document.querySelectorAll('.session'));
+async function startPipeline() {
+  if (!projectsLoaded) return;
+  const request = ++pipelineRevision;
+  if (pipelineController) pipelineController.abort();
+  const controller = new AbortController();
+  pipelineController = controller;
+  const projects = Array.from(document.querySelectorAll('.project'));
+  const rows = projects.flatMap(
+    project => Array.from(project.querySelectorAll('.session')));
+  if (!rows.length) {
+    renderPipelineProgress('ready', 0, 0, 'No transcripts found');
+    updatePendingCounts();
+    return;
+  }
   const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
-  historyAvailable = false;
-  updatePendingCounts(false);
+  projects.forEach(project => {
+    project.classList.add('pipeline-running');
+  });
+  setPipelineStatus('');
+  renderPipelineProgress('running', 0, 0, 'Preparing pipeline…');
+  updatePendingCounts();
   try {
-    const resp = await fetch('/api/uploaded', {
+    const resp = await fetch('/api/pipeline', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
+      signal: controller.signal,
       body: JSON.stringify({
         contributor_name: contributorName,
         sessions: rows.map(sessionDescriptor),
       }),
     });
-    const data = await resp.json();
-    if (request !== historyRequest) return;
+    let data = await resp.json();
     if (!resp.ok) {
-      rows.forEach(row => row.classList.remove('uploaded'));
-      updatePendingCounts(false);
+      throw new Error(data.error || 'Could not refresh uploads');
+    }
+    const runId = data.run_id;
+    while (!['ready', 'partial', 'failed'].includes(data.status)) {
+      if (request !== pipelineRevision || pipelineController !== controller) return;
+      renderPipelineProgress('running', Number(data.done || 0),
+        Number(data.work_total || 0), pipelineMessage(data));
+      await new Promise(resolve => setTimeout(resolve, 500));
+      const statusResp = await fetch('/api/pipeline/' + runId, {
+        signal: controller.signal,
+      });
+      data = await statusResp.json();
+      if (!statusResp.ok) throw new Error(data.error || 'Pipeline status unavailable');
+    }
+    if (request !== pipelineRevision || pipelineController !== controller) return;
+    if (data.contributor && data.contributor !== contributorName) {
+      // A previous contributor owned the single pipeline worker. Its result
+      // must never be painted onto this contributor; start ours now that the
+      // worker has reached a terminal state.
+      pipelineController = null;
+      startPipeline();
       return;
     }
-    const uploaded = new Set((data.uploaded || []).map(item =>
-      [item.source, item.group, item.parent || '', item.session].join('|')));
-    rows.forEach(row => row.classList.toggle('uploaded', uploaded.has(sessionKey(row))));
-    historyAvailable = true;
-    updatePendingCounts(true);
+    if (data.status === 'failed') {
+      projects.forEach(project => project.classList.remove('pipeline-running'));
+      const first = (data.errors || [])[0];
+      renderPipelineProgress('failed', 0, 0,
+        first && (first.error || String(first)) || 'Pipeline failed');
+      updatePendingCounts();
+      return;
+    }
+    const current = new Set((data.items || [])
+      .filter(item => item.state === 'current')
+      .map(item => [item.source, item.group, item.parent || '', item.session].join('|')));
+    const ready = new Set((data.items || [])
+      .filter(item => item.state === 'ready')
+      .map(item => [item.source, item.group, item.parent || '', item.session].join('|')));
+    const failed = new Set((data.items || [])
+      .filter(item => item.state === 'error')
+      .map(item => [item.source, item.group, item.parent || '', item.session].join('|')));
+    rows.forEach(row => {
+      const key = sessionKey(row);
+      row.classList.toggle('uploaded', current.has(key));
+      row.classList.toggle('pipeline-prepared', ready.has(key));
+      row.classList.toggle('pipeline-error', failed.has(key));
+    });
+    projects.forEach(project => {
+      project.classList.remove('pipeline-running');
+      project.classList.add('pipeline-ready');
+    });
+    const readyCount = ready.size;
+    const detail = readyCount
+      ? `${readyCount} transcript${readyCount === 1 ? '' : 's'} ready to upload`
+      : 'Everything is up to date';
+    renderPipelineProgress('ready', 0, 0,
+      data.status === 'partial' ? `${detail} · some transcripts failed` : detail);
+    updatePendingCounts();
   } catch (e) {
-    if (request !== historyRequest) return;
-    rows.forEach(row => row.classList.remove('uploaded'));
-    updatePendingCounts(false);
+    projects.forEach(project => project.classList.remove('pipeline-running'));
+    if (request !== pipelineRevision || pipelineController !== controller) return;
+    if (e.name !== 'AbortError') {
+      renderPipelineProgress('failed', 0, 0, e.message);
+      setPipelineStatus(e.message, true);
+    }
+    updatePendingCounts();
+  } finally {
+    if (pipelineController === controller) pipelineController = null;
   }
 }
 
-function updatePendingCounts(available = historyAvailable) {
+function pipelineMessage(data) {
+  const count = Number(data.work_total || 0);
+  const done = Number(data.done || 0);
+  if (data.stage === 'redacting') {
+    return count ? `Redacting ${count} new or changed transcript${count === 1 ? '' : 's'} · ${done}/${count}`
+      : 'Using cached redactions';
+  }
+  if (data.stage === 'checking') {
+    return `Checking ${count} transcript${count === 1 ? '' : 's'}\u2019 upload status · ${done}/${count}`;
+  }
+  return 'Preparing pipeline…';
+}
+
+function renderPipelineProgress(status, done, total, message = '') {
+  const controls = document.getElementById('readiness-controls');
+  const title = document.getElementById('readiness-title');
+  const detail = document.getElementById('readiness-status');
+  const progress = document.getElementById('readiness-progress');
+  const fill = document.getElementById('readiness-bar-fill');
+  const refresh = document.getElementById('refresh-btn');
+  controls.dataset.status = status;
+  controls.classList.toggle('failed', status === 'failed');
+  fill.style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
+  progress.hidden = status !== 'running';
+  refresh.disabled = status === 'running' || status === 'paused';
+  if (status === 'running') {
+    title.textContent = 'Refreshing uploads…';
+    detail.textContent = message;
+  } else if (status === 'ready') {
+    title.textContent = 'Uploads ready';
+    detail.textContent = message || `${total} transcript${total === 1 ? '' : 's'} prepared`;
+  } else if (status === 'paused') {
+    title.textContent = 'Upload preparation paused';
+    detail.textContent = message;
+  } else {
+    title.textContent = 'Upload preparation unavailable';
+    detail.textContent = message;
+  }
+  detail.title = detail.textContent;
+}
+
+function pausePipelineForUpload() {
+  pipelineRevision += 1;
+  const controller = pipelineController;
+  pipelineController = null;
+  if (controller) controller.abort();
+  document.querySelectorAll('.project').forEach(project =>
+    project.classList.remove('pipeline-running'));
+  renderPipelineProgress('paused', 0, 0, 'Uploading prepared transcripts');
+  setPipelineStatus('');
+}
+
+function setPipelineStatus(message, retry = false) {
+  const status = document.getElementById('pipeline-status');
+  status.replaceChildren();
+  status.hidden = !message;
+  if (!message) return;
+  const text = document.createElement('span');
+  text.textContent = message;
+  status.appendChild(text);
+  if (retry) {
+    const button = document.createElement('button');
+    button.className = 'secondary';
+    button.textContent = 'Retry';
+    button.style.marginLeft = '10px';
+    button.onclick = startPipeline;
+    status.appendChild(button);
+  }
+}
+
+function updatePendingCounts() {
   const button = document.getElementById('upload-btn');
+  const pipelineRunning = document.getElementById('readiness-controls')
+    .dataset.status === 'running';
   let selectedPending = 0;
   let selectedProjects = 0;
+  let selectedTranscripts = 0;
+  let selectedPipelineUnknown = false;
 
   document.querySelectorAll('.project').forEach(project => {
     const label = project.querySelector('.project-pending');
+    const available = project.classList.contains('pipeline-ready');
     label.classList.remove('complete');
-    if (!available) {
-      label.textContent = 'upload status unavailable';
+    if (project.classList.contains('pipeline-running')) {
+      label.textContent = 'refreshing…';
+    } else if (!available) {
+      label.textContent = pipelineRunning ? 'waiting…' : 'not refreshed';
     } else {
-      const pending = project.querySelectorAll('.session:not(.uploaded)').length;
-      label.textContent = pending
+      const pending = project.querySelectorAll('.session.pipeline-prepared').length;
+      const failed = project.querySelectorAll('.session.pipeline-error').length;
+      label.textContent = failed
+        ? `${failed} unavailable`
+        : pending
         ? `${pending} not uploaded`
         : 'all uploaded';
-      label.classList.toggle('complete', pending === 0);
+      label.classList.toggle('complete', pending === 0 && failed === 0);
     }
-    const consented = consentedHarnesses(project);
+    const consented = consentedRows(project);
     if (consented.length) {
       selectedProjects += 1;
-      selectedPending += consented.reduce(
-        (total, harness) => total + harness.querySelectorAll('.session:not(.uploaded)').length, 0);
+      selectedTranscripts += consented.length;
+      if (available) {
+        selectedPending += consented.filter(row => row.classList.contains('pipeline-prepared')).length;
+      } else {
+        selectedPipelineUnknown = true;
+      }
     }
   });
 
   document.querySelectorAll('.session-upload').forEach(upload => {
-    upload.disabled = uploadBusy
-      || (available && upload.closest('.session').classList.contains('uploaded'));
+    const row = upload.closest('.session');
+    const current = row.classList.contains('uploaded');
+    const prepared = current || row.classList.contains('pipeline-prepared');
+    upload.disabled = uploadBusy || watcherRunning || pipelineRunning
+      || !prepared || current;
+    upload.textContent = current ? 'Current' : 'Upload';
+    upload.title = pipelineRunning
+      ? 'Upload preparation is refreshing'
+      : watcherRunning
+      ? 'Automatic uploader is running. Manual uploads will be available when it finishes.'
+      : !prepared ? 'Waiting for upload preparation to finish'
+      : current ? 'This transcript matches the uploaded version'
+      : 'Upload this prepared transcript';
   });
 
+  button.title = watcherRunning
+    ? 'Automatic uploader is running. Manual uploads will be available when it finishes.'
+    : 'Upload prepared transcripts from projects selected for automatic upload';
   if (uploadBusy) {
     button.textContent = 'Uploading…';
     button.disabled = true;
-  } else if (!selectedProjects) {
-    button.textContent = 'Upload now';
+  } else if (pipelineRunning) {
+    button.textContent = 'Refreshing uploads…';
     button.disabled = true;
-  } else if (available && !selectedPending) {
-    button.textContent = 'Everything uploaded';
+  } else if (!selectedProjects) {
+    button.textContent = 'Upload 0 transcripts now';
+    button.disabled = true;
+  } else if (selectedPipelineUnknown) {
+    button.textContent = `Preparing ${selectedTranscripts} transcript${selectedTranscripts === 1 ? '' : 's'}…`;
     button.disabled = true;
   } else {
-    button.textContent = available ? `Upload ${selectedPending} now` : 'Upload now';
-    button.disabled = false;
+    button.textContent = `Upload ${selectedPending} transcript${selectedPending === 1 ? '' : 's'} now`;
+    button.disabled = watcherRunning || selectedPending === 0;
   }
 }
 
-async function previewSession(el) {
+let currentPreview = null;
+let previewRequest = 0;
+
+function showPreviewError(body, footer, message, offset) {
+  const error = document.createElement('span');
+  error.style.cssText = 'color: var(--red); font-size: 0.8rem';
+  error.textContent = message;
+  footer.replaceChildren();
+  if (offset === 0) {
+    body.replaceChildren(error);
+    return;
+  }
+  footer.appendChild(error);
+  const retry = document.createElement('button');
+  retry.className = 'secondary';
+  retry.textContent = 'Retry';
+  retry.onclick = loadMorePreview;
+  footer.appendChild(retry);
+}
+
+async function previewSession(el, offset = 0) {
   const row = el.closest('.session');
   const source = row.dataset.source, group = row.dataset.group, session = row.dataset.session;
   const parent = row.dataset.parent || '';
   const pane = document.getElementById('preview-pane');
   const body = document.getElementById('preview-body');
+  const footer = document.getElementById('preview-footer');
   const title = document.getElementById('preview-title');
   const redactCount = document.getElementById('preview-redaction-count');
+  const request = ++previewRequest;
 
-  body.innerHTML = '<p style="color: var(--text-muted)">Loading...</p>';
+  currentPreview = {row, source, group, session, parent, offset};
+  if (offset === 0) {
+    body.innerHTML = '<p style="color: var(--text-muted)">Loading preview…</p>';
+    redactCount.textContent = '';
+    redactCount.dataset.count = '0';
+  }
+  footer.innerHTML = '<span style="color: var(--text-muted); font-size: 0.8rem">Loading…</span>';
   pane.classList.add('open');
   title.textContent = session.substring(0, 8) + '...';
 
   try {
-    const q = new URLSearchParams({ source, group, session, parent });
+    const q = new URLSearchParams({ source, group, session, parent, offset, limit: 100 });
     const resp = await fetch('/api/preview?' + q.toString());
     const data = await resp.json();
+    if (request !== previewRequest) return;
 
     if (!resp.ok) {
-      body.innerHTML = `<p style="color: var(--red)">${data.error || 'Failed to load preview'}</p>`;
+      showPreviewError(body, footer, data.error || 'Failed to load preview', offset);
       return;
     }
 
-    redactCount.textContent = data.redaction_count > 0
-      ? `${data.redaction_count} redaction${data.redaction_count !== 1 ? 's' : ''}` : '';
+    const totalRedactions = Number(redactCount.dataset.count || 0) + data.redaction_count;
+    redactCount.dataset.count = String(totalRedactions);
+    redactCount.textContent = totalRedactions > 0
+      ? `${totalRedactions} redaction${totalRedactions !== 1 ? 's' : ''}` : '';
 
     if (data.messages.length === 0 && !data.sidecars.length) {
-      body.innerHTML = '<p style="color: var(--text-muted)">(no messages)</p>';
+      if (offset === 0) body.innerHTML = '<p style="color: var(--text-muted)">(no messages)</p>';
+      footer.replaceChildren();
       return;
     }
 
-    body.innerHTML = sidecarSummary(data) + data.messages.map(m => {
+    const html = (offset === 0 ? sidecarSummary(data) : '') + data.messages.map(m => {
       let text = escapeHtml(m.text);
       text = text.replace(/\[REDACTED\]/g, '<span class="redacted">[REDACTED]</span>');
       return `<div class="preview-msg ${escapeHtml(m.role)}"><div class="role">${escapeHtml(m.role)}</div>${text}</div>`;
     }).join('');
+    if (offset === 0) body.innerHTML = html;
+    else body.insertAdjacentHTML('beforeend', html);
+    currentPreview.offset = data.next_offset;
+    footer.replaceChildren();
+    if (data.has_more) {
+      const button = document.createElement('button');
+      button.className = 'secondary';
+      button.textContent = `Load more (${data.next_offset}/${data.total_messages})`;
+      button.onclick = loadMorePreview;
+      footer.appendChild(button);
+    } else {
+      const status = document.createElement('span');
+      status.style.cssText = 'color: var(--text-muted); font-size: 0.8rem';
+      status.textContent = `${data.total_messages} message${data.total_messages !== 1 ? 's' : ''}`;
+      footer.appendChild(status);
+    }
   } catch (e) {
-    body.innerHTML = `<p style="color: var(--red)">Error loading preview: ${e.message}</p>`;
+    if (request !== previewRequest) return;
+    showPreviewError(body, footer, `Error loading preview: ${e.message}`, offset);
   }
+}
+
+function loadMorePreview() {
+  if (currentPreview) previewSession(currentPreview.row, currentPreview.offset);
 }
 
 function sidecarSummary(data) {
@@ -744,6 +1140,7 @@ function sidecarSummary(data) {
 }
 
 function closePreview() {
+  previewRequest += 1;
   document.getElementById('preview-pane').classList.remove('open');
 }
 
@@ -771,8 +1168,12 @@ function loadJob() { try { return localStorage.getItem('ctc_job'); } catch (e) {
 
 function uploadNow() {
   const rows = Array.from(document.querySelectorAll('.project'))
-    .flatMap(project => consentedHarnesses(project))
-    .flatMap(harness => Array.from(harness.querySelectorAll('.session:not(.uploaded)')));
+    .flatMap(project => consentedRows(project))
+    .filter(row => row.classList.contains('pipeline-prepared'));
+  if (!rows.length) {
+    showToast('No prepared transcripts to upload');
+    return;
+  }
   startUpload(rows);
 }
 
@@ -790,27 +1191,20 @@ async function startUpload(rows) {
   uploadBusy = true;
   updatePendingCounts();
 
-  let contributorName = document.getElementById('contributor-name').value.trim();
-  if (!contributorName) {
-    const entered = (window.prompt(
-      'Enter your name (leave blank to upload anonymously):',
-      '') || '').trim();
-    if (entered) {
-      contributorName = entered;
-      document.getElementById('contributor-name').value = entered;
-      onNameInput();
-    }
-  }
-  saveName(contributorName);
-  contributorName = contributorName || 'anonymous';
+  const enteredName = document.getElementById('contributor-name').value.trim();
+  saveName(enteredName);
+  const contributorName = enteredName || 'anonymous';
   try {
     const resp = await fetch('/api/upload', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ selected, contributor_name: contributorName }),
+      body: JSON.stringify({
+        selected,
+        contributor_name: contributorName,
+      }),
     });
     const data = await resp.json();
-    if (resp.status === 409) {            // already running — attach to it
+    if (resp.status === 409 && data.job_id) {
       showToast('An upload is already running', true);
       trackJob(data.job_id);
       return;
@@ -826,6 +1220,7 @@ async function startUpload(rows) {
 
 function trackJob(jobId) {
   uploadBusy = true;
+  pausePipelineForUpload();
   updatePendingCounts();
   showProgress(true);
   clearInterval(pollTimer);
@@ -833,16 +1228,34 @@ function trackJob(jobId) {
     let j;
     try {
       const r = await fetch('/api/upload/' + jobId);
-      if (r.status === 404) { stopTracking(); clearJob(); resetUploadBtn(); return; }
+      if (r.status === 404) {
+        stopTracking();
+        clearJob();
+        resetUploadBtn();
+        startPipeline();
+        return;
+      }
       j = await r.json();
     } catch (e) { return; }              // transient — keep polling
     renderProgress(j);
     if (['completed', 'partial', 'failed'].includes(j.status)) {
       stopTracking();
       clearJob();
+      markUploaded(j.uploads || []);
       finishToast(j);
-      if (j.status !== 'failed') refreshUploaded();
       resetUploadBtn();
+      const needsPipeline = Array.from(document.querySelectorAll('.project'))
+        .some(project => !project.classList.contains('pipeline-ready'));
+      if (needsPipeline) {
+        // The page may have loaded while this upload was already running, in
+        // which case loadProjects deliberately deferred preparation.
+        startPipeline();
+        return;
+      }
+      const pending = document.querySelectorAll('.session.pipeline-prepared').length;
+      renderPipelineProgress('ready', 0, 0, pending
+        ? `${pending} transcript${pending === 1 ? '' : 's'} ready to upload`
+        : 'Everything is up to date');
     }
   }, 1000);
 }
@@ -850,18 +1263,39 @@ function trackJob(jobId) {
 function renderProgress(j) {
   const fill = document.getElementById('bar-fill');
   const text = document.getElementById('progress-text');
-  if (j.total) {
-    fill.style.width = Math.round((j.done / j.total) * 100) + '%';
-    text.textContent = `Uploading ${j.done}/${j.total}…`;
+  const labels = {
+    uploading: 'Uploading',
+  };
+  if (j.stage_total) {
+    fill.style.width = Math.round((j.stage_done / j.stage_total) * 100) + '%';
+    const itemDone = j.stage_item_done ?? j.stage_done;
+    const itemTotal = j.stage_item_total ?? j.stage_total;
+    text.textContent = `${labels[j.stage] || 'Working'} ${itemDone}/${itemTotal}…`;
   } else {
-    text.textContent = 'Preparing…';
+    fill.style.width = '0';
+    text.textContent = `${labels[j.stage] || 'Preparing'}…`;
   }
   document.getElementById('upload-btn').textContent = 'Uploading…';
+}
+
+function markUploaded(uploads) {
+  const uploaded = new Set(uploads.map(item =>
+    [item.source, item.group, item.parent || '', item.session].join('|')));
+  document.querySelectorAll('.session').forEach(row => {
+    if (uploaded.has(sessionKey(row))) {
+      row.classList.add('uploaded');
+      row.classList.remove('pipeline-prepared', 'pipeline-error');
+    }
+  });
+  if (uploaded.size) {
+    updatePendingCounts();
+  }
 }
 
 function finishToast(j) {
   const up = j.uploads.length, failed = (j.errors || []).length;
   if (!up && failed) { showToast((j.errors[0] && j.errors[0].error) || 'Upload failed', true); return; }
+  if (!up) { showToast('Everything selected was already uploaded'); return; }
   const sessions = j.uploads.reduce((a, u) => a + u.transcript_count, 0);
   const red = j.uploads.reduce((a, u) => a + u.redactions, 0);
   let msg = `Uploaded ${sessions} transcript${sessions !== 1 ? 's' : ''} (${red} redactions)`;
@@ -884,9 +1318,9 @@ function resetUploadBtn() {
 (function init() {
   const saved = loadName();
   if (saved !== null) document.getElementById('contributor-name').value = saved;
-  updatePendingCounts(false);
-  refreshUploaded();
+  updatePendingCounts();
   loadWatcher();
+  startScan(false);
   setInterval(loadWatcher, 15000);
   const job = loadJob();
   if (job) trackJob(job);

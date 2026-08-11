@@ -12,7 +12,6 @@ transcript, which keeps only a pointer to them; see `sidecars` below.
 from __future__ import annotations
 
 import os
-import re
 import tempfile
 from pathlib import Path
 
@@ -28,19 +27,36 @@ from .base import (
     truncate,
 )
 
-# Pointers appear inside JSON string values, so a backslash (an escaped newline
-# in the surrounding JSON) ends a path just as whitespace and quotes do. Both
-# folders are flat, so the file name itself cannot contain a separator.
-_PATH = r"[^\s\"'\\<>,)\]]"
-_NAME = r"[^\s\"'\\<>,)\]/]"
+_PATH_DELIMITERS = frozenset(" \t\r\n\"'\\<>,)]")
 
-# "<persisted-output>Output too large (44.9KB). Full output saved to:
-#  ~/.claude/projects/<project>/<session>/tool-results/<id>.txt"
-_TOOL_RESULT_RE = re.compile(rf"/{_PATH}*/tool-results/{_NAME}+")
 
-# "<output-file>/tmp/claude-501/<project>/<session>/tasks/<id>.output</output-file>",
-# emitted when a background command or task finishes.
-_TASK_OUTPUT_RE = re.compile(rf"/{_PATH}*/tasks/{_NAME}+\.output")
+def _sidecar_pointers(raw_text: str, marker: str, suffix: str = "") -> list[str]:
+    """Extract path tokens around a literal marker in one linear pass.
+
+    The previous leading-wildcard regex backtracked across every slash in a
+    large transcript when no pointer existed, turning a cheap check into
+    minutes of CPU work.
+    """
+    pointers = []
+    position = 0
+    while True:
+        marker_at = raw_text.find(marker, position)
+        if marker_at < 0:
+            return pointers
+        start = marker_at
+        while start > 0 and raw_text[start - 1] not in _PATH_DELIMITERS:
+            start -= 1
+        end = marker_at + len(marker)
+        while (
+            end < len(raw_text)
+            and raw_text[end] not in _PATH_DELIMITERS
+            and raw_text[end] != "/"
+        ):
+            end += 1
+        pointer = raw_text[start:end]
+        if pointer.startswith("/") and (not suffix or pointer.endswith(suffix)):
+            pointers.append(pointer)
+        position = end if end > marker_at else marker_at + len(marker)
 
 
 def _config_dir() -> Path:
@@ -177,9 +193,9 @@ class ClaudeCodeSource:
         folder and keeps pointing back at it.
         """
         builder = SidecarBuilder(roots=[_projects_dir(), *_task_output_roots()])
-        for pointer in _TOOL_RESULT_RE.findall(raw_text):
+        for pointer in _sidecar_pointers(raw_text, "/tool-results/"):
             builder.add(pointer, "tool-results")
-        for pointer in _TASK_OUTPUT_RE.findall(raw_text):
+        for pointer in _sidecar_pointers(raw_text, "/tasks/", ".output"):
             builder.add(pointer, "task-outputs")
         if not session.is_subagent:
             # A session's own folder also holds output its subagents asked for,

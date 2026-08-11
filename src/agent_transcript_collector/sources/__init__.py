@@ -54,19 +54,16 @@ def detect_all() -> list[dict]:
     return detected
 
 
-def detect_projects() -> list[dict]:
-    """Discover transcripts as project -> harness -> sessions for the local UI."""
+def projects_from_groups(discovered: list[tuple[Source, Group]]) -> list[dict]:
+    """Build the local UI's project tree from an existing discovery snapshot."""
 
     def modified_at(session: Session) -> float:
         return session.modified.timestamp() if session.modified else 0
 
-    discovered: list[tuple[Source, Group]] = []
     directories_by_label: dict[str, set[str]] = {}
-    for source in SOURCES:
-        for group in source.discover():
-            discovered.append((source, group))
-            if group.directory:
-                directories_by_label.setdefault(group.label, set()).add(group.directory)
+    for _, group in discovered:
+        if group.directory:
+            directories_by_label.setdefault(group.label, set()).add(group.directory)
 
     projects_by_identity: dict[str, dict] = {}
     for source, group in discovered:
@@ -74,7 +71,9 @@ def detect_projects() -> list[dict]:
         candidates = directories_by_label.get(group.label, set())
         if directory is None and len(candidates) == 1:
             directory = next(iter(candidates))
-        identity = f"directory:{directory}" if directory else f"unresolved:{group.label}"
+        identity = (
+            f"directory:{directory}" if directory else f"unresolved:{group.label}"
+        )
         project = projects_by_identity.get(identity)
         if project is None:
             project = projects_by_identity[identity] = {
@@ -83,7 +82,7 @@ def detect_projects() -> list[dict]:
                 "directory": directory,
                 "session_count": 0,
                 "latest_modified": 0,
-                "harnesses": [],
+                "harnesses_by_source": {},
             }
         sessions = sorted(group.sessions, key=modified_at, reverse=True)
         latest_modified = max(
@@ -91,17 +90,35 @@ def detect_projects() -> list[dict]:
         )
         project["session_count"] += group.session_count
         project["latest_modified"] = max(project["latest_modified"], latest_modified)
-        project["harnesses"].append({
-            "source": source.id,
-            "source_label": source.label,
-            "group": group.key,
-            "session_count": group.session_count,
-            "latest_modified": latest_modified,
-            "sessions": [session.as_dict() for session in sessions],
-        })
+        harness = project["harnesses_by_source"].setdefault(
+            source.id,
+            {
+                "source": source.id,
+                "source_label": source.label,
+                "groups": [],
+                "session_count": 0,
+                "latest_modified": 0,
+                "sessions": [],
+            },
+        )
+        harness["groups"].append(group.key)
+        harness["session_count"] += group.session_count
+        harness["latest_modified"] = max(
+            harness["latest_modified"], latest_modified
+        )
+        harness["sessions"].extend(session.as_dict() for session in sessions)
 
     projects = list(projects_by_identity.values())
     for project in projects:
+        project["harnesses"] = list(project.pop("harnesses_by_source").values())
+        for harness in project["harnesses"]:
+            harness["groups"].sort()
+            harness["sessions"].sort(
+                key=lambda session: (
+                    session["modified"].timestamp() if session["modified"] else 0
+                ),
+                reverse=True,
+            )
         project["harnesses"].sort(
             key=lambda harness: (
                 -harness["latest_modified"],
@@ -116,6 +133,16 @@ def detect_projects() -> list[dict]:
         )
     )
     return projects
+
+
+def detect_projects() -> list[dict]:
+    """Discover transcripts as project -> harness -> sessions for the local UI."""
+    discovered = [
+        (source, group)
+        for source in SOURCES
+        for group in source.discover()
+    ]
+    return projects_from_groups(discovered)
 
 
 def find_session(source_id: str, group_key: str, session_id: str,
@@ -143,5 +170,6 @@ __all__ = [
     "get_source",
     "detect_all",
     "detect_projects",
+    "projects_from_groups",
     "find_session",
 ]

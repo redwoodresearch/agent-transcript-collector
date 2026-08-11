@@ -7,6 +7,7 @@ import io
 import json
 import os
 import re
+import tempfile
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -18,13 +19,13 @@ from botocore.exceptions import ClientError
 from .paths import upload_lock_path
 from .redactor import (
     canonicalize_secrets,
-    local_usernames,
     redact_identity,
     redact_jsonl_content,
     redact_path_token,
 )
 from .s3client import S3_BUCKET
-from .sidecars import EMPTY as NO_SIDECARS, SidecarSet
+from .sidecars import EMPTY as NO_SIDECARS
+from .sidecars import SidecarSet
 from .sources.base import session_sidecars
 from .storage import STORAGE_PREFIX
 
@@ -37,6 +38,11 @@ SIDECAR_COUNT_METADATA = "sidecar-count"
 
 def upload_concurrency() -> int:
     return max(1, int(os.environ.get("CTC_UPLOAD_CONCURRENCY", "4")))
+
+
+def metadata_concurrency() -> int:
+    """Use more workers for small, read-only S3 metadata requests."""
+    return max(1, int(os.environ.get("CTC_METADATA_CONCURRENCY", "16")))
 
 
 class UploadBusy(RuntimeError):
@@ -194,12 +200,14 @@ def _already_uploaded(prepared: PreparedTranscript, remote: dict) -> bool:
     )
 
 
-def _prepare(source, session, contributor: str) -> PreparedTranscript:
-    raw_bytes = Path(session.path).read_bytes()
+def prepare_transcript(source, session, contributor: str) -> PreparedTranscript:
+    """Read and fingerprint one transcript and every referenced side file."""
+    path = Path(session.path)
+    raw_bytes = path.read_bytes()
+    body_fingerprint = transcript_fingerprint(raw_bytes)
     sidecars = session_sidecars(
         source, session, raw_bytes.decode("utf-8", errors="replace")
     )
-    body_fingerprint = transcript_fingerprint(raw_bytes)
     key = transcript_key(contributor, source.id, session)
     return PreparedTranscript(
         session,
@@ -211,30 +219,46 @@ def _prepare(source, session, contributor: str) -> PreparedTranscript:
     )
 
 
-def partition_transcripts(
+def classify_prepared(
     s3,
-    source,
-    sessions,
-    contributor: str,
+    prepared_items: list[PreparedTranscript],
     uploaded_metadata: dict[str, dict] | None = None,
+    on_status=None,
 ):
-    """Split current transcripts into changed and already uploaded."""
+    """Split already-prepared transcripts by their remote fingerprint."""
     existing = uploaded_metadata if uploaded_metadata is not None else {}
-    pending: list[PreparedTranscript] = []
-    uploaded = []
+    pending = []
+    current = []
     errors = []
-    for session in sessions:
-        try:
-            prepared = _prepare(source, session, contributor)
-        except OSError as exc:
-            errors.append({"source": source.id, "error": f"{session.id}: {exc}"})
-            continue
+
+    def check_one(prepared):
         remote = _uploaded_metadata(s3, prepared.key, existing)
-        if _already_uploaded(prepared, remote):
-            uploaded.append(session)
-        else:
-            pending.append(prepared)
-    return pending, uploaded, errors
+        return _already_uploaded(prepared, remote)
+
+    if not prepared_items:
+        return pending, current, errors
+    workers = min(metadata_concurrency(), len(prepared_items))
+    completed = 0
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(check_one, item): item for item in prepared_items
+        }
+        for future in as_completed(futures):
+            prepared = futures[future]
+            completed += 1
+            try:
+                is_current = future.result()
+            except Exception as exc:
+                errors.append({
+                    "session": prepared.session.id,
+                    "key": prepared.key,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+            else:
+                (current if is_current else pending).append(prepared)
+            if on_status:
+                on_status(completed, len(prepared_items))
+    return pending, current, errors
 
 
 def _redact(text: str) -> tuple[str, int]:
@@ -243,7 +267,9 @@ def _redact(text: str) -> tuple[str, int]:
     return text, redaction_count + count
 
 
-def _redacted_sidecars(prepared: PreparedTranscript) -> tuple[list[tuple[str, str]], dict, int]:
+def _redacted_sidecars(
+    prepared: PreparedTranscript,
+) -> tuple[list[tuple[str, str]], dict, int]:
     """Return (arcname, text) pairs to archive plus the manifest section."""
     contents: list[tuple[str, str]] = []
     entries = []
@@ -314,7 +340,11 @@ def _build_transcript_zip(source, prepared: PreparedTranscript, contributor: str
         "sidecars": sidecar_section,
     }
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+    # These archives are transient upload payloads. Fast compression keeps one
+    # large transcript from making readiness appear stalled for minutes.
+    with zipfile.ZipFile(
+        buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=1
+    ) as archive:
         archive.writestr(f"transcript{suffix}", raw)
         archive.writestr("manifest.json", json.dumps(manifest, indent=2))
         for arcname, text in sidecar_contents:
@@ -322,66 +352,128 @@ def _build_transcript_zip(source, prepared: PreparedTranscript, contributor: str
     return buffer.getvalue(), manifest
 
 
-def upload_transcripts(
-    s3,
-    source,
-    sessions,
-    contributor: str,
-    on_progress=None,
-    uploaded_metadata: dict[str, dict] | None = None,
-):
-    """Overwrite each session object only when its redacted content changes."""
-    existing = uploaded_metadata if uploaded_metadata is not None else {}
-    pending, uploaded, errors = partition_transcripts(
-        s3, source, list(sessions), contributor, existing
-    )
-    if on_progress:
-        on_progress(len(uploaded) + len(errors))
-    if not pending:
-        return [], errors
+def _path_signature(path: str | Path) -> dict:
+    value = {"path": str(path)}
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        value["exists"] = False
+    else:
+        value.update(exists=True, size=stat.st_size, mtime_ns=stat.st_mtime_ns)
+    return value
 
-    def upload_one(prepared: PreparedTranscript):
-        zip_bytes, manifest = _build_transcript_zip(source, prepared, contributor)
-        sidecar_count = len(manifest["sidecars"]["files"])
+
+def prepared_signature(prepared: PreparedTranscript) -> list[dict]:
+    """Capture every local path which can affect a prepared archive."""
+    paths: list[str | Path] = [prepared.session.path]
+    paths.extend(sidecar.path for sidecar in prepared.sidecars.files)
+    paths.extend(prepared.sidecars.missing)
+    paths.extend(prepared.sidecars.skipped)
+    paths.extend(prepared.sidecars.directories)
+    return [_path_signature(path) for path in dict.fromkeys(paths)]
+
+
+def signature_is_current(signature: object) -> bool:
+    return isinstance(signature, list) and all(
+        isinstance(item, dict)
+        and item == _path_signature(str(item.get("path", "")))
+        for item in signature
+    )
+
+
+def artifact_is_available(artifact: dict) -> bool:
+    """Return whether an immutable prepared archive is still readable."""
+    try:
+        archive = Path(artifact["path"])
+        return (
+            archive.is_file()
+            and archive.stat().st_size == int(artifact["zip_size_bytes"])
+        )
+    except (KeyError, OSError, TypeError, ValueError):
+        return False
+
+
+def artifact_is_current(artifact: dict) -> bool:
+    """Return whether an archive still represents the latest local content."""
+    return artifact_is_available(artifact) and signature_is_current(
+        artifact.get("signature")
+    )
+
+
+def build_upload_artifact(
+    source, prepared: PreparedTranscript, contributor: str, directory: str | Path
+) -> dict:
+    """Build a private, reusable redacted archive for a confirmed pending item."""
+    archive, manifest = _build_transcript_zip(source, prepared, contributor)
+    target_dir = Path(directory)
+    target_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, temporary = tempfile.mkstemp(prefix="transcript-", suffix=".zip", dir=target_dir)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(archive)
+        os.chmod(temporary, 0o600)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+    session = prepared.session
+    return {
+        "source": source.id,
+        "group": session.group_key,
+        "session": session.id,
+        "parent": session.parent,
+        "path": temporary,
+        "key": prepared.key,
+        "fingerprint": prepared.fingerprint,
+        "body_fingerprint": prepared.body_fingerprint,
+        "sidecar_count": len(manifest["sidecars"]["files"]),
+        "redactions": manifest["redactions"],
+        "zip_size_bytes": len(archive),
+        "signature": prepared_signature(prepared),
+    }
+
+
+def upload_artifacts(s3, artifacts: list[dict], on_progress=None):
+    """Upload already-redacted archives produced by the readiness worker."""
+    results = []
+    errors = []
+
+    def upload_one(artifact):
         s3.put_object(
             Bucket=S3_BUCKET,
-            Key=prepared.key,
-            Body=zip_bytes,
+            Key=artifact["key"],
+            Body=Path(artifact["path"]).read_bytes(),
             ContentType="application/zip",
             Metadata={
-                FINGERPRINT_METADATA: prepared.fingerprint,
-                BODY_FINGERPRINT_METADATA: prepared.body_fingerprint,
-                SIDECAR_COUNT_METADATA: str(sidecar_count),
+                FINGERPRINT_METADATA: artifact["fingerprint"],
+                BODY_FINGERPRINT_METADATA: artifact["body_fingerprint"],
+                SIDECAR_COUNT_METADATA: str(artifact["sidecar_count"]),
             },
         )
         return {
-            "source": source.id,
-            "s3_key": prepared.key,
-            "transcript_count": 1,
-            "zip_size_bytes": len(zip_bytes),
-            "redactions": manifest["redactions"],
-            "sidecar_count": sidecar_count,
-        }
+            key: artifact[key]
+            for key in (
+                "source", "group", "session", "parent", "zip_size_bytes",
+                "redactions", "sidecar_count",
+            )
+        } | {"s3_key": artifact["key"], "transcript_count": 1}
 
-    local_usernames()
-    results = []
-    workers = min(upload_concurrency(), len(pending))
+    workers = min(upload_concurrency(), len(artifacts))
+    if not workers:
+        return results, errors
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(upload_one, item): item for item in pending}
+        futures = {executor.submit(upload_one, item): item for item in artifacts}
         for future in as_completed(futures):
-            prepared = futures[future]
+            artifact = futures[future]
             try:
-                result = future.result()
-                results.append(result)
-                existing[prepared.key] = {
-                    FINGERPRINT_METADATA: prepared.fingerprint,
-                    BODY_FINGERPRINT_METADATA: prepared.body_fingerprint,
-                    SIDECAR_COUNT_METADATA: str(result["sidecar_count"]),
-                }
+                results.append(future.result())
             except Exception as exc:
-                errors.append(
-                    {"source": source.id, "error": f"{type(exc).__name__}: {exc}"}
-                )
+                errors.append({
+                    "source": artifact.get("source", ""),
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
             if on_progress:
                 on_progress(1)
     return results, errors

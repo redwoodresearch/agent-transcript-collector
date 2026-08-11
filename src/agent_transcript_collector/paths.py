@@ -48,3 +48,11 @@ def upload_lock_path() -> Path:
 
 def project_identity_cache_path() -> Path:
     return state_dir() / "project-identities.json"
+
+
+def pipeline_cache_path() -> Path:
+    return state_dir() / "pipeline-cache.json"
+
+
+def prepared_artifacts_dir() -> Path:
+    return state_dir() / "prepared"

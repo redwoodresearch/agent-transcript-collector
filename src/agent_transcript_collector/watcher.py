@@ -19,19 +19,20 @@ from .paths import (
     watcher_config_path,
     watcher_state_path,
 )
+from .pipeline import artifacts_for, mark_uploaded, refresh as refresh_pipeline
 from .s3client import make_s3_client
 from .sources import SOURCES
 from .uploader import (
     UploadBusy,
     UploadLock,
-    upload_transcripts,
+    upload_artifacts,
 )
 
 PACKAGE_SPEC = "git+https://github.com/redwoodresearch/agent-transcript-collector@main"
 LAUNCHD_LABEL = "com.redwoodresearch.agent-transcript-collector"
 SYSTEMD_NAME = "agent-transcript-collector"
 WATCH_INTERVAL_SECONDS = 60 * 60
-AUTO_UPLOADER_VERSION = 3
+AUTO_UPLOADER_VERSION = 7
 SOURCE_ENV_VARS = (
     "CLAUDE_CONFIG_DIR",
     "CODEX_HOME",
@@ -40,6 +41,7 @@ SOURCE_ENV_VARS = (
     "PI_CODING_AGENT_SESSION_DIR",
     "PI_CODING_AGENT_DIR",
     "CTC_UPLOAD_CONCURRENCY",
+    "CTC_METADATA_CONCURRENCY",
     "CTC_USERNAME_STOPLIST",
 )
 
@@ -181,7 +183,7 @@ def run_once(
     state_path: Path | None = None,
     lock_path: Path | None = None,
 ) -> dict:
-    """Upload changed transcripts from explicitly allowed groups."""
+    """Run the shared pipeline and upload its ready artifacts."""
     previous_state = load_state(state_path)
     started = datetime.now(timezone.utc).isoformat()
     result = {
@@ -198,21 +200,37 @@ def run_once(
     try:
         with UploadLock(lock_path):
             client = s3 or make_s3_client()
-            uploaded_metadata: dict[str, dict] = {}
-            for source, sessions in discover_allowed(config):
-                uploaded, upload_errors = upload_transcripts(
-                    client,
-                    source,
-                    sessions,
-                    config.contributor,
-                    uploaded_metadata=uploaded_metadata,
+            selections = discover_allowed(config)
+            pipeline = refresh_pipeline(
+                selections, config.contributor, s3=client
+            )
+            result["errors"].extend(
+                item.get("error", str(item)) for item in pipeline["errors"]
+            )
+            artifacts, stale = artifacts_for(selections, config.contributor)
+            if stale:
+                result["errors"].append(
+                    f"{len(stale)} transcript(s) require another refresh"
                 )
-                result["sessions_uploaded"] += sum(
-                    item["transcript_count"] for item in uploaded
-                )
-                result["errors"].extend(
-                    item.get("error", str(item)) for item in upload_errors
-                )
+            uploads, upload_errors = upload_artifacts(client, artifacts)
+            successful = {
+                (item.get("source"), item.get("group"), item.get("parent") or "",
+                 item.get("session"))
+                for item in uploads
+            }
+            uploaded_artifacts = [
+                item for item in artifacts
+                if (item.get("source"), item.get("group"),
+                    item.get("parent") or "", item.get("session")) in successful
+            ]
+            if uploaded_artifacts:
+                mark_uploaded(uploaded_artifacts, config.contributor)
+            result["sessions_uploaded"] = sum(
+                item["transcript_count"] for item in uploads
+            )
+            result["errors"].extend(
+                item.get("error", str(item)) for item in upload_errors
+            )
             result["status"] = "partial" if result["errors"] else "completed"
     except UploadBusy as exc:
         result["status"] = "skipped"
@@ -346,6 +364,10 @@ def install(
     """
     platform = platform or sys.platform
     config.auto_uploader_version = AUTO_UPLOADER_VERSION
+    # Scheduled installs must follow the supported release branch. Persisting a
+    # development-branch package spec can permanently break the watcher once
+    # that temporary branch is removed.
+    config.package_spec = PACKAGE_SPEC
     config.uv_path = config.uv_path or _find_uv()
     target = save_config(config, config_path)
     if platform == "darwin":
@@ -434,6 +456,7 @@ def status(
     if platform == "darwin":
         service_files = [launchd_path()]
         active = False
+        running = False
         if all(path.exists() for path in service_files):
             completed = run_command(
                 ["launchctl", "print", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"],
@@ -441,27 +464,36 @@ def status(
                 capture_output=True,
             )
             active = completed.returncode == 0
+            running = active and b"state = running" in completed.stdout
     elif platform.startswith("linux"):
         service_files = list(systemd_paths())
         active = False
+        running = False
         if all(path.exists() for path in service_files):
             enabled = run_command(
                 ["systemctl", "--user", "is-enabled", "--quiet", f"{SYSTEMD_NAME}.timer"],
                 check=False,
             )
-            running = run_command(
+            timer_active = run_command(
                 ["systemctl", "--user", "is-active", "--quiet", f"{SYSTEMD_NAME}.timer"],
                 check=False,
             )
-            active = enabled.returncode == 0 and running.returncode == 0
+            active = enabled.returncode == 0 and timer_active.returncode == 0
+            service = run_command(
+                ["systemctl", "--user", "is-active", "--quiet", f"{SYSTEMD_NAME}.service"],
+                check=False,
+            )
+            running = service.returncode == 0
     else:
         service_files = []
         active = False
+        running = False
     service_files_present = bool(service_files) and all(
         path.exists() for path in service_files
     )
     result = {
         "installed": active,
+        "running": running,
         "service_files_present": service_files_present,
         "configured": config_path.exists(),
         "current_version": AUTO_UPLOADER_VERSION,

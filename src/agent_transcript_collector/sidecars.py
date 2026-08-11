@@ -45,6 +45,7 @@ class SidecarSet:
     files: tuple[Sidecar, ...] = ()
     missing: tuple[str, ...] = ()    # pointers whose target is already gone
     skipped: tuple[str, ...] = ()    # dropped once the size budget ran out
+    directories: tuple[Path, ...] = ()  # folders whose membership is collected
 
     @property
     def total_bytes(self) -> int:
@@ -67,6 +68,7 @@ class SidecarBuilder:
         self._budget = budget_bytes() if budget is None else budget
         self._found: dict[Path, tuple[str, str]] = {}
         self._missing: set[str] = set()
+        self._directories: set[Path] = set()
 
     def add(self, pointer: str, kind: str) -> None:
         """Record the file a transcript pointer names, if it is still there."""
@@ -93,6 +95,7 @@ class SidecarBuilder:
 
     def add_directory(self, directory: Path, kind: str) -> None:
         """Record every file in a folder the session owns outright."""
+        self._directories.add(directory)
         try:
             entries = sorted(directory.iterdir())
         except OSError:
@@ -119,7 +122,12 @@ class SidecarBuilder:
                 Sidecar(path, reference, self._arcname(path, kind, used), kind, size)
             )
             spent += size
-        return SidecarSet(tuple(files), tuple(sorted(self._missing)), tuple(skipped))
+        return SidecarSet(
+            tuple(files),
+            tuple(sorted(self._missing)),
+            tuple(skipped),
+            tuple(sorted(self._directories)),
+        )
 
     @staticmethod
     def _arcname(path: Path, kind: str, used: set[str]) -> str:

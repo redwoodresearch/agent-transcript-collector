@@ -69,9 +69,14 @@ rr-trans ui
 ```
 
 This serves a web UI at <http://localhost:8899> (if that port is busy, the next
-free port is used). Preview the transcripts, select the ones you want to share,
-enter your name, and click **Upload Selected**. Transcripts already uploaded
-under that contributor name are marked **uploaded**.
+free port is used). The page opens immediately and scans local transcript folders
+in the background; use **Refresh** after creating or moving sessions. Preview the
+transcripts, select the projects you want to share, enter your name, and click
+**Upload X transcripts now**. Refresh stores a persistent filesystem signature
+for every transcript, so it only reads and redacts new or changed content. Those
+changed transcripts are compared with S3 and packaged into durable prepared
+archives. The upload button only sends those archives; it never repeats scanning,
+redaction, or upload-history work.
 
 ## Automatic uploads
 
@@ -252,6 +257,7 @@ These knobs exist for overriding defaults:
 | `AWS_PROFILE` | _(unset)_ | Standard AWS profile selector; set it to your General Sandbox profile. |
 | `CTC_AWS_PROFILE` | _(unset)_ | Collector-specific profile override. |
 | `CTC_UPLOAD_CONCURRENCY` | `4` | Transcripts uploaded in parallel. |
+| `CTC_METADATA_CONCURRENCY` | `16` | S3 fingerprint checks performed in parallel. |
 | `CTC_SIDECAR_MAX_BYTES` | `104857600` | Side-file bytes collected per session. |
 | `CTC_USERNAME_STOPLIST` | _(unset)_ | Comma-separated logins to never redact. |
 | `PORT` | `8899` | Local review UI port. |
