@@ -279,6 +279,9 @@ def artifacts_for(selections, contributor: str, cache_path: Path | None = None):
             if (
                 isinstance(record, dict)
                 and record.get("state") == "ready"
+                # Upload means "send the prepared snapshot." A live session
+                # may change immediately afterward; Refresh notices that from
+                # the record signature and prepares its next snapshot.
                 and artifact_is_available(record.get("artifact", {}))
             ):
                 artifacts.append(dict(record["artifact"]))

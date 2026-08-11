@@ -794,7 +794,11 @@ async function startPipeline() {
   const projects = Array.from(document.querySelectorAll('.project'));
   const rows = projects.flatMap(
     project => Array.from(project.querySelectorAll('.session')));
-  if (!rows.length) return;
+  if (!rows.length) {
+    renderPipelineProgress('ready', 0, 0, 'No transcripts found');
+    updatePendingCounts();
+    return;
+  }
   const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
   projects.forEach(project => {
     project.classList.add('pipeline-running');
