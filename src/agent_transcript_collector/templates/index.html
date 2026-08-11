@@ -847,7 +847,7 @@ async function refreshUploaded(scope = null, options = {}) {
     projects.forEach(project => {
       if (options.completeProject !== false) {
         project.classList.remove('history-checking');
-        project.classList.add('history-checked');
+        project.classList.toggle('history-checked', data.status !== 'failed');
       }
     });
     if (!options.silent) setHistoryStatus('');
