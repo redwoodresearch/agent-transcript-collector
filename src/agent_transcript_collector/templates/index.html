@@ -833,6 +833,14 @@ async function startPipeline() {
       if (!statusResp.ok) throw new Error(data.error || 'Pipeline status unavailable');
     }
     if (request !== pipelineRevision || pipelineController !== controller) return;
+    if (data.contributor && data.contributor !== contributorName) {
+      // A previous contributor owned the single pipeline worker. Its result
+      // must never be painted onto this contributor; start ours now that the
+      // worker has reached a terminal state.
+      pipelineController = null;
+      startPipeline();
+      return;
+    }
     if (data.status === 'failed') {
       projects.forEach(project => project.classList.remove('pipeline-running'));
       const first = (data.errors || [])[0];
@@ -1183,19 +1191,9 @@ async function startUpload(rows) {
   uploadBusy = true;
   updatePendingCounts();
 
-  let contributorName = document.getElementById('contributor-name').value.trim();
-  if (!contributorName) {
-    const entered = (window.prompt(
-      'Enter your name (leave blank to upload anonymously):',
-      '') || '').trim();
-    if (entered) {
-      contributorName = entered;
-      document.getElementById('contributor-name').value = entered;
-      onNameInput();
-    }
-  }
-  saveName(contributorName);
-  contributorName = contributorName || 'anonymous';
+  const enteredName = document.getElementById('contributor-name').value.trim();
+  saveName(enteredName);
+  const contributorName = enteredName || 'anonymous';
   try {
     const resp = await fetch('/api/upload', {
       method: 'POST',

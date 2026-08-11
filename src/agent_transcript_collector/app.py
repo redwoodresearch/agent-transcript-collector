@@ -345,12 +345,17 @@ def _start_pipeline(body: dict):
         if _active_pipeline["id"] is not None:
             active_id = _active_pipeline["id"]
             active = PIPELINE_RUNS[active_id]
-            if active["contributor"] == contributor:
-                return {"run_id": active_id}
-            return JSONResponse(
-                {"error": "A refresh for the previous contributor is still running"},
-                status_code=409,
-            )
+            if active["finished_at"] is None:
+                if active["contributor"] == contributor:
+                    return {"run_id": active_id}
+                # Let the browser follow the active run, then start the requested
+                # contributor's refresh as soon as the shared worker is free.
+                return JSONResponse(
+                    {"run_id": active_id,
+                     "waiting_for_contributor": contributor},
+                    status_code=202,
+                )
+            _active_pipeline["id"] = None
         finished = [rid for rid, run in PIPELINE_RUNS.items()
                     if run["finished_at"] is not None]
         for rid in finished[:-5]:
