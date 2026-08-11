@@ -103,13 +103,6 @@
   .readiness-controls.failed { background: rgba(210,153,34,0.05); }
   .readiness-controls.failed #readiness-title,
   .readiness-controls.failed #readiness-status { color: var(--yellow); }
-  .readiness-controls[data-status="checking"] #readiness-bar-fill {
-    width: 35% !important; animation: history-pulse 1.2s ease-in-out infinite alternate;
-  }
-  @keyframes history-pulse {
-    from { transform: translateX(-70%); }
-    to { transform: translateX(185%); }
-  }
   .inline-status {
     margin: -2px 0 12px; padding: 7px 10px; border-radius: 6px;
     background: rgba(210,153,34,0.08); color: var(--yellow);
@@ -311,7 +304,7 @@
     </div>
   </div>
 </div>
-<div id="upload-history-status" class="inline-status" hidden></div>
+<div id="pipeline-status" class="inline-status" hidden></div>
 <div id="projects-container">{% include "_projects.html" %}</div>
 
 <div class="preview-pane" id="preview-pane">
@@ -381,13 +374,13 @@ async function loadProjects(request = scanRequest) {
   updatePendingCounts();
   await loadWatcher(false);
   if (uploadBusy) {
-    pauseHistoryScanForUpload();
+    pausePipelineForUpload();
     return;
   }
   if (nameRevision !== syncedNameRevision) {
     refreshSettings();
   } else {
-    startHistoryScan();
+    startPipeline();
   }
 }
 
@@ -600,7 +593,7 @@ function nextScheduledUpload(lastFinished, intervalSeconds) {
   return new Date(finishedAt + (intervalsElapsed + 1) * interval);
 }
 
-async function loadWatcher(refreshHistory = true) {
+async function loadWatcher(refreshPipeline = true) {
   const status = document.getElementById('watcher-status');
   const schedule = document.getElementById('watcher-schedule');
   const toggle = document.getElementById('auto-upload-toggle');
@@ -616,7 +609,7 @@ async function loadWatcher(refreshHistory = true) {
         const settingsChanged = document.getElementById('contributor-name').value !== name;
         document.getElementById('contributor-name').value = name;
         saveName(name);
-        if (settingsChanged && projectsLoaded && refreshHistory) startHistoryScan();
+        if (settingsChanged && projectsLoaded && refreshPipeline) startPipeline();
       }
     }
     watcherGroups = new Set(
@@ -731,7 +724,7 @@ async function toggleAutoUpload() {
   watcherEnabledOverride = !disabling;
   try {
     if (disabling) {
-      clearTimeout(historyTimer);
+      clearTimeout(pipelineTimer);
       autoUploadEnabled = false;
       const resp = await runWatcherMutation(
         () => fetch('/api/watcher', {method: 'DELETE'}));
@@ -753,28 +746,25 @@ async function toggleAutoUpload() {
   }
 }
 
-let historyTimer = null;
-let historyRevision = 0;
-let historyController = null;
-let historyRun = 0;
-let forceHistoryAfterLoad = false;
-let uploadPlanId = null;
+let pipelineTimer = null;
+let pipelineRevision = 0;
+let pipelineController = null;
 function onNameInput() {
   nameRevision += 1;
-  historyRevision += 1;
-  historyRun += 1;
-  if (historyController) historyController.abort();
+  pipelineRevision += 1;
+  if (pipelineController) pipelineController.abort();
   document.querySelectorAll('.project').forEach(project =>
-    project.classList.remove('history-checked', 'history-checking'));
-  document.querySelectorAll('.session').forEach(row => row.classList.remove('uploaded'));
+    project.classList.remove('pipeline-ready', 'pipeline-running'));
+  document.querySelectorAll('.session').forEach(row =>
+    row.classList.remove('uploaded', 'pipeline-prepared', 'pipeline-error'));
   saveName(document.getElementById('contributor-name').value.trim());
-  clearTimeout(historyTimer);
-  historyTimer = setTimeout(refreshSettings, 400);
+  clearTimeout(pipelineTimer);
+  pipelineTimer = setTimeout(refreshSettings, 400);
 }
 
 async function refreshSettings() {
   if (!projectsLoaded) return;
-  startHistoryScan();
+  startPipeline();
   if (!watcherConfigured) return;
   try {
     await updateAutoUploadConfig(autoUploadEnabled);
@@ -784,114 +774,110 @@ async function refreshSettings() {
   }
 }
 
-async function refreshUploaded(scope = null, options = {}) {
-  const request = historyRevision;
-  const projects = options.projects || (scope
-    ? [scope]
-    : Array.from(document.querySelectorAll('.project')).filter(project =>
-        project.querySelector('.project-body').classList.contains('open')));
-  const rows = options.rows || projects.flatMap(
-    project => Array.from(project.querySelectorAll('.session')));
-  if (!rows.length) return {ok: true, checked: 0};
-  const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
-  projects.forEach(project => project.classList.add('history-checking'));
-  if (!options.silent) setHistoryStatus('Preparing uploads…');
-  updatePendingCounts();
-  if (historyController) historyController.abort();
+async function startPipeline() {
+  if (!projectsLoaded) return;
+  const request = ++pipelineRevision;
+  if (pipelineController) pipelineController.abort();
   const controller = new AbortController();
-  historyController = controller;
+  pipelineController = controller;
+  const projects = Array.from(document.querySelectorAll('.project'));
+  const rows = projects.flatMap(
+    project => Array.from(project.querySelectorAll('.session')));
+  if (!rows.length) return;
+  const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
+  projects.forEach(project => {
+    project.classList.remove('pipeline-ready');
+    project.classList.add('pipeline-running');
+  });
+  setPipelineStatus('');
+  updatePendingCounts();
+  renderPipelineProgress('running', 0, 0, 'Preparing pipeline…');
   try {
-    const resp = await fetch('/api/prepare', {
+    const resp = await fetch('/api/pipeline', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       signal: controller.signal,
       body: JSON.stringify({
         contributor_name: contributorName,
         sessions: rows.map(sessionDescriptor),
-        force: Boolean(options.force),
       }),
     });
     let data = await resp.json();
     if (!resp.ok) {
-      projects.forEach(project => project.classList.remove('history-checking'));
-      const error = data.error || 'Could not prepare uploads';
-      if (!options.silent) setHistoryStatus(error, true, startHistoryScan);
-      updatePendingCounts();
-      return {ok: false, error};
+      throw new Error(data.error || 'Could not refresh uploads');
     }
-    uploadPlanId = data.plan_id;
+    const runId = data.run_id;
     while (!['ready', 'partial', 'failed'].includes(data.status)) {
-      if (request !== historyRevision || historyController !== controller) {
-        projects.forEach(project => project.classList.remove('history-checking'));
-        updatePendingCounts();
-        return {ok: false, superseded: true};
-      }
-      const done = Number(data.done || 0);
-      const totalWork = Number(data.total_work || rows.length * 3);
-      renderHistoryProgress('checking', done, totalWork,
-        preparationMessage(data, rows.length));
+      if (request !== pipelineRevision || pipelineController !== controller) return;
+      renderPipelineProgress('running', Number(data.done || 0),
+        Number(data.work_total || 0), pipelineMessage(data));
       await new Promise(resolve => setTimeout(resolve, 500));
-      const statusResp = await fetch('/api/prepare/' + uploadPlanId, {
+      const statusResp = await fetch('/api/pipeline/' + runId, {
         signal: controller.signal,
       });
       data = await statusResp.json();
-      if (!statusResp.ok) throw new Error(data.error || 'Preparation status unavailable');
+      if (!statusResp.ok) throw new Error(data.error || 'Pipeline status unavailable');
     }
-    if (request !== historyRevision || historyController !== controller) {
-      projects.forEach(project => project.classList.remove('history-checking'));
-      updatePendingCounts();
-      return {ok: false, superseded: true};
-    }
+    if (request !== pipelineRevision || pipelineController !== controller) return;
     const current = new Set((data.items || [])
       .filter(item => item.state === 'current')
       .map(item => [item.source, item.group, item.parent || '', item.session].join('|')));
-    rows.forEach(row => row.classList.toggle('uploaded', current.has(sessionKey(row))));
-    projects.forEach(project => {
-      if (options.completeProject !== false) {
-        project.classList.remove('history-checking');
-        project.classList.toggle('history-checked', data.status !== 'failed');
-      }
+    const ready = new Set((data.items || [])
+      .filter(item => item.state === 'ready')
+      .map(item => [item.source, item.group, item.parent || '', item.session].join('|')));
+    const failed = new Set((data.items || [])
+      .filter(item => item.state === 'error')
+      .map(item => [item.source, item.group, item.parent || '', item.session].join('|')));
+    rows.forEach(row => {
+      const key = sessionKey(row);
+      row.classList.toggle('uploaded', current.has(key));
+      row.classList.toggle('pipeline-prepared', ready.has(key));
+      row.classList.toggle('pipeline-error', failed.has(key));
     });
-    if (!options.silent) setHistoryStatus('');
+    projects.forEach(project => {
+      project.classList.remove('pipeline-running');
+      project.classList.toggle('pipeline-ready', data.status !== 'failed');
+    });
     updatePendingCounts();
-    const firstError = (data.errors || [])[0];
-    return {
-      ok: data.status !== 'failed',
-      checked: rows.length,
-      error: firstError && (firstError.error || String(firstError)),
-      partial: data.status === 'partial',
-    };
-  } catch (e) {
-    projects.forEach(project => project.classList.remove('history-checking'));
-    if (request !== historyRevision || historyController !== controller) {
-      updatePendingCounts();
-      return {ok: false, superseded: true};
+    if (data.status === 'failed') {
+      const first = (data.errors || [])[0];
+      renderPipelineProgress('failed', 0, 0,
+        first && (first.error || String(first)) || 'Pipeline failed');
+      return;
     }
-    const error = e.name === 'AbortError'
-      ? 'Upload preparation was superseded.'
-      : `Could not prepare uploads: ${e.message}`;
-    if (!options.silent) setHistoryStatus(error, true, startHistoryScan);
+    const readyCount = ready.size;
+    const detail = readyCount
+      ? `${readyCount} transcript${readyCount === 1 ? '' : 's'} ready to upload`
+      : 'Everything is up to date';
+    renderPipelineProgress('ready', 0, 0,
+      data.status === 'partial' ? `${detail} · some transcripts failed` : detail);
+  } catch (e) {
+    projects.forEach(project => project.classList.remove('pipeline-running'));
+    if (request !== pipelineRevision || pipelineController !== controller) return;
+    if (e.name !== 'AbortError') {
+      renderPipelineProgress('failed', 0, 0, e.message);
+      setPipelineStatus(e.message, true);
+    }
     updatePendingCounts();
-    return {ok: false, error};
   } finally {
-    if (historyController === controller) historyController = null;
+    if (pipelineController === controller) pipelineController = null;
   }
 }
 
-function preparationMessage(data, total) {
-  const labels = {
-    starting: 'Starting preparation',
-    connecting: 'Connecting to upload storage',
-    fingerprinting: 'Checking local content',
-    checking: 'Comparing with uploaded versions',
-    preparing: 'Building redacted uploads',
-  };
-  const itemDone = Number(data.item_done || 0);
-  const itemTotal = Number(data.item_total || total);
-  return `${labels[data.stage] || 'Preparing uploads'} · ${itemDone}/${itemTotal}`;
+function pipelineMessage(data) {
+  const count = Number(data.work_total || 0);
+  const done = Number(data.done || 0);
+  if (data.stage === 'redacting') {
+    return count ? `Redacting ${count} new or changed transcript${count === 1 ? '' : 's'} · ${done}/${count}`
+      : 'Using cached redactions';
+  }
+  if (data.stage === 'checking') {
+    return `Checking ${count} transcript${count === 1 ? '' : 's'}\u2019 upload status · ${done}/${count}`;
+  }
+  return 'Preparing pipeline…';
 }
 
-function renderHistoryProgress(status, checked, total, message = '') {
+function renderPipelineProgress(status, done, total, message = '') {
   const controls = document.getElementById('readiness-controls');
   const title = document.getElementById('readiness-title');
   const detail = document.getElementById('readiness-status');
@@ -900,12 +886,12 @@ function renderHistoryProgress(status, checked, total, message = '') {
   const refresh = document.getElementById('refresh-btn');
   controls.dataset.status = status;
   controls.classList.toggle('failed', status === 'failed');
-  fill.style.width = `${total ? Math.round((checked / total) * 100) : 0}%`;
-  progress.hidden = status !== 'checking';
-  refresh.disabled = status === 'checking' || status === 'paused';
-  if (status === 'checking') {
-    title.textContent = 'Preparing uploads…';
-    detail.textContent = message || 'Checking transcripts';
+  fill.style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
+  progress.hidden = status !== 'running';
+  refresh.disabled = status === 'running' || status === 'paused';
+  if (status === 'running') {
+    title.textContent = 'Refreshing uploads…';
+    detail.textContent = message;
   } else if (status === 'ready') {
     title.textContent = 'Uploads ready';
     detail.textContent = message || `${total} transcript${total === 1 ? '' : 's'} prepared`;
@@ -919,52 +905,19 @@ function renderHistoryProgress(status, checked, total, message = '') {
   detail.title = detail.textContent;
 }
 
-async function startHistoryScan(force = false) {
-  if (!projectsLoaded) {
-    forceHistoryAfterLoad = forceHistoryAfterLoad || force;
-    return;
-  }
-  force = force || forceHistoryAfterLoad;
-  forceHistoryAfterLoad = false;
-  const run = ++historyRun;
-  if (historyController) historyController.abort();
-  const projects = Array.from(document.querySelectorAll('.project'));
-  const rows = projects.flatMap(
-    project => Array.from(project.querySelectorAll('.session')));
-  const total = rows.length;
-  setHistoryStatus('');
-  renderHistoryProgress('checking', 0, total,
-    `Preparing ${total} transcripts in one background job`);
-  const result = await refreshUploaded(null, {
-    silent: true,
-    projects,
-    rows,
-    force,
-  });
-  if (run !== historyRun || result.superseded) return;
-  if (!result.ok) {
-    renderHistoryProgress('failed', 0, total, result.error);
-    return;
-  }
-  renderHistoryProgress('ready', total, total,
-    result.partial ? 'Ready with some transcript errors' : '');
-}
-
-function pauseHistoryScanForUpload() {
-  historyRun += 1;
-  const controller = historyController;
-  historyController = null;
+function pausePipelineForUpload() {
+  pipelineRevision += 1;
+  const controller = pipelineController;
+  pipelineController = null;
   if (controller) controller.abort();
   document.querySelectorAll('.project').forEach(project =>
-    project.classList.remove('history-checking'));
-  const total = document.querySelectorAll('.session').length;
-  renderHistoryProgress('paused', 0, total,
-    'Preparation will refresh when this upload finishes');
-  setHistoryStatus('');
+    project.classList.remove('pipeline-running'));
+  renderPipelineProgress('paused', 0, 0, 'Uploading prepared transcripts');
+  setPipelineStatus('');
 }
 
-function setHistoryStatus(message, retry = false, retryAction = refreshUploaded) {
-  const status = document.getElementById('upload-history-status');
+function setPipelineStatus(message, retry = false) {
+  const status = document.getElementById('pipeline-status');
   status.replaceChildren();
   status.hidden = !message;
   if (!message) return;
@@ -976,7 +929,7 @@ function setHistoryStatus(message, retry = false, retryAction = refreshUploaded)
     button.className = 'secondary';
     button.textContent = 'Retry';
     button.style.marginLeft = '10px';
-    button.onclick = retryAction;
+    button.onclick = startPipeline;
     status.appendChild(button);
   }
 }
@@ -986,41 +939,44 @@ function updatePendingCounts() {
   let selectedPending = 0;
   let selectedProjects = 0;
   let selectedTranscripts = 0;
-  let selectedHistoryUnknown = false;
+  let selectedPipelineUnknown = false;
 
   document.querySelectorAll('.project').forEach(project => {
     const label = project.querySelector('.project-pending');
-    const available = project.classList.contains('history-checked');
+    const available = project.classList.contains('pipeline-ready');
     label.classList.remove('complete');
     if (!available) {
-      const backgroundChecking = document.getElementById('readiness-controls')
-        .dataset.status === 'checking';
-      label.textContent = project.classList.contains('history-checking')
-        ? 'checking uploads…'
-        : backgroundChecking ? 'waiting to check…' : 'status not checked';
+      const pipelineRunning = document.getElementById('readiness-controls')
+        .dataset.status === 'running';
+      label.textContent = project.classList.contains('pipeline-running')
+        ? 'refreshing…'
+        : pipelineRunning ? 'waiting…' : 'not refreshed';
     } else {
-      const pending = project.querySelectorAll('.session:not(.uploaded)').length;
-      label.textContent = pending
+      const pending = project.querySelectorAll('.session.pipeline-prepared').length;
+      const failed = project.querySelectorAll('.session.pipeline-error').length;
+      label.textContent = failed
+        ? `${failed} unavailable`
+        : pending
         ? `${pending} not uploaded`
         : 'all uploaded';
-      label.classList.toggle('complete', pending === 0);
+      label.classList.toggle('complete', pending === 0 && failed === 0);
     }
     const consented = consentedRows(project);
     if (consented.length) {
       selectedProjects += 1;
       selectedTranscripts += consented.length;
       if (available) {
-        selectedPending += consented.filter(row => !row.classList.contains('uploaded')).length;
+        selectedPending += consented.filter(row => row.classList.contains('pipeline-prepared')).length;
       } else {
-        selectedHistoryUnknown = true;
+        selectedPipelineUnknown = true;
       }
     }
   });
 
   document.querySelectorAll('.session-upload').forEach(upload => {
     const row = upload.closest('.session');
-    const prepared = row.closest('.project').classList.contains('history-checked');
     const current = row.classList.contains('uploaded');
+    const prepared = current || row.classList.contains('pipeline-prepared');
     upload.disabled = uploadBusy || watcherRunning || !prepared || current;
     upload.textContent = current ? 'Current' : 'Upload';
     upload.title = watcherRunning
@@ -1039,7 +995,7 @@ function updatePendingCounts() {
   } else if (!selectedProjects) {
     button.textContent = 'Upload 0 transcripts now';
     button.disabled = true;
-  } else if (selectedHistoryUnknown) {
+  } else if (selectedPipelineUnknown) {
     button.textContent = `Preparing ${selectedTranscripts} transcript${selectedTranscripts === 1 ? '' : 's'}…`;
     button.disabled = true;
   } else {
@@ -1183,7 +1139,7 @@ function loadJob() { try { return localStorage.getItem('ctc_job'); } catch (e) {
 function uploadNow() {
   const rows = Array.from(document.querySelectorAll('.project'))
     .flatMap(project => consentedRows(project))
-    .filter(row => !row.classList.contains('uploaded'));
+    .filter(row => row.classList.contains('pipeline-prepared'));
   if (!rows.length) {
     showToast('No prepared transcripts to upload');
     return;
@@ -1225,11 +1181,10 @@ async function startUpload(rows) {
       body: JSON.stringify({
         selected,
         contributor_name: contributorName,
-        plan_id: uploadPlanId,
       }),
     });
     const data = await resp.json();
-    if (resp.status === 409) {            // already running — attach to it
+    if (resp.status === 409 && data.job_id) {
       showToast('An upload is already running', true);
       trackJob(data.job_id);
       return;
@@ -1245,7 +1200,7 @@ async function startUpload(rows) {
 
 function trackJob(jobId) {
   uploadBusy = true;
-  pauseHistoryScanForUpload();
+  pausePipelineForUpload();
   updatePendingCounts();
   showProgress(true);
   clearInterval(pollTimer);
@@ -1257,7 +1212,7 @@ function trackJob(jobId) {
         stopTracking();
         clearJob();
         resetUploadBtn();
-        startHistoryScan(true);
+        startPipeline();
         return;
       }
       j = await r.json();
@@ -1269,7 +1224,10 @@ function trackJob(jobId) {
       markUploaded(j.uploads || []);
       finishToast(j);
       resetUploadBtn();
-      startHistoryScan(true);
+      const pending = document.querySelectorAll('.session.pipeline-prepared').length;
+      renderPipelineProgress('ready', 0, 0, pending
+        ? `${pending} transcript${pending === 1 ? '' : 's'} ready to upload`
+        : 'Everything is up to date');
     }
   }, 1000);
 }
@@ -1278,9 +1236,7 @@ function renderProgress(j) {
   const fill = document.getElementById('bar-fill');
   const text = document.getElementById('progress-text');
   const labels = {
-    preparing: 'Preparing', connecting: 'Connecting to S3',
-    fingerprinting: 'Reading and fingerprinting', checking: 'Checking upload history',
-    uploading: 'Uploading', finishing: 'Finishing',
+    uploading: 'Uploading',
   };
   if (j.stage_total) {
     fill.style.width = Math.round((j.stage_done / j.stage_total) * 100) + '%';
@@ -1298,7 +1254,10 @@ function markUploaded(uploads) {
   const uploaded = new Set(uploads.map(item =>
     [item.source, item.group, item.parent || '', item.session].join('|')));
   document.querySelectorAll('.session').forEach(row => {
-    if (uploaded.has(sessionKey(row))) row.classList.add('uploaded');
+    if (uploaded.has(sessionKey(row))) {
+      row.classList.add('uploaded');
+      row.classList.remove('pipeline-prepared', 'pipeline-error');
+    }
   });
   if (uploaded.size) {
     updatePendingCounts();

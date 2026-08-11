@@ -19,21 +19,20 @@ from .paths import (
     watcher_config_path,
     watcher_state_path,
 )
+from .pipeline import artifacts_for, mark_uploaded, refresh as refresh_pipeline
 from .s3client import make_s3_client
 from .sources import SOURCES
 from .uploader import (
-    FINGERPRINT_VERSION,
     UploadBusy,
     UploadLock,
-    upload_transcripts,
+    upload_artifacts,
 )
 
 PACKAGE_SPEC = "git+https://github.com/redwoodresearch/agent-transcript-collector@main"
 LAUNCHD_LABEL = "com.redwoodresearch.agent-transcript-collector"
 SYSTEMD_NAME = "agent-transcript-collector"
 WATCH_INTERVAL_SECONDS = 60 * 60
-AUTO_UPLOADER_VERSION = 6
-WATCHER_CACHE_VERSION = 2
+AUTO_UPLOADER_VERSION = 7
 SOURCE_ENV_VARS = (
     "CLAUDE_CONFIG_DIR",
     "CODEX_HOME",
@@ -169,78 +168,6 @@ def discover_allowed(config: WatcherConfig):
     return list(sessions_by_source.values())
 
 
-def _session_cache_key(source_id: str, session) -> str:
-    """Identify one local transcript without depending on display labels."""
-    return json.dumps(
-        [source_id, str(session.path), session.id, session.parent or ""],
-        separators=(",", ":"),
-    )
-
-
-def _session_cache_entry(session, checked_at: str) -> dict | None:
-    """Return the cheap file signature used by the hourly watcher."""
-    try:
-        stat = Path(session.path).stat()
-    except OSError:
-        return None
-    return {
-        "size": stat.st_size,
-        "mtime_ns": stat.st_mtime_ns,
-        "checked_at": checked_at,
-        "sidecars": [],
-    }
-
-
-def _path_cache_entry(path: str | Path) -> dict:
-    value = {"path": str(path)}
-    try:
-        stat = Path(path).stat()
-    except OSError:
-        value["exists"] = False
-    else:
-        value.update(
-            exists=True,
-            size=stat.st_size,
-            mtime_ns=stat.st_mtime_ns,
-        )
-    return value
-
-
-def _prepared_cache_entry(prepared, checked_at: str) -> dict | None:
-    entry = _session_cache_entry(prepared.session, checked_at)
-    if entry is None:
-        return None
-    paths = [sidecar.path for sidecar in prepared.sidecars.files]
-    paths.extend(prepared.sidecars.missing)
-    paths.extend(prepared.sidecars.skipped)
-    entry["sidecars"] = [_path_cache_entry(path) for path in dict.fromkeys(paths)]
-    entry["directories"] = [
-        _path_cache_entry(path) for path in prepared.sidecars.directories
-    ]
-    return entry
-
-
-def _cache_matches(previous: object, current: dict | None) -> bool:
-    if not (
-        isinstance(previous, dict)
-        and current is not None
-        and previous.get("size") == current["size"]
-        and previous.get("mtime_ns") == current["mtime_ns"]
-        and isinstance(previous.get("sidecars"), list)
-        and isinstance(previous.get("directories"), list)
-    ):
-        return False
-    return all(
-        isinstance(sidecar, dict)
-        and sidecar == _path_cache_entry(str(sidecar.get("path", "")))
-        for sidecar in previous["sidecars"]
-    ) and all(
-        isinstance(directory, dict)
-        and directory == _path_cache_entry(str(directory.get("path", "")))
-        for directory in previous["directories"]
-    )
-
-
 def _sso_hint(exc: Exception, profile: str) -> str:
     message = f"{type(exc).__name__}: {exc}"
     lower = message.lower()
@@ -256,20 +183,9 @@ def run_once(
     state_path: Path | None = None,
     lock_path: Path | None = None,
 ) -> dict:
-    """Upload changed transcripts from explicitly allowed groups."""
+    """Run the shared pipeline and upload its ready artifacts."""
     previous_state = load_state(state_path)
     started = datetime.now(timezone.utc).isoformat()
-    cache_is_compatible = (
-        previous_state.get("cache_version") == WATCHER_CACHE_VERSION
-        and previous_state.get("cache_fingerprint_version") == FINGERPRINT_VERSION
-        and previous_state.get("cache_contributor") == config.contributor
-    )
-    previous_cache = (
-        previous_state.get("checked_transcripts", {}) if cache_is_compatible else {}
-    )
-    if not isinstance(previous_cache, dict):
-        previous_cache = {}
-    checked_transcripts: dict[str, dict] = {}
     result = {
         "started_at": started,
         "finished_at": None,
@@ -284,52 +200,42 @@ def run_once(
     try:
         with UploadLock(lock_path):
             client = s3 or make_s3_client()
-            uploaded_metadata: dict[str, dict] = {}
-            for source, sessions in discover_allowed(config):
-                changed = []
-                for session in sessions:
-                    key = _session_cache_key(source.id, session)
-                    signature = _session_cache_entry(session, started)
-                    if _cache_matches(previous_cache.get(key), signature):
-                        checked_transcripts[key] = dict(previous_cache[key])
-                        checked_transcripts[key]["checked_at"] = started
-                    else:
-                        changed.append(session)
-                if not changed:
-                    continue
-                verified = {}
-
-                def remember_checked(prepared):
-                    key = _session_cache_key(source.id, prepared.session)
-                    entry = _prepared_cache_entry(prepared, started)
-                    if entry is not None:
-                        verified[key] = entry
-
-                uploaded, upload_errors = upload_transcripts(
-                    client,
-                    source,
-                    changed,
-                    config.contributor,
-                    uploaded_metadata=uploaded_metadata,
-                    on_checked=remember_checked,
+            selections = discover_allowed(config)
+            pipeline = refresh_pipeline(
+                selections, config.contributor, s3=client
+            )
+            result["errors"].extend(
+                item.get("error", str(item)) for item in pipeline["errors"]
+            )
+            artifacts, stale = artifacts_for(selections, config.contributor)
+            if stale:
+                result["errors"].append(
+                    f"{len(stale)} transcript(s) require another refresh"
                 )
-                result["sessions_uploaded"] += sum(
-                    item["transcript_count"] for item in uploaded
-                )
-                result["errors"].extend(
-                    item.get("error", str(item)) for item in upload_errors
-                )
-                # The callback only records transcripts whose remote check or
-                # upload succeeded, so one failed sibling must not discard the
-                # useful cache entries from the rest of this source batch.
-                checked_transcripts.update(verified)
+            uploads, upload_errors = upload_artifacts(client, artifacts)
+            successful = {
+                (item.get("source"), item.get("group"), item.get("parent") or "",
+                 item.get("session"))
+                for item in uploads
+            }
+            uploaded_artifacts = [
+                item for item in artifacts
+                if (item.get("source"), item.get("group"),
+                    item.get("parent") or "", item.get("session")) in successful
+            ]
+            if uploaded_artifacts:
+                mark_uploaded(uploaded_artifacts, config.contributor)
+            result["sessions_uploaded"] = sum(
+                item["transcript_count"] for item in uploads
+            )
+            result["errors"].extend(
+                item.get("error", str(item)) for item in upload_errors
+            )
             result["status"] = "partial" if result["errors"] else "completed"
     except UploadBusy as exc:
-        checked_transcripts = previous_cache
         result["status"] = "skipped"
         result["errors"].append(str(exc))
     except Exception as exc:
-        checked_transcripts = previous_cache
         result["status"] = "failed"
         result["errors"].append(_sso_hint(exc, config.aws_profile))
     finally:
@@ -347,10 +253,6 @@ def run_once(
             result["last_uploaded_at"] = result["finished_at"]
         elif previous_state.get("last_uploaded_at"):
             result["last_uploaded_at"] = previous_state["last_uploaded_at"]
-        result["cache_version"] = WATCHER_CACHE_VERSION
-        result["cache_fingerprint_version"] = FINGERPRINT_VERSION
-        result["cache_contributor"] = config.contributor
-        result["checked_transcripts"] = checked_transcripts
         save_state(result, state_path)
     return result
 

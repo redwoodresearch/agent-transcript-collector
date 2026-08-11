@@ -8,9 +8,7 @@ import json
 import os
 import re
 import tempfile
-import threading
 import zipfile
-from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,7 +19,6 @@ from botocore.exceptions import ClientError
 from .paths import upload_lock_path
 from .redactor import (
     canonicalize_secrets,
-    local_usernames,
     redact_identity,
     redact_jsonl_content,
     redact_path_token,
@@ -37,9 +34,6 @@ FINGERPRINT_VERSION = 2
 FINGERPRINT_METADATA = "content-fingerprint"
 BODY_FINGERPRINT_METADATA = "body-fingerprint"
 SIDECAR_COUNT_METADATA = "sidecar-count"
-_FINGERPRINT_CACHE_MAX = 4096
-_FINGERPRINT_CACHE: OrderedDict[tuple[str, int, int], str] = OrderedDict()
-_FINGERPRINT_CACHE_LOCK = threading.Lock()
 
 
 def upload_concurrency() -> int:
@@ -206,22 +200,11 @@ def _already_uploaded(prepared: PreparedTranscript, remote: dict) -> bool:
     )
 
 
-def _prepare(source, session, contributor: str) -> PreparedTranscript:
+def prepare_transcript(source, session, contributor: str) -> PreparedTranscript:
+    """Read and fingerprint one transcript and every referenced side file."""
     path = Path(session.path)
-    stat = path.stat()
-    cache_key = (str(path), stat.st_size, stat.st_mtime_ns)
     raw_bytes = path.read_bytes()
-    with _FINGERPRINT_CACHE_LOCK:
-        body_fingerprint = _FINGERPRINT_CACHE.get(cache_key)
-        if body_fingerprint is not None:
-            _FINGERPRINT_CACHE.move_to_end(cache_key)
-    if body_fingerprint is None:
-        body_fingerprint = transcript_fingerprint(raw_bytes)
-        with _FINGERPRINT_CACHE_LOCK:
-            _FINGERPRINT_CACHE[cache_key] = body_fingerprint
-            _FINGERPRINT_CACHE.move_to_end(cache_key)
-            while len(_FINGERPRINT_CACHE) > _FINGERPRINT_CACHE_MAX:
-                _FINGERPRINT_CACHE.popitem(last=False)
+    body_fingerprint = transcript_fingerprint(raw_bytes)
     sidecars = session_sidecars(
         source, session, raw_bytes.decode("utf-8", errors="replace")
     )
@@ -236,59 +219,46 @@ def _prepare(source, session, contributor: str) -> PreparedTranscript:
     )
 
 
-def partition_transcripts(
+def classify_prepared(
     s3,
-    source,
-    sessions,
-    contributor: str,
+    prepared_items: list[PreparedTranscript],
     uploaded_metadata: dict[str, dict] | None = None,
     on_status=None,
-    on_checked=None,
 ):
-    """Split current transcripts into changed and already uploaded."""
+    """Split already-prepared transcripts by their remote fingerprint."""
     existing = uploaded_metadata if uploaded_metadata is not None else {}
-    sessions = list(sessions)
-    pending: list[PreparedTranscript] = []
-    uploaded = []
+    pending = []
+    current = []
     errors = []
-    prepared_items = []
-    for index, session in enumerate(sessions, start=1):
-        try:
-            prepared_items.append(_prepare(source, session, contributor))
-        except OSError as exc:
-            errors.append({"source": source.id, "error": f"{session.id}: {exc}"})
-        if on_status:
-            on_status("fingerprinting", index, len(sessions))
 
     def check_one(prepared):
         remote = _uploaded_metadata(s3, prepared.key, existing)
         return _already_uploaded(prepared, remote)
 
-    if prepared_items:
-        workers = min(metadata_concurrency(), len(prepared_items))
-        completed = 0
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {
-                executor.submit(check_one, item): item for item in prepared_items
-            }
-            for future in as_completed(futures):
-                prepared = futures[future]
-                completed += 1
-                try:
-                    already_uploaded = future.result()
-                except Exception as exc:
-                    errors.append({
-                        "source": source.id,
-                        "error": f"{prepared.session.id}: {type(exc).__name__}: {exc}",
-                    })
-                else:
-                    if already_uploaded and on_checked:
-                        on_checked(prepared)
-                    (uploaded if already_uploaded else pending).append(
-                        prepared.session if already_uploaded else prepared)
-                if on_status:
-                    on_status("checking", completed, len(prepared_items))
-    return pending, uploaded, errors
+    if not prepared_items:
+        return pending, current, errors
+    workers = min(metadata_concurrency(), len(prepared_items))
+    completed = 0
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(check_one, item): item for item in prepared_items
+        }
+        for future in as_completed(futures):
+            prepared = futures[future]
+            completed += 1
+            try:
+                is_current = future.result()
+            except Exception as exc:
+                errors.append({
+                    "session": prepared.session.id,
+                    "key": prepared.key,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+            else:
+                (current if is_current else pending).append(prepared)
+            if on_status:
+                on_status(completed, len(prepared_items))
+    return pending, current, errors
 
 
 def _redact(text: str) -> tuple[str, int]:
@@ -499,88 +469,4 @@ def upload_artifacts(s3, artifacts: list[dict], on_progress=None):
                 })
             if on_progress:
                 on_progress(1)
-    return results, errors
-
-
-def upload_transcripts(
-    s3,
-    source,
-    sessions,
-    contributor: str,
-    on_progress=None,
-    on_status=None,
-    uploaded_metadata: dict[str, dict] | None = None,
-    on_checked=None,
-):
-    """Overwrite each session object only when its redacted content changes."""
-    existing = uploaded_metadata if uploaded_metadata is not None else {}
-    pending, uploaded, errors = partition_transcripts(
-        s3,
-        source,
-        list(sessions),
-        contributor,
-        existing,
-        on_status=on_status,
-        on_checked=on_checked,
-    )
-    if on_progress:
-        on_progress(len(uploaded) + len(errors))
-    if not pending:
-        return [], errors
-
-    def upload_one(prepared: PreparedTranscript):
-        zip_bytes, manifest = _build_transcript_zip(source, prepared, contributor)
-        sidecar_count = len(manifest["sidecars"]["files"])
-        s3.put_object(
-            Bucket=S3_BUCKET,
-            Key=prepared.key,
-            Body=zip_bytes,
-            ContentType="application/zip",
-            Metadata={
-                FINGERPRINT_METADATA: prepared.fingerprint,
-                BODY_FINGERPRINT_METADATA: prepared.body_fingerprint,
-                SIDECAR_COUNT_METADATA: str(sidecar_count),
-            },
-        )
-        return {
-            "source": source.id,
-            "group": prepared.session.group_key,
-            "session": prepared.session.id,
-            "parent": prepared.session.parent,
-            "s3_key": prepared.key,
-            "transcript_count": 1,
-            "zip_size_bytes": len(zip_bytes),
-            "redactions": manifest["redactions"],
-            "sidecar_count": sidecar_count,
-        }
-
-    local_usernames()
-    results = []
-    completed = 0
-    if on_status:
-        on_status("uploading", 0, len(pending))
-    workers = min(upload_concurrency(), len(pending))
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(upload_one, item): item for item in pending}
-        for future in as_completed(futures):
-            prepared = futures[future]
-            try:
-                result = future.result()
-                results.append(result)
-                if on_checked:
-                    on_checked(prepared)
-                existing[prepared.key] = {
-                    FINGERPRINT_METADATA: prepared.fingerprint,
-                    BODY_FINGERPRINT_METADATA: prepared.body_fingerprint,
-                    SIDECAR_COUNT_METADATA: str(result["sidecar_count"]),
-                }
-            except Exception as exc:
-                errors.append(
-                    {"source": source.id, "error": f"{type(exc).__name__}: {exc}"}
-                )
-            if on_progress:
-                on_progress(1)
-            completed += 1
-            if on_status:
-                on_status("uploading", completed, len(pending))
     return results, errors
