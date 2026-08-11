@@ -392,6 +392,14 @@ async function loadProjects(request = scanRequest) {
   }
 }
 
+function renderProjectScanFailure(message) {
+  projectsLoaded = false;
+  const error = document.createElement('p');
+  error.className = 'empty';
+  error.textContent = `Scan failed: ${message || 'Could not scan transcripts'} Press Rescan to try again.`;
+  document.getElementById('projects-container').replaceChildren(error);
+}
+
 async function startScan(force = false) {
   const request = ++scanRequest;
   try {
@@ -407,10 +415,14 @@ async function startScan(force = false) {
     }
     if (request !== scanRequest) return;
     if (state.ready) await loadProjects(request);
-    if (state.status === 'failed') showToast(state.error || 'Scan failed', true);
+    if (state.status === 'failed') {
+      if (!state.ready) renderProjectScanFailure(state.error);
+      showToast(state.error || 'Scan failed', true);
+    }
   } catch (e) {
     if (request !== scanRequest) return;
     renderScanStatus({status: 'failed', error: e.message, ready: false});
+    if (!projectsLoaded) renderProjectScanFailure(e.message);
     showToast(`Scan failed: ${e.message}`, true);
   }
 }
