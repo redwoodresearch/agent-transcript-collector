@@ -159,7 +159,11 @@ def _start_scan(force: bool = False) -> dict:
     with SCAN_LOCK:
         if SCAN_STATE["status"] == "scanning":
             return _scan_status_unlocked()
-        if SCAN_CACHE["projects"] is not None and not force:
+        if (
+            SCAN_CACHE["projects"] is not None
+            and SCAN_STATE["status"] == "ready"
+            and not force
+        ):
             return _scan_status_unlocked()
         SCAN_STATE.update({
             "status": "scanning",

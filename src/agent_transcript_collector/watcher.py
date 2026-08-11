@@ -319,8 +319,10 @@ def run_once(
                 result["errors"].extend(
                     item.get("error", str(item)) for item in upload_errors
                 )
-                if not upload_errors:
-                    checked_transcripts.update(verified)
+                # The callback only records transcripts whose remote check or
+                # upload succeeded, so one failed sibling must not discard the
+                # useful cache entries from the rest of this source batch.
+                checked_transcripts.update(verified)
             result["status"] = "partial" if result["errors"] else "completed"
     except UploadBusy as exc:
         checked_transcripts = previous_cache
