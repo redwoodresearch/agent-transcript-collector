@@ -353,17 +353,13 @@ def _upload_worker(to_upload, contributor, events):
 def _monitor_upload_worker(job_id, process, events):
     """Mirror child-process events into the parent process's job registry."""
     finished = False
-    while process.is_alive() or not finished:
-        try:
-            event = events.get(timeout=0.25)
-        except queue.Empty:
-            if not process.is_alive():
-                break
-            continue
+
+    def apply_event(event):
+        nonlocal finished
         with JOBS_LOCK:
             job = JOBS.get(job_id)
             if job is None:
-                continue
+                return
             if event["type"] == "advance":
                 job["done"] += event["count"]
             elif event["type"] == "progress":
@@ -375,7 +371,23 @@ def _monitor_upload_worker(job_id, process, events):
                 job["uploads"].extend(event["uploads"])
                 job["errors"].extend(event["errors"])
                 finished = True
+
+    while process.is_alive():
+        try:
+            event = events.get(timeout=0.25)
+        except queue.Empty:
+            continue
+        apply_event(event)
     process.join()
+    # multiprocessing.Queue uses a feeder thread. The child can exit after
+    # enqueueing its terminal event but before the parent observes it, so drain
+    # everything that was flushed to the pipe before declaring a crash.
+    while True:
+        try:
+            event = events.get_nowait()
+        except queue.Empty:
+            break
+        apply_event(event)
     with JOBS_LOCK:
         job = JOBS.get(job_id)
         if job is not None:

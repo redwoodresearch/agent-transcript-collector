@@ -197,7 +197,6 @@
     color: var(--green); border: 1px solid var(--green); border-radius: 50%;
     font-weight: 700; line-height: 1;
   }
-  .session.uploaded .session-upload { display: none; }
   .session.uploaded .uploaded-icon { display: inline-flex; }
 
   .preview-pane {
@@ -995,7 +994,7 @@ function updatePendingCounts() {
   });
 
   document.querySelectorAll('.session-upload').forEach(upload => {
-    upload.disabled = uploadBusy || upload.closest('.session').classList.contains('uploaded');
+    upload.disabled = uploadBusy;
   });
 
   if (uploadBusy) {
