@@ -634,8 +634,8 @@ async function loadWatcher(refreshHistory = true) {
     const error = data.error
       || (last.status === 'failed' && lastError
         ? (lastError.includes('TokenRetrievalError')
-          ? `AWS login expired — run aws sso login --profile ${(data.config && data.config.aws_profile) || 'rw-eng'}`
-          : `Automatic upload failed: ${lastError}`)
+          ? `Last automatic upload failed ${formatUploadTime(last.finished_at)} because AWS credentials were unavailable during that run. The next scheduled run will retry.`
+          : `Last automatic upload failed ${formatUploadTime(last.finished_at)}: ${lastError}`)
         : '');
     status.textContent = error;
     status.hidden = !error;
