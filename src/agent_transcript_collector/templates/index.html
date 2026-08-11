@@ -429,6 +429,7 @@ function loadName() { try { return localStorage.getItem('ctc_name'); } catch (e)
 
 let autoUploadEnabled = false;
 let watcherConfigured = false;
+let watcherRunning = false;
 let watcherGroups = new Set();
 let nameRevision = 0;
 let syncedNameRevision = 0;
@@ -612,6 +613,7 @@ async function loadWatcher(refreshHistory = true) {
       cb.indeterminate = enabled > 0 && enabled < groups.length;
     });
     autoUploadEnabled = watcherEnabledOverride ?? Boolean(data.installed);
+    watcherRunning = Boolean(data.running);
     const installedVersion = (data.config && data.config.auto_uploader_version) || 0;
     const currentVersion = data.current_version;
     version.textContent = data.needs_reinstall
@@ -998,9 +1000,15 @@ function updatePendingCounts() {
   });
 
   document.querySelectorAll('.session-upload').forEach(upload => {
-    upload.disabled = uploadBusy;
+    upload.disabled = uploadBusy || watcherRunning;
+    upload.title = watcherRunning
+      ? 'Automatic uploader is running. Manual uploads will be available when it finishes.'
+      : 'Upload this transcript or check it for local changes';
   });
 
+  button.title = watcherRunning
+    ? 'Automatic uploader is running. Manual uploads will be available when it finishes.'
+    : 'Upload transcripts from projects selected for automatic upload';
   if (uploadBusy) {
     button.textContent = 'Uploading…';
     button.disabled = true;
@@ -1009,12 +1017,12 @@ function updatePendingCounts() {
     button.disabled = true;
   } else if (selectedHistoryUnknown) {
     button.textContent = `Upload ${selectedTranscripts} transcript${selectedTranscripts === 1 ? '' : 's'} now`;
-    button.disabled = false;
+    button.disabled = watcherRunning;
   } else {
     button.textContent = selectedPending
       ? `Upload ${selectedPending} transcript${selectedPending === 1 ? '' : 's'} now`
       : 'Check selected for changes';
-    button.disabled = false;
+    button.disabled = watcherRunning;
   }
 }
 
