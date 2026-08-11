@@ -256,6 +256,7 @@ These knobs exist for overriding defaults:
 |---|---|---|
 | `AWS_PROFILE` | _(unset)_ | Standard AWS profile selector; set it to your General Sandbox profile. |
 | `CTC_AWS_PROFILE` | _(unset)_ | Collector-specific profile override. |
+| `CTC_REDACTION_CONCURRENCY` | `4` | Changed transcripts redacted and packaged in parallel. |
 | `CTC_UPLOAD_CONCURRENCY` | `4` | Transcripts uploaded in parallel. |
 | `CTC_METADATA_CONCURRENCY` | `16` | S3 fingerprint checks performed in parallel. |
 | `CTC_SIDECAR_MAX_BYTES` | `104857600` | Side-file bytes collected per session. |
