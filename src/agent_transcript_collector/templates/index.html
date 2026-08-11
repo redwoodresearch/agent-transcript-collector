@@ -1224,6 +1224,14 @@ function trackJob(jobId) {
       markUploaded(j.uploads || []);
       finishToast(j);
       resetUploadBtn();
+      const needsPipeline = Array.from(document.querySelectorAll('.project'))
+        .some(project => !project.classList.contains('pipeline-ready'));
+      if (needsPipeline) {
+        // The page may have loaded while this upload was already running, in
+        // which case loadProjects deliberately deferred preparation.
+        startPipeline();
+        return;
+      }
       const pending = document.querySelectorAll('.session.pipeline-prepared').length;
       renderPipelineProgress('ready', 0, 0, pending
         ? `${pending} transcript${pending === 1 ? '' : 's'} ready to upload`
