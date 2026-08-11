@@ -34,14 +34,17 @@
   .sharing-heading .label { font-size: 0.95rem; font-weight: 650; }
   .sharing-description { color: var(--text-muted); font-size: 0.76rem; }
   .sharing-settings {
-    display: grid; grid-template-columns: minmax(240px, 0.8fr) minmax(330px, 1.2fr);
-    gap: 24px; padding: 11px 16px; border-top: 1px solid var(--border);
+    display: flex; flex-direction: column; border-top: 1px solid var(--border);
   }
   .setting-label { color: var(--text); font-size: 0.74rem; font-weight: 600; }
   .setting-hint { color: var(--text-muted); font-size: 0.7rem; }
   .auto-upload-controls button { padding: 5px 10px; font-size: 0.78rem; }
-  .auto-upload-setting { display: flex; align-items: center; gap: 10px; }
+  .auto-upload-setting {
+    display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+    border-top: 1px solid var(--border);
+  }
   .auto-upload-setting-copy { display: flex; flex-direction: column; flex: 1; }
+  #watcher-schedule { color: var(--text-muted); font-size: 0.7rem; }
   #watcher-version { color: var(--text-muted); font-size: 0.68rem; font-weight: 400; }
   #watcher-version.mismatch { color: var(--yellow); }
   #unavailable-watcher-groups {
@@ -59,8 +62,10 @@
   }
   .unavailable-watcher-group button { padding: 2px 7px; font-size: 0.7rem; }
   .name-setting {
-    display: flex; align-items: center; gap: 10px; white-space: nowrap;
+    display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+    white-space: nowrap;
   }
+  .name-setting .setting-label { width: 130px; flex-shrink: 0; }
   #watcher-status {
     display: block; margin: 0 16px 12px; padding: 7px 9px; border-radius: 6px;
     color: var(--text-muted); background: rgba(139,148,158,0.07); font-size: 0.74rem;
@@ -68,6 +73,7 @@
   #watcher-status.error {
     color: var(--yellow); background: rgba(210,153,34,0.08);
   }
+  #watcher-status[hidden] { display: none; }
   .auto-upload {
     display: flex; align-items: center; gap: 4px; color: var(--text-muted);
     font-size: 0.72rem; white-space: nowrap;
@@ -75,7 +81,8 @@
   #contributor-name:placeholder-shown { border-color: var(--yellow); }
   #contributor-name {
     background: var(--surface); border: 1px solid var(--border); color: var(--text);
-    width: 100%; min-width: 0; padding: 5px 8px; border-radius: 6px; font-size: 0.8rem;
+    width: min(340px, 100%); min-width: 0; padding: 5px 8px;
+    border-radius: 6px; font-size: 0.8rem;
   }
   button {
     background: var(--accent); color: #000; border: none; padding: 8px 16px;
@@ -251,9 +258,8 @@
   .empty { color: var(--text-muted); padding: 40px 0; text-align: center; }
   input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
   @media (max-width: 720px) {
-    .sharing-header { align-items: flex-start; flex-wrap: wrap; }
-    .sharing-header #upload-btn { width: 100%; }
-    .sharing-settings { grid-template-columns: 1fr; gap: 10px; }
+    .auto-upload-setting { align-items: flex-start; flex-wrap: wrap; }
+    .auto-upload-setting-copy { flex-basis: 100%; }
   }
 </style>
 </head>
@@ -267,10 +273,8 @@
   <div class="sharing-header">
     <div class="sharing-heading">
       <span class="label">Transcript sharing</span>
-      <span class="sharing-description">Send selected projects now or keep them synced automatically.</span>
+      <span class="sharing-description">Choose who contributes transcripts and how selected projects are shared.</span>
     </div>
-    <button id="upload-btn" onclick="uploadNow()"
-            title="Upload transcripts from selected projects" disabled>Upload now</button>
   </div>
   <div class="sharing-settings">
     <label class="name-setting">
@@ -282,15 +286,17 @@
     <div class="auto-upload-setting">
       <div class="auto-upload-setting-copy">
         <span class="setting-label">Automatic uploads <span id="watcher-version" title="Auto uploader version"></span></span>
-        <span class="setting-hint">Checks selected projects every hour</span>
+        <span id="watcher-schedule">Checking last and next upload…</span>
       </div>
+      <button id="upload-btn" onclick="uploadNow()"
+              title="Upload transcripts from projects selected for automatic upload" disabled>Upload selected projects</button>
       <button class="secondary" id="auto-upload-toggle" onclick="toggleAutoUpload()"
               title="Enable or disable automatic uploads every hour" disabled>Enable</button>
       <button class="secondary" id="reinstall-watcher" onclick="reinstallWatcher()"
               title="Reinstall the current auto uploader version" hidden>Reinstall</button>
     </div>
   </div>
-  <span id="watcher-status">Checking automatic upload status…</span>
+  <span id="watcher-status" hidden></span>
   <div id="unavailable-watcher-groups" hidden></div>
 </div>
   <div class="scan-controls">
@@ -579,6 +585,7 @@ function formatUploadTime(value) {
 
 async function loadWatcher(refreshHistory = true) {
   const status = document.getElementById('watcher-status');
+  const schedule = document.getElementById('watcher-schedule');
   const toggle = document.getElementById('auto-upload-toggle');
   const reinstall = document.getElementById('reinstall-watcher');
   const version = document.getElementById('watcher-version');
@@ -616,33 +623,31 @@ async function loadWatcher(refreshHistory = true) {
     reinstall.hidden = !data.needs_reinstall;
     toggle.disabled = false;
     toggle.textContent = autoUploadEnabled ? 'Disable' : 'Enable';
-    if (data.error) {
-      status.textContent = data.error;
-    } else {
-      const last = data.state || {};
-      const lastError = (last.errors || [])[0];
-      const lastUploaded = formatUploadTime(last.last_uploaded_at);
-      const nextUpload = autoUploadEnabled && last.finished_at
-        ? formatUploadTime(new Date(
-            new Date(last.finished_at).getTime() + data.interval_seconds * 1000))
-        : autoUploadEnabled ? 'soon' : 'disabled';
-      status.textContent = last.status === 'failed' && lastError
+    const last = data.state || {};
+    const lastError = (last.errors || [])[0];
+    const lastUploaded = formatUploadTime(last.last_uploaded_at);
+    const nextUpload = autoUploadEnabled && last.finished_at
+      ? formatUploadTime(new Date(
+          new Date(last.finished_at).getTime() + data.interval_seconds * 1000))
+      : autoUploadEnabled ? 'soon' : 'disabled';
+    schedule.textContent = `Last uploaded ${lastUploaded} · Next upload ${nextUpload}`;
+    const error = data.error
+      || (last.status === 'failed' && lastError
         ? (lastError.includes('TokenRetrievalError')
           ? `AWS login expired — run aws sso login --profile ${(data.config && data.config.aws_profile) || 'rw-eng'}`
-          : `Auto upload failed: ${lastError}`)
-        : `Last uploaded ${lastUploaded} · Next upload ${nextUpload}`;
-      status.title = last.status === 'failed' && lastError
-        ? status.textContent
-        : last.finished_at
-        ? `Last run: ${last.status}, ${last.sessions_uploaded || 0} uploaded`
-        : status.textContent;
-    }
-    status.classList.toggle('error', Boolean(
-      data.error || (data.state && data.state.status === 'failed' &&
-        (data.state.errors || []).length)));
+          : `Automatic upload failed: ${lastError}`)
+        : '');
+    status.textContent = error;
+    status.hidden = !error;
+    status.classList.toggle('error', Boolean(error));
+    status.title = error || (last.finished_at
+      ? `Last run: ${last.status}, ${last.sessions_uploaded || 0} uploaded`
+      : schedule.textContent);
     updatePendingCounts();
   } catch (e) {
+    schedule.textContent = 'Upload schedule unavailable';
     status.textContent = 'Watcher status unavailable';
+    status.hidden = false;
     status.classList.add('error');
     toggle.disabled = true;
     reinstall.hidden = true;
@@ -669,7 +674,10 @@ async function reinstallWatcher() {
 
 async function saveAutoUploadProjects(changed) {
   changed.disabled = true;
-  document.getElementById('watcher-status').textContent = 'Saving project selection…';
+  const status = document.getElementById('watcher-status');
+  status.textContent = 'Saving project selection…';
+  status.hidden = false;
+  status.classList.remove('error');
   try {
     await updateAutoUploadConfig(autoUploadEnabled);
     showToast(changed.checked ? 'Project added to auto upload' : 'Project removed from auto upload');
