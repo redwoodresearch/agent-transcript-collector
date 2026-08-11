@@ -44,10 +44,11 @@ uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
 ```
 
 This installs `rr-trans` on your `PATH`, starts the review UI in the background,
-and configures it to start whenever you log in. The UI is then always available
-at <http://localhost:8123>. Run the same command again to fetch the latest version
-from the repository and restart the UI with it. The background process also
-checks for an updated version whenever it starts.
+configures it to start whenever you log in, and opens it in your browser. The UI
+is then always available at <http://localhost:8123>. Run the same command again
+to fetch the latest version from the repository, restart the UI with it, and open
+it in your browser. The background process also checks for an updated version
+whenever it starts.
 
 The service is installed for your user account with a macOS LaunchAgent or Linux
 systemd user service. It does not require `sudo`. `uv` must remain installed at
