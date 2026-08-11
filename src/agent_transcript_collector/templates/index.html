@@ -1229,7 +1229,13 @@ function trackJob(jobId) {
     let j;
     try {
       const r = await fetch('/api/upload/' + jobId);
-      if (r.status === 404) { stopTracking(); clearJob(); resetUploadBtn(); return; }
+      if (r.status === 404) {
+        stopTracking();
+        clearJob();
+        resetUploadBtn();
+        startHistoryScan(true);
+        return;
+      }
       j = await r.json();
     } catch (e) { return; }              // transient — keep polling
     renderProgress(j);
@@ -1238,8 +1244,8 @@ function trackJob(jobId) {
       clearJob();
       markUploaded(j.uploads || []);
       finishToast(j);
-      if (j.status !== 'failed') startHistoryScan(true);
       resetUploadBtn();
+      startHistoryScan(true);
     }
   }, 1000);
 }
