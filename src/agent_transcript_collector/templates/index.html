@@ -797,7 +797,6 @@ async function startPipeline() {
   if (!rows.length) return;
   const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
   projects.forEach(project => {
-    project.classList.remove('pipeline-ready');
     project.classList.add('pipeline-running');
   });
   setPipelineStatus('');
@@ -830,6 +829,14 @@ async function startPipeline() {
       if (!statusResp.ok) throw new Error(data.error || 'Pipeline status unavailable');
     }
     if (request !== pipelineRevision || pipelineController !== controller) return;
+    if (data.status === 'failed') {
+      projects.forEach(project => project.classList.remove('pipeline-running'));
+      const first = (data.errors || [])[0];
+      renderPipelineProgress('failed', 0, 0,
+        first && (first.error || String(first)) || 'Pipeline failed');
+      updatePendingCounts();
+      return;
+    }
     const current = new Set((data.items || [])
       .filter(item => item.state === 'current')
       .map(item => [item.source, item.group, item.parent || '', item.session].join('|')));
@@ -847,15 +854,8 @@ async function startPipeline() {
     });
     projects.forEach(project => {
       project.classList.remove('pipeline-running');
-      project.classList.toggle('pipeline-ready', data.status !== 'failed');
+      project.classList.add('pipeline-ready');
     });
-    if (data.status === 'failed') {
-      const first = (data.errors || [])[0];
-      renderPipelineProgress('failed', 0, 0,
-        first && (first.error || String(first)) || 'Pipeline failed');
-      updatePendingCounts();
-      return;
-    }
     const readyCount = ready.size;
     const detail = readyCount
       ? `${readyCount} transcript${readyCount === 1 ? '' : 's'} ready to upload`
@@ -959,10 +959,10 @@ function updatePendingCounts() {
     const label = project.querySelector('.project-pending');
     const available = project.classList.contains('pipeline-ready');
     label.classList.remove('complete');
-    if (!available) {
-      label.textContent = project.classList.contains('pipeline-running')
-        ? 'refreshing…'
-        : pipelineRunning ? 'waiting…' : 'not refreshed';
+    if (project.classList.contains('pipeline-running')) {
+      label.textContent = 'refreshing…';
+    } else if (!available) {
+      label.textContent = pipelineRunning ? 'waiting…' : 'not refreshed';
     } else {
       const pending = project.querySelectorAll('.session.pipeline-prepared').length;
       const failed = project.querySelectorAll('.session.pipeline-error').length;
@@ -1006,6 +1006,9 @@ function updatePendingCounts() {
     : 'Upload prepared transcripts from projects selected for automatic upload';
   if (uploadBusy) {
     button.textContent = 'Uploading…';
+    button.disabled = true;
+  } else if (pipelineRunning) {
+    button.textContent = 'Refreshing uploads…';
     button.disabled = true;
   } else if (!selectedProjects) {
     button.textContent = 'Upload 0 transcripts now';

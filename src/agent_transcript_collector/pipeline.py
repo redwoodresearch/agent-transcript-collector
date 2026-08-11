@@ -169,6 +169,7 @@ def refresh(
             prepared = prepare_transcript(source, session, contributor)
             record = {
                 "source": source.id,
+                "contributor": contributor,
                 "group": session.group_key,
                 "parent": session.parent,
                 "session": session.id,
@@ -188,6 +189,7 @@ def refresh(
         except Exception as exc:
             records[key] = {
                 "source": source.id,
+                "contributor": contributor,
                 "group": session.group_key,
                 "parent": session.parent,
                 "session": session.id,
@@ -296,7 +298,15 @@ def mark_uploaded(artifacts: list[dict], contributor: str,
          item.get("session"))
         for item in artifacts
     }
-    for record in records.values():
+    for key, record in records.items():
+        record_contributor = record.get("contributor")
+        if record_contributor is None:
+            try:
+                record_contributor = json.loads(key)[0]
+            except (json.JSONDecodeError, IndexError, TypeError):
+                continue
+        if record_contributor != contributor:
+            continue
         identity = (
             record.get("source"), record.get("group"), record.get("parent") or "",
             record.get("session"),
