@@ -303,28 +303,59 @@ def _upload_worker(to_upload, contributor, events):
             )
             s3 = _make_s3_client()
             uploaded_metadata: dict[str, dict] = {}
+            total_sessions = sum(len(sessions) for _, sessions in to_upload)
+            total_work = max(1, total_sessions * 3)
+            source_offset = 0
             for source_id, sessions in to_upload:
                 source = get_source(source_id)
                 if source is None:
                     errors.append({"source": source_id, "error": "Unknown source"})
+                    events.put({"type": "advance", "count": len(sessions)})
+                    source_offset += len(sessions)
+                    events.put(
+                        {
+                            "type": "progress",
+                            "stage": "finishing",
+                            "stage_done": source_offset * 3,
+                            "stage_total": total_work,
+                            "stage_item_done": source_offset,
+                            "stage_item_total": total_sessions,
+                        }
+                    )
                     continue
+                source_completed = 0
+
+                def advance(count):
+                    nonlocal source_completed
+                    source_completed += count
+                    events.put({"type": "advance", "count": count})
+
+                def report(stage, completed, total):
+                    if stage == "fingerprinting":
+                        overall = source_offset * 3 + completed
+                    elif stage == "checking":
+                        overall = source_offset * 3 + len(sessions) + completed
+                    else:
+                        overall = source_offset * 3 + len(sessions) * 2 + source_completed
+                    events.put(
+                        {
+                            "type": "progress",
+                            "stage": stage,
+                            "stage_done": overall,
+                            "stage_total": total_work,
+                            "stage_item_done": completed,
+                            "stage_item_total": total,
+                        }
+                    )
+
                 try:
                     uploaded, upload_errors = _upload_transcripts(
                         s3,
                         source,
                         sessions,
                         contributor,
-                        on_progress=lambda n: events.put(
-                            {"type": "advance", "count": n}
-                        ),
-                        on_status=lambda stage, completed, total: events.put(
-                            {
-                                "type": "progress",
-                                "stage": stage,
-                                "stage_done": completed,
-                                "stage_total": total,
-                            }
-                        ),
+                        on_progress=advance,
+                        on_status=report,
                         uploaded_metadata=uploaded_metadata,
                     )
                     uploads.extend(uploaded)
@@ -334,6 +365,18 @@ def _upload_worker(to_upload, contributor, events):
                         {
                             "source": source.id,
                             "error": f"{type(e).__name__}: {e}",
+                        }
+                    )
+                finally:
+                    source_offset += len(sessions)
+                    events.put(
+                        {
+                            "type": "progress",
+                            "stage": "finishing",
+                            "stage_done": source_offset * 3,
+                            "stage_total": total_work,
+                            "stage_item_done": source_offset,
+                            "stage_item_total": total_sessions,
                         }
                     )
             status = (
@@ -379,7 +422,14 @@ def _monitor_upload_worker(job_id, process, events):
             if event["type"] == "advance":
                 job["done"] += event["count"]
             elif event["type"] == "progress":
-                for key in ("status", "stage", "stage_done", "stage_total"):
+                for key in (
+                    "status",
+                    "stage",
+                    "stage_done",
+                    "stage_total",
+                    "stage_item_done",
+                    "stage_item_total",
+                ):
                     if key in event:
                         job[key] = event[key]
             elif event["type"] == "finished":

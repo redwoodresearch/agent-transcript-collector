@@ -746,6 +746,7 @@ let historyTimer = null;
 let historyRevision = 0;
 let historyController = null;
 let historyRun = 0;
+let forceHistoryAfterLoad = false;
 function onNameInput() {
   nameRevision += 1;
   historyRevision += 1;
@@ -915,7 +916,12 @@ function saveHistoryCache(rows) {
 }
 
 async function startHistoryScan(force = false) {
-  if (!projectsLoaded) return;
+  if (!projectsLoaded) {
+    forceHistoryAfterLoad = forceHistoryAfterLoad || force;
+    return;
+  }
+  force = force || forceHistoryAfterLoad;
+  forceHistoryAfterLoad = false;
   const run = ++historyRun;
   if (historyController) historyController.abort();
   const projects = Array.from(document.querySelectorAll('.project'));
@@ -1256,11 +1262,13 @@ function renderProgress(j) {
   const labels = {
     preparing: 'Preparing', connecting: 'Connecting to S3',
     fingerprinting: 'Reading and fingerprinting', checking: 'Checking upload history',
-    uploading: 'Uploading',
+    uploading: 'Uploading', finishing: 'Finishing',
   };
   if (j.stage_total) {
     fill.style.width = Math.round((j.stage_done / j.stage_total) * 100) + '%';
-    text.textContent = `${labels[j.stage] || 'Working'} ${j.stage_done}/${j.stage_total}…`;
+    const itemDone = j.stage_item_done ?? j.stage_done;
+    const itemTotal = j.stage_item_total ?? j.stage_total;
+    text.textContent = `${labels[j.stage] || 'Working'} ${itemDone}/${itemTotal}…`;
   } else {
     fill.style.width = '0';
     text.textContent = `${labels[j.stage] || 'Preparing'}…`;
