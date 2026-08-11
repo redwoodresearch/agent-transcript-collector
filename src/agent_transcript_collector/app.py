@@ -706,6 +706,18 @@ def _upload_worker(to_upload, contributor, events, plan_artifacts=None):
                             prepared_artifacts.append(artifact)
                         else:
                             fallback_sessions.append(session)
+                    if fallback_sessions:
+                        fallback_uploads, fallback_errors = _upload_transcripts(
+                            s3,
+                            source,
+                            fallback_sessions,
+                            contributor,
+                            on_progress=advance,
+                            on_status=report,
+                            uploaded_metadata=uploaded_metadata,
+                        )
+                        uploads.extend(fallback_uploads)
+                        errors.extend(fallback_errors)
                     if prepared_artifacts:
                         report("uploading", 0, len(prepared_artifacts))
                         prepared_completed = 0
@@ -725,18 +737,6 @@ def _upload_worker(to_upload, contributor, events, plan_artifacts=None):
                         )
                         uploads.extend(prepared_uploads)
                         errors.extend(prepared_errors)
-                    if fallback_sessions:
-                        fallback_uploads, fallback_errors = _upload_transcripts(
-                            s3,
-                            source,
-                            fallback_sessions,
-                            contributor,
-                            on_progress=advance,
-                            on_status=report,
-                            uploaded_metadata=uploaded_metadata,
-                        )
-                        uploads.extend(fallback_uploads)
-                        errors.extend(fallback_errors)
                 except Exception as e:
                     errors.append(
                         {

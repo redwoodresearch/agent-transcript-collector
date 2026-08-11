@@ -824,6 +824,8 @@ async function refreshUploaded(scope = null, options = {}) {
     uploadPlanId = data.plan_id;
     while (!['ready', 'partial', 'failed'].includes(data.status)) {
       if (request !== historyRevision || historyController !== controller) {
+        projects.forEach(project => project.classList.remove('history-checking'));
+        updatePendingCounts();
         return {ok: false, superseded: true};
       }
       const done = Number(data.done || 0);
@@ -838,6 +840,8 @@ async function refreshUploaded(scope = null, options = {}) {
       if (!statusResp.ok) throw new Error(data.error || 'Preparation status unavailable');
     }
     if (request !== historyRevision || historyController !== controller) {
+      projects.forEach(project => project.classList.remove('history-checking'));
+      updatePendingCounts();
       return {ok: false, superseded: true};
     }
     const current = new Set((data.items || [])
@@ -953,6 +957,8 @@ function pauseHistoryScanForUpload() {
   const controller = historyController;
   historyController = null;
   if (controller) controller.abort();
+  document.querySelectorAll('.project').forEach(project =>
+    project.classList.remove('history-checking'));
   const total = document.querySelectorAll('.session').length;
   renderHistoryProgress('paused', 0, total,
     'Preparation will refresh when this upload finishes');
