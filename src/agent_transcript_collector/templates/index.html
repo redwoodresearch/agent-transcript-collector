@@ -446,7 +446,6 @@ function loadName() { try { return localStorage.getItem('ctc_name'); } catch (e)
 let autoUploadEnabled = false;
 let watcherConfigured = false;
 let watcherRunning = false;
-let watcherGroups = new Set();
 let nameRevision = 0;
 let syncedNameRevision = 0;
 let watcherMutation = Promise.resolve();
@@ -467,16 +466,9 @@ function projectGroups(project) {
     harnessGroups(harness).map(group => ({source: harness.dataset.source, group})));
 }
 
-// A partially selected project keeps exactly its previously consented source
-// groups, so saving another project cannot quietly broaden or revoke consent.
 function consentedGroups(project) {
   const cb = project.querySelector('.auto-upload-checkbox');
-  const groups = projectGroups(project);
-  if (cb.checked) return groups;
-  if (cb.indeterminate) {
-    return groups.filter(item => watcherGroups.has(`${item.source}|${item.group}`));
-  }
-  return [];
+  return cb.checked ? projectGroups(project) : [];
 }
 
 function consentedRows(project) {
@@ -618,19 +610,23 @@ async function loadWatcher(refreshPipeline = true) {
         if (settingsChanged && projectsLoaded && refreshPipeline) startPipeline();
       }
     }
-    watcherGroups = new Set(
+    const configuredGroups = new Set(
       ((data.config && data.config.groups) || []).map(item => `${item.source}|${item.group}`));
     renderUnavailableGroups((data.config && data.config.groups) || []);
+    let selectionExpanded = false;
     document.querySelectorAll('.project').forEach(project => {
       const cb = project.querySelector('.auto-upload-checkbox');
       const groups = projectGroups(project);
       const enabled = groups.filter(item =>
-        watcherGroups.has(`${item.source}|${item.group}`)).length;
-      cb.checked = groups.length > 0 && enabled === groups.length;
-      cb.indeterminate = enabled > 0 && enabled < groups.length;
+        configuredGroups.has(`${item.source}|${item.group}`)).length;
+      cb.checked = enabled > 0;
+      selectionExpanded ||= enabled > 0 && enabled < groups.length;
     });
     autoUploadEnabled = watcherEnabledOverride ?? Boolean(data.installed);
     watcherRunning = Boolean(data.running);
+    if (selectionExpanded) {
+      await updateAutoUploadConfig(autoUploadEnabled);
+    }
     const installedVersion = (data.config && data.config.auto_uploader_version) || 0;
     const currentVersion = data.current_version;
     version.textContent = data.needs_reinstall
@@ -970,30 +966,22 @@ function updatePendingCounts() {
   document.querySelectorAll('.project').forEach(project => {
     const label = project.querySelector('.project-pending');
     const available = project.classList.contains('pipeline-ready');
-    const consented = consentedRows(project);
     label.classList.remove('complete');
-    label.removeAttribute('title');
     if (project.classList.contains('pipeline-running')) {
       label.textContent = 'refreshing…';
     } else if (!available) {
       label.textContent = pipelineRunning ? 'waiting…' : 'not refreshed';
     } else {
-      const pendingRows = Array.from(project.querySelectorAll('.session.pipeline-prepared'));
-      const pending = pendingRows.length;
+      const pending = project.querySelectorAll('.session.pipeline-prepared').length;
       const failed = project.querySelectorAll('.session.pipeline-error').length;
-      const consentedPending = pendingRows.filter(row => consented.includes(row)).length;
-      const partiallySelected = project.querySelector('.auto-upload-checkbox').indeterminate;
       label.textContent = failed
         ? `${failed} unavailable`
         : pending
-        ? `${pending} not uploaded${partiallySelected ? ` · ${consentedPending} selected` : ''}`
+        ? `${pending} not uploaded`
         : 'all uploaded';
-      if (pending && partiallySelected) {
-        label.title = `${pending} prepared transcript${pending === 1 ? '' : 's'} not uploaded; `
-          + `${consentedPending} selected for automatic upload`;
-      }
       label.classList.toggle('complete', pending === 0 && failed === 0);
     }
+    const consented = consentedRows(project);
     if (consented.length) {
       selectedProjects += 1;
       selectedTranscripts += consented.length;
