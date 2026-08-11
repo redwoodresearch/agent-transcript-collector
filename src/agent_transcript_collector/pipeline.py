@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from .paths import pipeline_cache_path, prepared_artifacts_dir
@@ -28,6 +29,11 @@ from .uploader import (
 )
 
 CACHE_VERSION = 1
+
+
+def redaction_concurrency() -> int:
+    """Return the number of transcripts prepared in parallel."""
+    return max(1, int(os.environ.get("CTC_REDACTION_CONCURRENCY", "16")))
 
 
 def _identity(source_id: str, session) -> str:
@@ -121,6 +127,27 @@ def _record_is_current(record: object, require_artifact: bool) -> bool:
     return True
 
 
+def _prepare_changed(source, session, contributor: str, root: Path) -> tuple:
+    """Redact and package one changed transcript without touching shared state."""
+    prepared = prepare_transcript(source, session, contributor)
+    record = {
+        "source": source.id,
+        "contributor": contributor,
+        "group": session.group_key,
+        "parent": session.parent,
+        "session": session.id,
+        "path": str(session.path),
+        "fingerprint_version": FINGERPRINT_VERSION,
+        "format_version": TRANSCRIPT_FORMAT_VERSION,
+        "signature": prepared_signature(prepared),
+        "fingerprint": prepared.fingerprint,
+        "body_fingerprint": prepared.body_fingerprint,
+        "artifact": build_upload_artifact(source, prepared, contributor, root),
+        "state": "checking",
+    }
+    return prepared, record
+
+
 def refresh(
     selections,
     contributor: str,
@@ -163,45 +190,40 @@ def refresh(
     if on_progress:
         on_progress("redacting", 0, total_changed)
     errors = []
-    for index, (key, source, session, old_record) in enumerate(changed, start=1):
-        try:
+    workers = max(1, min(redaction_concurrency(), total_changed))
+    completed = 0
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {}
+        for key, source, session, old_record in changed:
             _unlink_artifact(old_record, root)
-            prepared = prepare_transcript(source, session, contributor)
-            record = {
-                "source": source.id,
-                "contributor": contributor,
-                "group": session.group_key,
-                "parent": session.parent,
-                "session": session.id,
-                "path": str(session.path),
-                "fingerprint_version": FINGERPRINT_VERSION,
-                "format_version": TRANSCRIPT_FORMAT_VERSION,
-                "signature": prepared_signature(prepared),
-                "fingerprint": prepared.fingerprint,
-                "body_fingerprint": prepared.body_fingerprint,
-                "artifact": build_upload_artifact(
-                    source, prepared, contributor, root
-                ),
-                "state": "checking",
-            }
-            records[key] = record
-            prepared_by_key[key] = prepared
-        except Exception as exc:
-            records[key] = {
-                "source": source.id,
-                "contributor": contributor,
-                "group": session.group_key,
-                "parent": session.parent,
-                "session": session.id,
-                "path": str(session.path),
-                "state": "error",
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-            items_by_key[key] = _item(source.id, session, "error")
-            errors.append({"source": source.id, "session": session.id,
-                           "error": f"{type(exc).__name__}: {exc}"})
-        if on_progress:
-            on_progress("redacting", index, total_changed)
+            future = executor.submit(
+                _prepare_changed, source, session, contributor, root
+            )
+            futures[future] = (key, source, session)
+        for future in as_completed(futures):
+            key, source, session = futures[future]
+            completed += 1
+            try:
+                prepared, record = future.result()
+            except Exception as exc:
+                records[key] = {
+                    "source": source.id,
+                    "contributor": contributor,
+                    "group": session.group_key,
+                    "parent": session.parent,
+                    "session": session.id,
+                    "path": str(session.path),
+                    "state": "error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                items_by_key[key] = _item(source.id, session, "error")
+                errors.append({"source": source.id, "session": session.id,
+                               "error": f"{type(exc).__name__}: {exc}"})
+            else:
+                records[key] = record
+                prepared_by_key[key] = prepared
+            if on_progress:
+                on_progress("redacting", completed, total_changed)
     _save(state, cache_path)
 
     prepared_items = list(prepared_by_key.values())
