@@ -441,9 +441,7 @@ def _preparation_snapshot(plan: dict) -> dict:
     }
 
 
-@app.post("/api/prepare")
-async def prepare_uploads(request: Request):
-    body = await request.json()
+def _prepare_uploads(body: dict):
     contributor = _safe_name(body.get("contributor_name", "anonymous"))
     selected = body.get("sessions", [])
     force = bool(body.get("force"))
@@ -582,6 +580,13 @@ async def prepare_uploads(request: Request):
     return JSONResponse({"plan_id": plan_id}, status_code=202)
 
 
+@app.post("/api/prepare")
+async def prepare_uploads(request: Request):
+    """Start or reuse preparation without blocking the UI event loop."""
+    body = await request.json()
+    return await run_in_threadpool(_prepare_uploads, body)
+
+
 @app.get("/api/prepare/{plan_id}")
 def preparation_status(plan_id: str):
     with PREPARATIONS_LOCK:
@@ -703,8 +708,20 @@ def _upload_worker(to_upload, contributor, events, plan_artifacts=None):
                             fallback_sessions.append(session)
                     if prepared_artifacts:
                         report("uploading", 0, len(prepared_artifacts))
+                        prepared_completed = 0
+
+                        def advance_prepared(count):
+                            nonlocal prepared_completed
+                            prepared_completed += count
+                            advance(count)
+                            report(
+                                "uploading",
+                                prepared_completed,
+                                len(prepared_artifacts),
+                            )
+
                         prepared_uploads, prepared_errors = upload_artifacts(
-                            s3, prepared_artifacts, on_progress=advance
+                            s3, prepared_artifacts, on_progress=advance_prepared
                         )
                         uploads.extend(prepared_uploads)
                         errors.extend(prepared_errors)
