@@ -284,6 +284,7 @@ def partition_transcripts(
     contributor: str,
     uploaded_metadata: dict[str, dict] | None = None,
     on_status=None,
+    on_checked=None,
 ):
     """Split current transcripts into changed and already uploaded."""
     existing = uploaded_metadata if uploaded_metadata is not None else {}
@@ -322,6 +323,8 @@ def partition_transcripts(
                         "error": f"{prepared.session.id}: {type(exc).__name__}: {exc}",
                     })
                 else:
+                    if already_uploaded and on_checked:
+                        on_checked(prepared)
                     (uploaded if already_uploaded else pending).append(
                         prepared.session if already_uploaded else prepared)
                 if on_status:
@@ -424,11 +427,18 @@ def upload_transcripts(
     on_progress=None,
     on_status=None,
     uploaded_metadata: dict[str, dict] | None = None,
+    on_checked=None,
 ):
     """Overwrite each session object only when its redacted content changes."""
     existing = uploaded_metadata if uploaded_metadata is not None else {}
     pending, uploaded, errors = partition_transcripts(
-        s3, source, list(sessions), contributor, existing, on_status=on_status
+        s3,
+        source,
+        list(sessions),
+        contributor,
+        existing,
+        on_status=on_status,
+        on_checked=on_checked,
     )
     if on_progress:
         on_progress(len(uploaded) + len(errors))
@@ -474,6 +484,8 @@ def upload_transcripts(
             try:
                 result = future.result()
                 results.append(result)
+                if on_checked:
+                    on_checked(prepared)
                 existing[prepared.key] = {
                     FINGERPRINT_METADATA: prepared.fingerprint,
                     BODY_FINGERPRINT_METADATA: prepared.body_fingerprint,
