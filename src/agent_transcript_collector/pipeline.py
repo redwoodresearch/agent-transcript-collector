@@ -18,6 +18,7 @@ from .s3client import make_s3_client
 from .uploader import (
     FINGERPRINT_VERSION,
     TRANSCRIPT_FORMAT_VERSION,
+    artifact_is_available,
     artifact_is_current,
     build_upload_artifact,
     classify_prepared,
@@ -276,7 +277,7 @@ def artifacts_for(selections, contributor: str, cache_path: Path | None = None):
             if (
                 isinstance(record, dict)
                 and record.get("state") == "ready"
-                and _record_is_current(record, True)
+                and artifact_is_available(record.get("artifact", {}))
             ):
                 artifacts.append(dict(record["artifact"]))
             else:

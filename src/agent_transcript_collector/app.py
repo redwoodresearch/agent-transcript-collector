@@ -34,7 +34,7 @@ from .sources.base import human_size, session_sidecars
 from .uploader import (
     UploadBusy,
     UploadLock,
-    artifact_is_current,
+    artifact_is_available,
     upload_artifacts,
 )
 from .watcher import (
@@ -447,8 +447,8 @@ def _upload_worker(artifacts, contributor, events):
     status = "failed"
     try:
         with UploadLock():
-            if not all(artifact_is_current(item) for item in artifacts):
-                raise RuntimeError("Prepared uploads changed. Refresh before uploading.")
+            if not all(artifact_is_available(item) for item in artifacts):
+                raise RuntimeError("A prepared upload is no longer available. Refresh and try again.")
             events.put({
                 "type": "progress", "status": "running", "stage": "uploading",
                 "stage_done": 0, "stage_total": len(artifacts),
