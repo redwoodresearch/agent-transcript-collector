@@ -208,13 +208,20 @@
   .preview-msg .role { font-weight: 600; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 4px; }
   .redacted { background: rgba(248,81,73,0.15); color: var(--red); padding: 1px 4px; border-radius: 3px; }
 
-  .progress {
-    display: none; align-items: center; gap: 8px; flex: 0 1 260px; min-width: 180px;
+  .upload-progress-row {
+    display: none; align-items: center; gap: 14px; padding: 10px 12px;
+    border-top: 1px solid var(--border);
   }
-  .progress.show { display: flex; }
+  .upload-progress-row.show { display: flex; }
+  .upload-progress-copy {
+    display: flex; flex-direction: column; min-width: 190px;
+  }
+  .upload-progress-copy strong { font-size: 0.84rem; }
+  .upload-progress-bar { flex: 1; }
+  .upload-progress-bar .bar { width: 100%; }
   .bar { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
   .bar-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.3s; }
-  #progress-text { font-size: 0.8rem; color: var(--text-muted); white-space: nowrap; }
+  #progress-text { font-size: 0.76rem; color: var(--text-muted); white-space: nowrap; }
 
   .toast {
     position: fixed; top: 24px; right: 24px; background: var(--green);
@@ -246,10 +253,6 @@
            oninput="onNameInput()">
   </label>
   <span id="watcher-status">Checking status…</span>
-  <div class="progress" id="upload-progress">
-    <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
-    <span id="progress-text"></span>
-  </div>
   <button id="upload-btn" onclick="uploadNow()"
           title="Upload pending transcripts from selected projects" disabled>Upload now</button>
   <button class="secondary" id="auto-upload-toggle" onclick="toggleAutoUpload()"
@@ -280,6 +283,15 @@
     </div>
     <button class="secondary" id="history-refresh-btn"
             onclick="startHistoryScan(true)" disabled>Refresh status</button>
+  </div>
+  <div class="upload-progress-row" id="upload-progress">
+    <div class="upload-progress-copy">
+      <strong>Uploading transcripts…</strong>
+      <span id="progress-text">Preparing…</span>
+    </div>
+    <div class="upload-progress-bar">
+      <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
+    </div>
   </div>
 </div>
 <div id="upload-history-status" class="inline-status" hidden></div>
