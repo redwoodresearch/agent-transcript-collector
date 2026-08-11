@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import webbrowser
 
 from .storage import STORAGE_PREFIX
 
@@ -55,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
 
         result = install_and_update()
         print(json.dumps(result, indent=2))
+        webbrowser.open(result["url"])
         return 0
     if args.command == "ui":
         from .app import main as run_ui
