@@ -65,11 +65,15 @@
   button.secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
   button.secondary:hover { border-color: var(--accent); }
 
-  .scan-controls, .history-controls {
-    display: flex; align-items: center; gap: 14px; margin-bottom: 12px;
-    padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
-    background: var(--surface);
+  .activity-card {
+    margin-bottom: 12px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface); overflow: hidden;
   }
+  .scan-controls, .history-controls {
+    display: flex; align-items: center; gap: 14px; padding: 10px 12px;
+  }
+  .scan-controls { border-bottom: 1px solid var(--border); }
+  .history-controls[hidden] { display: none; }
   .scan-copy, .history-copy { display: flex; flex-direction: column; min-width: 190px; }
   .scan-copy strong, .history-copy strong { font-size: 0.84rem; }
   #scan-status, #history-status, .inline-status {
@@ -77,9 +81,16 @@
   }
   .scan-progress, .history-progress { flex: 1; }
   .scan-progress .bar, .history-progress .bar { width: 100%; }
-  .history-controls.failed { border-color: rgba(210,153,34,0.65); }
+  .history-controls.failed { background: rgba(210,153,34,0.05); }
   .history-controls.failed #history-title,
   .history-controls.failed #history-status { color: var(--yellow); }
+  .history-controls[data-status="checking"] #history-bar-fill {
+    width: 35% !important; animation: history-pulse 1.2s ease-in-out infinite alternate;
+  }
+  @keyframes history-pulse {
+    from { transform: translateX(-70%); }
+    to { transform: translateX(185%); }
+  }
   .inline-status {
     margin: -2px 0 12px; padding: 7px 10px; border-radius: 6px;
     background: rgba(210,153,34,0.08); color: var(--yellow);
@@ -248,26 +259,28 @@
   <div id="unavailable-watcher-groups" hidden></div>
 </div>
 
-<div class="scan-controls">
-  <div class="scan-copy">
-    <strong id="scan-title">Finding transcripts…</strong>
-    <span id="scan-status">Starting local scan</span>
+<div class="activity-card">
+  <div class="scan-controls">
+    <div class="scan-copy">
+      <strong id="scan-title">Finding transcripts…</strong>
+      <span id="scan-status">Starting local scan</span>
+    </div>
+    <div class="scan-progress" id="scan-progress">
+      <div class="bar"><div class="bar-fill" id="scan-bar-fill"></div></div>
+    </div>
+    <button class="secondary" id="rescan-btn" onclick="startScan(true)" disabled>Rescan</button>
   </div>
-  <div class="scan-progress" id="scan-progress">
-    <div class="bar"><div class="bar-fill" id="scan-bar-fill"></div></div>
+  <div class="history-controls" id="history-controls" hidden>
+    <div class="history-copy">
+      <strong id="history-title">Checking upload status…</strong>
+      <span id="history-status">Waiting for transcript scan</span>
+    </div>
+    <div class="history-progress">
+      <div class="bar"><div class="bar-fill" id="history-bar-fill"></div></div>
+    </div>
+    <button class="secondary" id="history-refresh-btn"
+            onclick="startHistoryScan(true)" disabled>Refresh status</button>
   </div>
-  <button class="secondary" id="rescan-btn" onclick="startScan(true)" disabled>Rescan</button>
-</div>
-<div class="history-controls" id="history-controls" hidden>
-  <div class="history-copy">
-    <strong id="history-title">Checking upload status…</strong>
-    <span id="history-status">Waiting for transcript scan</span>
-  </div>
-  <div class="history-progress">
-    <div class="bar"><div class="bar-fill" id="history-bar-fill"></div></div>
-  </div>
-  <button class="secondary" id="history-refresh-btn"
-          onclick="startHistoryScan()" disabled>Refresh status</button>
 </div>
 <div id="upload-history-status" class="inline-status" hidden></div>
 <div id="projects-container">{% include "_projects.html" %}</div>
@@ -675,10 +688,10 @@ async function refreshSettings() {
 
 async function refreshUploaded(scope = null, options = {}) {
   const request = historyRevision;
-  const projects = scope
+  const projects = options.projects || (scope
     ? [scope]
     : Array.from(document.querySelectorAll('.project')).filter(project =>
-        project.querySelector('.project-body').classList.contains('open'));
+        project.querySelector('.project-body').classList.contains('open')));
   const rows = options.rows || projects.flatMap(
     project => Array.from(project.querySelectorAll('.session')));
   if (!rows.length) return {ok: true, checked: 0};
@@ -689,7 +702,7 @@ async function refreshUploaded(scope = null, options = {}) {
   if (historyController) historyController.abort();
   const controller = new AbortController();
   historyController = controller;
-  const timeout = setTimeout(() => controller.abort(), 10000);
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 10000);
   try {
     const resp = await fetch('/api/uploaded', {
       method: 'POST',
@@ -757,7 +770,10 @@ function renderHistoryProgress(status, checked, total, message = '') {
   refresh.textContent = status === 'failed' ? 'Retry' : 'Refresh status';
   if (status === 'checking') {
     title.textContent = 'Checking upload status…';
-    detail.textContent = `${checked}/${total} transcripts checked`;
+    detail.textContent = message || `${checked}/${total} transcripts checked`;
+  } else if (status === 'cached') {
+    title.textContent = 'Upload status ready';
+    detail.textContent = message;
   } else if (status === 'ready') {
     title.textContent = 'Upload status ready';
     detail.textContent = `${total} transcript${total === 1 ? '' : 's'} checked`;
@@ -768,39 +784,74 @@ function renderHistoryProgress(status, checked, total, message = '') {
   detail.title = detail.textContent;
 }
 
-async function startHistoryScan() {
+const HISTORY_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function historyCacheKey() {
+  const contributor = document.getElementById('contributor-name').value.trim() || 'anonymous';
+  return `ctc_upload_history_v1:${contributor}`;
+}
+
+function restoreHistoryCache(rows, projects) {
+  try {
+    const cached = JSON.parse(localStorage.getItem(historyCacheKey()) || 'null');
+    if (!cached || Date.now() - cached.savedAt > HISTORY_CACHE_TTL_MS) return false;
+    const current = rows.map(sessionKey).sort();
+    if (JSON.stringify(current) !== JSON.stringify(cached.checked || [])) return false;
+    const uploaded = new Set(cached.uploaded || []);
+    rows.forEach(row => row.classList.toggle('uploaded', uploaded.has(sessionKey(row))));
+    projects.forEach(project => {
+      project.classList.remove('history-checking');
+      project.classList.add('history-checked');
+    });
+    const ageSeconds = Math.max(0, Math.round((Date.now() - cached.savedAt) / 1000));
+    const age = ageSeconds < 60
+      ? 'Cached just now'
+      : `Cached ${Math.round(ageSeconds / 60)}m ago`;
+    renderHistoryProgress('cached', rows.length, rows.length,
+      `${age} · ${rows.length} transcripts`);
+    updatePendingCounts();
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function saveHistoryCache(rows) {
+  try {
+    localStorage.setItem(historyCacheKey(), JSON.stringify({
+      savedAt: Date.now(),
+      checked: rows.map(sessionKey).sort(),
+      uploaded: rows.filter(row => row.classList.contains('uploaded')).map(sessionKey).sort(),
+    }));
+  } catch (e) {}
+}
+
+async function startHistoryScan(force = false) {
   if (!projectsLoaded) return;
   const run = ++historyRun;
   if (historyController) historyController.abort();
   const projects = Array.from(document.querySelectorAll('.project'));
-  const total = projects.reduce(
-    (sum, project) => sum + project.querySelectorAll('.session').length, 0);
-  let checked = 0;
+  const rows = projects.flatMap(
+    project => Array.from(project.querySelectorAll('.session')));
+  const total = rows.length;
   setHistoryStatus('');
-  renderHistoryProgress('checking', checked, total);
-  for (const project of projects) {
-    const rows = Array.from(project.querySelectorAll('.session'));
-    const chunkSize = 25;
-    for (let offset = 0; offset < rows.length; offset += chunkSize) {
-      if (run !== historyRun) return;
-      const chunk = rows.slice(offset, offset + chunkSize);
-      const completeProject = offset + chunk.length >= rows.length;
-      const result = await refreshUploaded(project, {
-        silent: true,
-        rows: chunk,
-        completeProject,
-      });
-      if (run !== historyRun || result.superseded) return;
-      if (!result.ok) {
-        renderHistoryProgress('failed', checked, total, result.error);
-        setHistoryStatus(result.error, true, startHistoryScan);
-        return;
-      }
-      checked += result.checked;
-      renderHistoryProgress('checking', checked, total);
-    }
+  if (!force && restoreHistoryCache(rows, projects)) return;
+  renderHistoryProgress('checking', 0, total,
+    `Checking ${total} transcripts in one batch`);
+  const result = await refreshUploaded(null, {
+    silent: true,
+    projects,
+    rows,
+    timeoutMs: 30000,
+  });
+  if (run !== historyRun || result.superseded) return;
+  if (!result.ok) {
+    renderHistoryProgress('failed', 0, total, result.error);
+    setHistoryStatus(result.error, true, startHistoryScan);
+    return;
   }
-  renderHistoryProgress('ready', checked, total);
+  saveHistoryCache(rows);
+  renderHistoryProgress('ready', total, total);
 }
 
 function setHistoryStatus(message, retry = false, retryAction = refreshUploaded) {
@@ -1059,7 +1110,7 @@ function trackJob(jobId) {
       clearJob();
       markUploaded(j.uploads || []);
       finishToast(j);
-      if (j.status !== 'failed') startHistoryScan();
+      if (j.status !== 'failed') startHistoryScan(true);
       resetUploadBtn();
     }
   }, 1000);
