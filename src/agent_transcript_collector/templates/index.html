@@ -372,10 +372,12 @@ function renderScanStatus(state) {
   }
 }
 
-async function loadProjects() {
+async function loadProjects(request = scanRequest) {
   const response = await fetch('/api/projects');
   if (!response.ok) throw new Error('Transcript list is not ready');
-  document.getElementById('projects-container').innerHTML = await response.text();
+  const html = await response.text();
+  if (request !== scanRequest) return;
+  document.getElementById('projects-container').innerHTML = html;
   projectsLoaded = true;
   updatePendingCounts();
   await loadWatcher(false);
@@ -400,9 +402,10 @@ async function startScan(force = false) {
       renderScanStatus(state);
     }
     if (request !== scanRequest) return;
-    if (state.ready) await loadProjects();
+    if (state.ready) await loadProjects(request);
     if (state.status === 'failed') showToast(state.error || 'Scan failed', true);
   } catch (e) {
+    if (request !== scanRequest) return;
     renderScanStatus({status: 'failed', error: e.message, ready: false});
     showToast(`Scan failed: ${e.message}`, true);
   }
@@ -1029,6 +1032,23 @@ function updatePendingCounts() {
 let currentPreview = null;
 let previewRequest = 0;
 
+function showPreviewError(body, footer, message, offset) {
+  const error = document.createElement('span');
+  error.style.cssText = 'color: var(--red); font-size: 0.8rem';
+  error.textContent = message;
+  footer.replaceChildren();
+  if (offset === 0) {
+    body.replaceChildren(error);
+    return;
+  }
+  footer.appendChild(error);
+  const retry = document.createElement('button');
+  retry.className = 'secondary';
+  retry.textContent = 'Retry';
+  retry.onclick = loadMorePreview;
+  footer.appendChild(retry);
+}
+
 async function previewSession(el, offset = 0) {
   const row = el.closest('.session');
   const source = row.dataset.source, group = row.dataset.group, session = row.dataset.session;
@@ -1057,8 +1077,7 @@ async function previewSession(el, offset = 0) {
     if (request !== previewRequest) return;
 
     if (!resp.ok) {
-      body.innerHTML = `<p style="color: var(--red)">${data.error || 'Failed to load preview'}</p>`;
-      footer.replaceChildren();
+      showPreviewError(body, footer, data.error || 'Failed to load preview', offset);
       return;
     }
 
@@ -1096,8 +1115,7 @@ async function previewSession(el, offset = 0) {
     }
   } catch (e) {
     if (request !== previewRequest) return;
-    body.innerHTML = `<p style="color: var(--red)">Error loading preview: ${e.message}</p>`;
-    footer.replaceChildren();
+    showPreviewError(body, footer, `Error loading preview: ${e.message}`, offset);
   }
 }
 
