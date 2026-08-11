@@ -34,6 +34,12 @@ def log_path() -> Path:
     return state_dir() / "watcher.log"
 
 
+def ui_log_path() -> Path:
+    if sys.platform == "darwin" and not os.environ.get("CTC_STATE_DIR"):
+        return Path.home() / "Library" / "Logs" / APP_NAME / "ui.log"
+    return state_dir() / "ui.log"
+
+
 def watcher_config_path() -> Path:
     return Path(os.environ.get("CTC_WATCHER_CONFIG", config_dir() / "watcher.json"))
 
