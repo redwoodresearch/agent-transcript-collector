@@ -45,7 +45,7 @@ uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
 
 This installs `rr-trans` on your `PATH`, starts the review UI in the background,
 and configures it to start whenever you log in. The UI is then always available
-at <http://localhost:8080>. Run the same command again to fetch the latest version
+at <http://localhost:8123>. Run the same command again to fetch the latest version
 from the repository and restart the UI with it. The background process also
 checks for an updated version whenever it starts.
 
@@ -66,7 +66,7 @@ After setup, the user-facing command is `rr-trans`:
 
 ## Review and upload transcripts
 
-After setup, open <http://localhost:8080>. Preview the transcripts, select the
+After setup, open <http://localhost:8123>. Preview the transcripts, select the
 projects you want to share, enter your name, and click **Upload X transcripts
 now**.
 

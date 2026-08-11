@@ -20,7 +20,7 @@ PACKAGE_SPEC = (
     "git+https://github.com/redwoodresearch/agent-transcript-collector@main"
 )
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8080
+DEFAULT_PORT = 8123
 LAUNCHD_LABEL = "com.redwoodresearch.agent-transcript-collector.ui"
 SYSTEMD_NAME = "agent-transcript-collector-ui"
 FORWARDED_ENV_VARS = (
