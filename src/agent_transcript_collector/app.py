@@ -340,14 +340,20 @@ def _upload_worker(to_upload, contributor, events):
         errors.append({"error": f"{type(e).__name__}: {e}"})
         status = "failed"
     finally:
-        events.put(
-            {
-                "type": "finished",
-                "status": status,
-                "uploads": uploads,
-                "errors": errors,
-            }
-        )
+        try:
+            events.put(
+                {
+                    "type": "finished",
+                    "status": status,
+                    "uploads": uploads,
+                    "errors": errors,
+                }
+            )
+        finally:
+            # Wait for the child queue's feeder thread to flush the terminal
+            # payload before the process exits.
+            events.close()
+            events.join_thread()
 
 
 def _monitor_upload_worker(job_id, process, events):

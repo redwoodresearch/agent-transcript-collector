@@ -33,7 +33,7 @@ LAUNCHD_LABEL = "com.redwoodresearch.agent-transcript-collector"
 SYSTEMD_NAME = "agent-transcript-collector"
 WATCH_INTERVAL_SECONDS = 60 * 60
 AUTO_UPLOADER_VERSION = 5
-WATCHER_CACHE_VERSION = 1
+WATCHER_CACHE_VERSION = 2
 SOURCE_ENV_VARS = (
     "CLAUDE_CONFIG_DIR",
     "CODEX_HOME",
@@ -42,6 +42,7 @@ SOURCE_ENV_VARS = (
     "PI_CODING_AGENT_SESSION_DIR",
     "PI_CODING_AGENT_DIR",
     "CTC_UPLOAD_CONCURRENCY",
+    "CTC_METADATA_CONCURRENCY",
     "CTC_USERNAME_STOPLIST",
 )
 
@@ -213,6 +214,9 @@ def _prepared_cache_entry(prepared, checked_at: str) -> dict | None:
     paths.extend(prepared.sidecars.missing)
     paths.extend(prepared.sidecars.skipped)
     entry["sidecars"] = [_path_cache_entry(path) for path in dict.fromkeys(paths)]
+    entry["directories"] = [
+        _path_cache_entry(path) for path in prepared.sidecars.directories
+    ]
     return entry
 
 
@@ -223,12 +227,17 @@ def _cache_matches(previous: object, current: dict | None) -> bool:
         and previous.get("size") == current["size"]
         and previous.get("mtime_ns") == current["mtime_ns"]
         and isinstance(previous.get("sidecars"), list)
+        and isinstance(previous.get("directories"), list)
     ):
         return False
     return all(
         isinstance(sidecar, dict)
         and sidecar == _path_cache_entry(str(sidecar.get("path", "")))
         for sidecar in previous["sidecars"]
+    ) and all(
+        isinstance(directory, dict)
+        and directory == _path_cache_entry(str(directory.get("path", "")))
+        for directory in previous["directories"]
     )
 
 

@@ -1041,7 +1041,11 @@ async function previewSession(el, offset = 0) {
   const request = ++previewRequest;
 
   currentPreview = {row, source, group, session, parent, offset};
-  if (offset === 0) body.innerHTML = '<p style="color: var(--text-muted)">Loading preview…</p>';
+  if (offset === 0) {
+    body.innerHTML = '<p style="color: var(--text-muted)">Loading preview…</p>';
+    redactCount.textContent = '';
+    redactCount.dataset.count = '0';
+  }
   footer.innerHTML = '<span style="color: var(--text-muted); font-size: 0.8rem">Loading…</span>';
   pane.classList.add('open');
   title.textContent = session.substring(0, 8) + '...';
@@ -1058,8 +1062,10 @@ async function previewSession(el, offset = 0) {
       return;
     }
 
-    redactCount.textContent = data.redaction_count > 0
-      ? `${data.redaction_count} redaction${data.redaction_count !== 1 ? 's' : ''}` : '';
+    const totalRedactions = Number(redactCount.dataset.count || 0) + data.redaction_count;
+    redactCount.dataset.count = String(totalRedactions);
+    redactCount.textContent = totalRedactions > 0
+      ? `${totalRedactions} redaction${totalRedactions !== 1 ? 's' : ''}` : '';
 
     if (data.messages.length === 0 && !data.sidecars.length) {
       if (offset === 0) body.innerHTML = '<p style="color: var(--text-muted)">(no messages)</p>';
