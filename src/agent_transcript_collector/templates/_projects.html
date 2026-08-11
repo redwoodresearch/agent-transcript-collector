@@ -16,7 +16,7 @@
     </div>
     <span class="project-meta">
       {{ project.session_count }} session{{ 's' if project.session_count != 1 else '' }}
-      &middot; <span class="project-pending">upload status pending</span>
+      &middot; <span class="project-pending">preparation pending</span>
     </span>
     <label class="auto-upload" title="Automatically upload new transcripts from this project"
            onclick="event.stopPropagation()">
@@ -71,7 +71,7 @@
                 aria-label="Subagent transcript" data-tooltip="Created by a subagent">&#8627;</span>
           {% endif %}
           <button class="session-upload secondary" onclick="uploadTranscript(this); event.stopPropagation()"
-                  title="Upload this transcript or check it for local changes">Upload</button>
+                  title="Upload this transcript after preparation">Upload</button>
           <span class="uploaded-icon icon-tooltip" role="img" tabindex="0"
                 aria-label="Uploaded" data-tooltip="Already uploaded">&#10003;</span>
         </span>

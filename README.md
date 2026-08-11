@@ -72,10 +72,11 @@ This serves a web UI at <http://localhost:8899> (if that port is busy, the next
 free port is used). The page opens immediately and scans local transcript folders
 in the background; use **Rescan** after creating or moving sessions. Preview the
 transcripts, select the projects you want to share, enter your name, and click
-**Upload X transcripts now**. Upload history is restored from a short-lived
-browser cache when possible; otherwise all discovered transcripts are checked in
-one background batch. Transcripts already uploaded under that contributor name
-are marked **uploaded** without blocking the rest of the UI.
+**Upload X transcripts now**. One background preparation job fingerprints local
+content, resolves side files, compares S3 metadata, and builds redacted archives.
+Its server-side plan is reused across browser refreshes; only locally changed
+transcripts are rechecked. The upload button then sends those prepared archives
+instead of repeating the same work.
 
 ## Automatic uploads
 
@@ -256,7 +257,7 @@ These knobs exist for overriding defaults:
 | `AWS_PROFILE` | _(unset)_ | Standard AWS profile selector; set it to your General Sandbox profile. |
 | `CTC_AWS_PROFILE` | _(unset)_ | Collector-specific profile override. |
 | `CTC_UPLOAD_CONCURRENCY` | `4` | Transcripts uploaded in parallel. |
-| `CTC_METADATA_CONCURRENCY` | `16` | S3 upload-history checks performed in parallel. |
+| `CTC_METADATA_CONCURRENCY` | `16` | S3 fingerprint checks performed in parallel. |
 | `CTC_SIDECAR_MAX_BYTES` | `104857600` | Side-file bytes collected per session. |
 | `CTC_USERNAME_STOPLIST` | _(unset)_ | Comma-separated logins to never redact. |
 | `PORT` | `8899` | Local review UI port. |

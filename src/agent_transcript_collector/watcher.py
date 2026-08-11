@@ -32,7 +32,7 @@ PACKAGE_SPEC = "git+https://github.com/redwoodresearch/agent-transcript-collecto
 LAUNCHD_LABEL = "com.redwoodresearch.agent-transcript-collector"
 SYSTEMD_NAME = "agent-transcript-collector"
 WATCH_INTERVAL_SECONDS = 60 * 60
-AUTO_UPLOADER_VERSION = 5
+AUTO_UPLOADER_VERSION = 6
 WATCHER_CACHE_VERSION = 2
 SOURCE_ENV_VARS = (
     "CLAUDE_CONFIG_DIR",

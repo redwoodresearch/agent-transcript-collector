@@ -10,7 +10,9 @@ import multiprocessing
 import os
 import queue
 import re
+import shutil
 import socket
+import tempfile
 import threading
 import time
 import uuid
@@ -33,7 +35,12 @@ from .sources.base import human_size, session_sidecars
 from .uploader import (
     UploadBusy,
     UploadLock,
-    existing_transcripts,
+    artifact_is_current,
+    build_upload_artifact,
+    partition_transcripts,
+    prepared_signature,
+    signature_is_current,
+    upload_artifacts,
 )
 from .uploader import (
     upload_transcripts as _upload_transcripts,
@@ -184,6 +191,20 @@ def _cached_session(source: str, group: str, session: str, parent: str | None):
         return SCAN_CACHE["sessions"].get((source, group, parent or None, session))
 
 
+def _session_key(source: str, session) -> tuple[str, str, str, str]:
+    return (source, session.group_key, session.parent or "", session.id)
+
+
+def _session_item(source: str, session, state: str) -> dict:
+    return {
+        "source": source,
+        "group": session.group_key,
+        "parent": session.parent,
+        "session": session.id,
+        "state": state,
+    }
+
+
 @app.post("/api/scan")
 def start_scan(force: bool = False):
     return _start_scan(force)
@@ -256,6 +277,320 @@ def preview_session(source: str, group: str, session: str, parent: str = "",
     }
 
 
+# --- authoritative background upload preparation ---
+PREPARATIONS: dict[str, dict] = {}
+PREPARATIONS_LOCK = threading.Lock()
+
+
+def _preparation_worker(to_prepare, contributor, directory, events):
+    """Classify and prebuild every pending transcript outside the web process."""
+    items = []
+    artifacts = []
+    checks = {}
+    errors = []
+    status = "failed"
+    total = sum(len(sessions) for _, sessions in to_prepare)
+    source_offset = 0
+    try:
+        events.put({"type": "progress", "stage": "connecting", "done": 0})
+        s3 = _make_s3_client()
+        metadata: dict[str, dict] = {}
+        for source_id, sessions in to_prepare:
+            source = get_source(source_id)
+            if source is None:
+                errors.append({"source": source_id, "error": "Unknown source"})
+                source_offset += len(sessions)
+                continue
+
+            def report(stage, completed, stage_total):
+                if stage == "fingerprinting":
+                    overall = source_offset * 3 + completed
+                else:
+                    overall = source_offset * 3 + len(sessions) + completed
+                events.put({
+                    "type": "progress",
+                    "stage": stage,
+                    "done": overall,
+                    "total_work": max(1, total * 3),
+                    "item_done": completed,
+                    "item_total": stage_total,
+                })
+
+            def remember_current(prepared):
+                checks[_session_key(source_id, prepared.session)] = prepared_signature(
+                    prepared
+                )
+
+            pending, current, source_errors = partition_transcripts(
+                s3,
+                source,
+                sessions,
+                contributor,
+                uploaded_metadata=metadata,
+                on_status=report,
+                on_checked=remember_current,
+            )
+            errors.extend(source_errors)
+            items.extend(_session_item(source_id, session, "current") for session in current)
+            packaged = 0
+            if pending:
+                events.put({
+                    "type": "progress",
+                    "stage": "preparing",
+                    "done": source_offset * 3 + len(sessions) * 2,
+                    "total_work": max(1, total * 3),
+                    "item_done": 0,
+                    "item_total": len(pending),
+                })
+            for prepared in pending:
+                try:
+                    artifact = build_upload_artifact(
+                        source, prepared, contributor, directory
+                    )
+                except Exception as exc:
+                    errors.append({
+                        "source": source_id,
+                        "error": f"{prepared.session.id}: {type(exc).__name__}: {exc}",
+                    })
+                    items.append(_session_item(source_id, prepared.session, "error"))
+                else:
+                    artifacts.append(artifact)
+                    items.append(_session_item(source_id, prepared.session, "ready"))
+                packaged += 1
+                events.put({
+                    "type": "progress",
+                    "stage": "preparing",
+                    "done": source_offset * 3 + len(sessions) * 2 + packaged,
+                    "total_work": max(1, total * 3),
+                    "item_done": packaged,
+                    "item_total": len(pending),
+                })
+            source_offset += len(sessions)
+        status = "ready" if not errors else "partial" if items else "failed"
+    except Exception as exc:
+        status = "failed"
+        errors.append({"error": f"{type(exc).__name__}: {exc}"})
+    finally:
+        try:
+            events.put({
+                "type": "finished",
+                "status": status,
+                "items": items,
+                "artifacts": artifacts,
+                "checks": checks,
+                "errors": errors,
+            })
+        finally:
+            events.close()
+            events.join_thread()
+
+
+def _monitor_preparation(plan_id, process, events):
+    finished = False
+
+    def apply_event(event):
+        nonlocal finished
+        with PREPARATIONS_LOCK:
+            plan = PREPARATIONS.get(plan_id)
+            if plan is None:
+                return
+            if event["type"] == "progress":
+                for key in ("stage", "done", "total_work", "item_done", "item_total"):
+                    if key in event:
+                        plan[key] = event[key]
+            elif event["type"] == "finished":
+                plan["items"].extend(event["items"])
+                plan["artifacts"].extend(event["artifacts"])
+                plan["checks"].update(event["checks"])
+                plan["errors"] = event["errors"]
+                plan["status"] = (
+                    "partial"
+                    if event["errors"] and plan["items"]
+                    else event["status"]
+                )
+                plan["finished_at"] = time.time()
+                finished = True
+
+    while process.is_alive():
+        try:
+            apply_event(events.get(timeout=0.25))
+        except queue.Empty:
+            continue
+    process.join()
+    while True:
+        try:
+            apply_event(events.get_nowait())
+        except queue.Empty:
+            break
+    with PREPARATIONS_LOCK:
+        plan = PREPARATIONS.get(plan_id)
+        if plan is not None and not finished:
+            plan["status"] = "failed"
+            plan["errors"].append({
+                "error": f"Preparation worker exited unexpectedly ({process.exitcode})"
+            })
+            plan["finished_at"] = time.time()
+    events.close()
+
+
+def _preparation_snapshot(plan: dict) -> dict:
+    return {
+        key: (list(value) if isinstance(value, list) else value)
+        for key, value in plan.items()
+        if key not in {"artifacts", "checks", "selection", "directory"}
+    }
+
+
+@app.post("/api/prepare")
+async def prepare_uploads(request: Request):
+    body = await request.json()
+    contributor = _safe_name(body.get("contributor_name", "anonymous"))
+    selected = body.get("sessions", [])
+    force = bool(body.get("force"))
+    to_prepare = [
+        (source.id, sessions) for source, sessions in _resolve_selection(selected)
+    ]
+    selection = sorted(
+        _session_key(source_id, session)
+        for source_id, sessions in to_prepare
+        for session in sessions
+    )
+    if not selection:
+        return JSONResponse({"error": "No transcripts are available"}, status_code=400)
+    with SCAN_LOCK:
+        scan_finished_at = SCAN_STATE["finished_at"]
+    with PREPARATIONS_LOCK:
+        seed_items = []
+        seed_artifacts = []
+        seed_checks = {}
+        if not force:
+            base = None
+            for plan_id, plan in reversed(PREPARATIONS.items()):
+                if (
+                    plan["contributor"] == contributor
+                    and plan["selection"] == selection
+                    and plan["scan_finished_at"] == scan_finished_at
+                ):
+                    if plan["finished_at"] is None:
+                        return {"plan_id": plan_id, **_preparation_snapshot(plan)}
+                    base = plan
+                    break
+            if base is not None:
+                seed_checks = {
+                    key: value
+                    for key, value in base["checks"].items()
+                    if signature_is_current(value)
+                }
+                seed_artifacts = [
+                    item for item in base["artifacts"] if artifact_is_current(item)
+                ]
+                valid = set(seed_checks)
+                valid.update(
+                    (
+                        item.get("source", ""),
+                        item.get("group", ""),
+                        item.get("parent") or "",
+                        item.get("session", ""),
+                    )
+                    for item in seed_artifacts
+                )
+                seed_items = [
+                    item for item in base["items"]
+                    if (
+                        item.get("source", ""),
+                        item.get("group", ""),
+                        item.get("parent") or "",
+                        item.get("session", ""),
+                    ) in valid
+                ]
+                if len(valid) == len(selection):
+                    return {"plan_id": plan_id, **_preparation_snapshot(base)}
+                to_prepare = [
+                    (source_id, [
+                        session for session in sessions
+                        if _session_key(source_id, session) not in valid
+                    ])
+                    for source_id, sessions in to_prepare
+                ]
+                to_prepare = [item for item in to_prepare if item[1]]
+        plan_id = uuid.uuid4().hex[:12]
+        directory = tempfile.mkdtemp(prefix=f"ctc-plan-{plan_id}-")
+        os.chmod(directory, 0o700)
+        copied_artifacts = []
+        for item in seed_artifacts:
+            copied = dict(item)
+            target = Path(directory) / Path(item["path"]).name
+            try:
+                os.link(item["path"], target)
+            except OSError:
+                shutil.copy2(item["path"], target)
+            target.chmod(0o600)
+            copied["path"] = str(target)
+            copied_artifacts.append(copied)
+        seed_artifacts = copied_artifacts
+        PREPARATIONS[plan_id] = {
+            "status": "preparing",
+            "stage": "starting",
+            "done": 0,
+            "total_work": sum(len(sessions) for _, sessions in to_prepare) * 3,
+            "item_done": 0,
+            "item_total": sum(len(sessions) for _, sessions in to_prepare),
+            "cached": len(seed_items),
+            "contributor": contributor,
+            "selection": selection,
+            "scan_finished_at": scan_finished_at,
+            "directory": directory,
+            "items": seed_items,
+            "artifacts": seed_artifacts,
+            "checks": seed_checks,
+            "errors": [],
+            "started_at": time.time(),
+            "finished_at": None,
+        }
+        finished = [
+            (old_id, old) for old_id, old in PREPARATIONS.items()
+            if old_id != plan_id and old["finished_at"] is not None
+        ]
+        for old_id, old in finished[:-2]:
+            PREPARATIONS.pop(old_id, None)
+            shutil.rmtree(old["directory"], ignore_errors=True)
+    try:
+        context = multiprocessing.get_context("spawn")
+        events = context.Queue()
+        process = context.Process(
+            target=_preparation_worker,
+            args=(to_prepare, contributor, directory, events),
+            daemon=True,
+        )
+        process.start()
+    except Exception as exc:
+        with PREPARATIONS_LOCK:
+            plan = PREPARATIONS[plan_id]
+            plan["status"] = "failed"
+            plan["errors"] = [{
+                "error": f"Could not start preparation worker: {exc}"
+            }]
+            plan["finished_at"] = time.time()
+        return JSONResponse(
+            {"error": plan["errors"][0]["error"]}, status_code=500
+        )
+    threading.Thread(
+        target=_monitor_preparation,
+        args=(plan_id, process, events),
+        daemon=True,
+    ).start()
+    return JSONResponse({"plan_id": plan_id}, status_code=202)
+
+
+@app.get("/api/prepare/{plan_id}")
+def preparation_status(plan_id: str):
+    with PREPARATIONS_LOCK:
+        plan = PREPARATIONS.get(plan_id)
+        if plan is None:
+            return JSONResponse({"error": "Unknown preparation"}, status_code=404)
+        return _preparation_snapshot(plan)
+
+
 # --- background upload jobs (so closing the tab can't abort an upload) ---
 JOBS: dict[str, dict] = {}
 JOBS_LOCK = threading.Lock()
@@ -291,7 +626,7 @@ def _resolve_selection(selected):
     return out
 
 
-def _upload_worker(to_upload, contributor, events):
+def _upload_worker(to_upload, contributor, events, plan_artifacts=None):
     """Run CPU-heavy preparation and uploading outside the web process."""
     uploads = []
     errors = []
@@ -303,6 +638,15 @@ def _upload_worker(to_upload, contributor, events):
             )
             s3 = _make_s3_client()
             uploaded_metadata: dict[str, dict] = {}
+            artifact_map = {
+                (
+                    item.get("source", ""),
+                    item.get("group", ""),
+                    item.get("parent") or "",
+                    item.get("session", ""),
+                ): item
+                for item in (plan_artifacts or [])
+            }
             total_sessions = sum(len(sessions) for _, sessions in to_upload)
             total_work = max(1, total_sessions * 3)
             source_offset = 0
@@ -349,17 +693,33 @@ def _upload_worker(to_upload, contributor, events):
                     )
 
                 try:
-                    uploaded, upload_errors = _upload_transcripts(
-                        s3,
-                        source,
-                        sessions,
-                        contributor,
-                        on_progress=advance,
-                        on_status=report,
-                        uploaded_metadata=uploaded_metadata,
-                    )
-                    uploads.extend(uploaded)
-                    errors.extend(upload_errors)
+                    prepared_artifacts = []
+                    fallback_sessions = []
+                    for session in sessions:
+                        artifact = artifact_map.get(_session_key(source_id, session))
+                        if artifact is not None and artifact_is_current(artifact):
+                            prepared_artifacts.append(artifact)
+                        else:
+                            fallback_sessions.append(session)
+                    if prepared_artifacts:
+                        report("uploading", 0, len(prepared_artifacts))
+                        prepared_uploads, prepared_errors = upload_artifacts(
+                            s3, prepared_artifacts, on_progress=advance
+                        )
+                        uploads.extend(prepared_uploads)
+                        errors.extend(prepared_errors)
+                    if fallback_sessions:
+                        fallback_uploads, fallback_errors = _upload_transcripts(
+                            s3,
+                            source,
+                            fallback_sessions,
+                            contributor,
+                            on_progress=advance,
+                            on_status=report,
+                            uploaded_metadata=uploaded_metadata,
+                        )
+                        uploads.extend(fallback_uploads)
+                        errors.extend(fallback_errors)
                 except Exception as e:
                     errors.append(
                         {
@@ -468,99 +828,13 @@ def _monitor_upload_worker(job_id, process, events):
     events.close()
 
 
-def _upload_history_error(error: str) -> str:
-    if "TokenRetrievalError" in error or "token has expired" in error.lower():
-        return (
-            "AWS login expired. Run: "
-            f"aws sso login --profile {selected_profile()}"
-        )
-    return error
-
-
-def _uploaded_sessions(body: dict):
-    contributor = _safe_name(body.get("contributor_name", "anonymous"))
-    sessions = body.get("sessions", [])
-    by_source: dict[str, list[dict]] = defaultdict(list)
-    for item in sessions:
-        source_id = item.get("source", "")
-        if get_source(source_id) is not None:
-            by_source[source_id].append(item)
-
-    try:
-        s3 = _make_s3_client()
-        uploaded = []
-        errors = []
-        for source_id, source_sessions in by_source.items():
-            source = get_source(source_id)
-            with SCAN_LOCK:
-                resolved = {
-                    (group, parent, session): value
-                    for (sid, group, parent, session), value in
-                    SCAN_CACHE["sessions"].items()
-                    if sid == source_id
-                }
-            resolved_items = []
-            for item in source_sessions:
-                session = resolved.get(
-                    (
-                        item.get("group", ""),
-                        item.get("parent") or None,
-                        item.get("session", ""),
-                    )
-                )
-                if session is not None:
-                    resolved_items.append((item, session))
-            found, source_errors = existing_transcripts(
-                s3,
-                source,
-                [session for _, session in resolved_items],
-                contributor,
-            )
-            errors.extend(source_errors)
-            found_ids = {
-                (session.group_key, session.parent or None, session.id)
-                for session in found
-            }
-            uploaded.extend(
-                item
-                for item, session in resolved_items
-                if (session.group_key, session.parent or None, session.id) in found_ids
-            )
-            if source_errors:
-                break
-        if errors:
-            # Never turn a failed metadata request into "nothing is uploaded".
-            # That false negative both misleads the user and enables needless
-            # re-uploads. The browser preserves its last known state on 503.
-            first = _upload_history_error(
-                errors[0].get("error", "unknown error")
-            )
-            return JSONResponse(
-                {"error": f"Upload history unavailable: {first}"},
-                status_code=503,
-            )
-        return {"uploaded": uploaded}
-    except Exception as e:
-        error = _upload_history_error(f"{type(e).__name__}: {e}")
-        return JSONResponse(
-            {"error": f"Upload history unavailable: {error}"},
-            status_code=503,
-        )
-
-
-@app.post("/api/uploaded")
-async def uploaded_sessions(request: Request):
-    """Check remote history in a worker so it never stalls the UI event loop."""
-    body = await request.json()
-    return await run_in_threadpool(_uploaded_sessions, body)
-
-
 @app.post("/api/upload")
 async def upload(request: Request):
     """Start a background upload job; returns a job id to poll."""
     body = await request.json()
     selected = body.get("selected", [])
     contributor = _safe_name(body.get("contributor_name", "anonymous"))
+    plan_id = str(body.get("plan_id", ""))
     if not selected:
         return JSONResponse({"error": "Nothing selected"}, status_code=400)
     to_upload = [
@@ -571,6 +845,13 @@ async def upload(request: Request):
             {"error": "Selected transcripts are no longer available"},
             status_code=400,
         )
+
+    plan_artifacts = []
+    if plan_id:
+        with PREPARATIONS_LOCK:
+            plan = PREPARATIONS.get(plan_id)
+            if plan is not None and plan["contributor"] == contributor:
+                plan_artifacts = list(plan["artifacts"])
 
     with JOBS_LOCK:
         if _active_job["id"] is not None:
@@ -602,7 +883,7 @@ async def upload(request: Request):
         events = context.Queue()
         process = context.Process(
             target=_upload_worker,
-            args=(to_upload, contributor, events),
+            args=(to_upload, contributor, events, plan_artifacts),
             daemon=True,
         )
         process.start()

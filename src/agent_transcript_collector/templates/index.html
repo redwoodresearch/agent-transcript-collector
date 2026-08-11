@@ -199,6 +199,7 @@
     font-weight: 700; line-height: 1;
   }
   .session.uploaded .uploaded-icon { display: inline-flex; }
+  .session.uploaded .session-upload { display: none; }
 
   .preview-pane {
     position: fixed; top: 0; right: 0; width: 480px; height: 100vh;
@@ -299,14 +300,14 @@
   </div>
   <div class="history-controls" id="history-controls" hidden>
     <div class="history-copy">
-      <strong id="history-title">Checking upload status…</strong>
+      <strong id="history-title">Preparing uploads…</strong>
       <span id="history-status">Waiting for transcript scan</span>
     </div>
     <div class="history-progress">
       <div class="bar"><div class="bar-fill" id="history-bar-fill"></div></div>
     </div>
     <button class="secondary" id="history-refresh-btn"
-            onclick="startHistoryScan(true)" disabled>Refresh status</button>
+            onclick="startHistoryScan(true)" disabled>Prepare again</button>
   </div>
   <div class="upload-progress-row" id="upload-progress">
     <div class="upload-progress-copy">
@@ -759,6 +760,7 @@ let historyRevision = 0;
 let historyController = null;
 let historyRun = 0;
 let forceHistoryAfterLoad = false;
+let uploadPlanId = null;
 function onNameInput() {
   nameRevision += 1;
   historyRevision += 1;
@@ -795,38 +797,53 @@ async function refreshUploaded(scope = null, options = {}) {
   if (!rows.length) return {ok: true, checked: 0};
   const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
   projects.forEach(project => project.classList.add('history-checking'));
-  if (!options.silent) setHistoryStatus('Checking upload history…');
+  if (!options.silent) setHistoryStatus('Preparing uploads…');
   updatePendingCounts();
   if (historyController) historyController.abort();
   const controller = new AbortController();
   historyController = controller;
-  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 10000);
   try {
-    const resp = await fetch('/api/uploaded', {
+    const resp = await fetch('/api/prepare', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       signal: controller.signal,
       body: JSON.stringify({
         contributor_name: contributorName,
         sessions: rows.map(sessionDescriptor),
+        force: Boolean(options.force),
       }),
     });
-    const data = await resp.json();
-    if (request !== historyRevision || historyController !== controller) {
-      projects.forEach(project => project.classList.remove('history-checking'));
-      updatePendingCounts();
-      return {ok: false, superseded: true};
-    }
+    let data = await resp.json();
     if (!resp.ok) {
       projects.forEach(project => project.classList.remove('history-checking'));
-      const error = data.error || 'Could not refresh upload history';
+      const error = data.error || 'Could not prepare uploads';
       if (!options.silent) setHistoryStatus(error, true, startHistoryScan);
       updatePendingCounts();
       return {ok: false, error};
     }
-    const uploaded = new Set((data.uploaded || []).map(item =>
-      [item.source, item.group, item.parent || '', item.session].join('|')));
-    rows.forEach(row => row.classList.toggle('uploaded', uploaded.has(sessionKey(row))));
+    uploadPlanId = data.plan_id;
+    while (!['ready', 'partial', 'failed'].includes(data.status)) {
+      if (request !== historyRevision || historyController !== controller) {
+        return {ok: false, superseded: true};
+      }
+      const done = Number(data.done || 0);
+      const totalWork = Number(data.total_work || rows.length * 3);
+      renderHistoryProgress('checking', done, totalWork,
+        preparationMessage(data, rows.length));
+      await new Promise(resolve => setTimeout(resolve, 500));
+      const statusResp = await fetch('/api/prepare/' + uploadPlanId, {
+        signal: controller.signal,
+      });
+      data = await statusResp.json();
+      if (!statusResp.ok) throw new Error(data.error || 'Preparation status unavailable');
+    }
+    if (request !== historyRevision || historyController !== controller) {
+      return {ok: false, superseded: true};
+    }
+    const current = new Set((data.items || [])
+      .filter(item => item.state === 'current')
+      .map(item => [item.source, item.group, item.parent || '', item.session].join('|')));
+    rows.forEach(row => row.classList.toggle('uploaded', current.has(sessionKey(row))));
     projects.forEach(project => {
       if (options.completeProject !== false) {
         project.classList.remove('history-checking');
@@ -835,7 +852,13 @@ async function refreshUploaded(scope = null, options = {}) {
     });
     if (!options.silent) setHistoryStatus('');
     updatePendingCounts();
-    return {ok: true, checked: rows.length};
+    const firstError = (data.errors || [])[0];
+    return {
+      ok: data.status !== 'failed',
+      checked: rows.length,
+      error: firstError && (firstError.error || String(firstError)),
+      partial: data.status === 'partial',
+    };
   } catch (e) {
     projects.forEach(project => project.classList.remove('history-checking'));
     if (request !== historyRevision || historyController !== controller) {
@@ -843,15 +866,27 @@ async function refreshUploaded(scope = null, options = {}) {
       return {ok: false, superseded: true};
     }
     const error = e.name === 'AbortError'
-      ? 'Upload history timed out. Existing upload state was left unchanged.'
-      : `Could not refresh upload history: ${e.message}`;
+      ? 'Upload preparation was superseded.'
+      : `Could not prepare uploads: ${e.message}`;
     if (!options.silent) setHistoryStatus(error, true, startHistoryScan);
     updatePendingCounts();
     return {ok: false, error};
   } finally {
-    clearTimeout(timeout);
     if (historyController === controller) historyController = null;
   }
+}
+
+function preparationMessage(data, total) {
+  const labels = {
+    starting: 'Starting preparation',
+    connecting: 'Connecting to upload storage',
+    fingerprinting: 'Checking local content',
+    checking: 'Comparing with uploaded versions',
+    preparing: 'Building redacted uploads',
+  };
+  const itemDone = Number(data.item_done || 0);
+  const itemTotal = Number(data.item_total || total);
+  return `${labels[data.stage] || 'Preparing uploads'} · ${itemDone}/${itemTotal}`;
 }
 
 function renderHistoryProgress(status, checked, total, message = '') {
@@ -865,66 +900,21 @@ function renderHistoryProgress(status, checked, total, message = '') {
   controls.classList.toggle('failed', status === 'failed');
   fill.style.width = `${total ? Math.round((checked / total) * 100) : 0}%`;
   refresh.disabled = status === 'checking' || status === 'paused';
-  refresh.textContent = status === 'failed' ? 'Retry' : 'Refresh status';
+  refresh.textContent = status === 'failed' ? 'Retry' : 'Prepare again';
   if (status === 'checking') {
-    title.textContent = 'Checking upload status…';
-    detail.textContent = message || `${checked}/${total} transcripts checked`;
-  } else if (status === 'cached') {
-    title.textContent = 'Upload status ready';
-    detail.textContent = message;
+    title.textContent = 'Preparing uploads…';
+    detail.textContent = message || 'Checking transcripts';
   } else if (status === 'ready') {
-    title.textContent = 'Upload status ready';
-    detail.textContent = `${total} transcript${total === 1 ? '' : 's'} checked`;
+    title.textContent = 'Uploads ready';
+    detail.textContent = message || `${total} transcript${total === 1 ? '' : 's'} prepared`;
   } else if (status === 'paused') {
-    title.textContent = 'Upload status refresh paused';
+    title.textContent = 'Upload preparation paused';
     detail.textContent = message;
   } else {
-    title.textContent = 'Upload status unavailable';
+    title.textContent = 'Upload preparation unavailable';
     detail.textContent = message;
   }
   detail.title = detail.textContent;
-}
-
-const HISTORY_CACHE_TTL_MS = 5 * 60 * 1000;
-
-function historyCacheKey() {
-  const contributor = document.getElementById('contributor-name').value.trim() || 'anonymous';
-  return `ctc_upload_history_v1:${contributor}`;
-}
-
-function restoreHistoryCache(rows, projects) {
-  try {
-    const cached = JSON.parse(localStorage.getItem(historyCacheKey()) || 'null');
-    if (!cached || Date.now() - cached.savedAt > HISTORY_CACHE_TTL_MS) return false;
-    const current = rows.map(sessionKey).sort();
-    if (JSON.stringify(current) !== JSON.stringify(cached.checked || [])) return false;
-    const uploaded = new Set(cached.uploaded || []);
-    rows.forEach(row => row.classList.toggle('uploaded', uploaded.has(sessionKey(row))));
-    projects.forEach(project => {
-      project.classList.remove('history-checking');
-      project.classList.add('history-checked');
-    });
-    const ageSeconds = Math.max(0, Math.round((Date.now() - cached.savedAt) / 1000));
-    const age = ageSeconds < 60
-      ? 'Cached just now'
-      : `Cached ${Math.round(ageSeconds / 60)}m ago`;
-    renderHistoryProgress('cached', rows.length, rows.length,
-      `${age} · ${rows.length} transcripts`);
-    updatePendingCounts();
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-
-function saveHistoryCache(rows) {
-  try {
-    localStorage.setItem(historyCacheKey(), JSON.stringify({
-      savedAt: Date.now(),
-      checked: rows.map(sessionKey).sort(),
-      uploaded: rows.filter(row => row.classList.contains('uploaded')).map(sessionKey).sort(),
-    }));
-  } catch (e) {}
 }
 
 async function startHistoryScan(force = false) {
@@ -941,22 +931,21 @@ async function startHistoryScan(force = false) {
     project => Array.from(project.querySelectorAll('.session')));
   const total = rows.length;
   setHistoryStatus('');
-  if (!force && restoreHistoryCache(rows, projects)) return;
   renderHistoryProgress('checking', 0, total,
-    `Checking ${total} transcripts in one batch`);
+    `Preparing ${total} transcripts in one background job`);
   const result = await refreshUploaded(null, {
     silent: true,
     projects,
     rows,
-    timeoutMs: 30000,
+    force,
   });
   if (run !== historyRun || result.superseded) return;
   if (!result.ok) {
     renderHistoryProgress('failed', 0, total, result.error);
     return;
   }
-  saveHistoryCache(rows);
-  renderHistoryProgress('ready', total, total);
+  renderHistoryProgress('ready', total, total,
+    result.partial ? 'Ready with some transcript errors' : '');
 }
 
 function pauseHistoryScanForUpload() {
@@ -966,7 +955,7 @@ function pauseHistoryScanForUpload() {
   if (controller) controller.abort();
   const total = document.querySelectorAll('.session').length;
   renderHistoryProgress('paused', 0, total,
-    'Upload status will refresh when this upload finishes');
+    'Preparation will refresh when this upload finishes');
   setHistoryStatus('');
 }
 
@@ -1025,10 +1014,16 @@ function updatePendingCounts() {
   });
 
   document.querySelectorAll('.session-upload').forEach(upload => {
-    upload.disabled = uploadBusy || watcherRunning;
+    const row = upload.closest('.session');
+    const prepared = row.closest('.project').classList.contains('history-checked');
+    const current = row.classList.contains('uploaded');
+    upload.disabled = uploadBusy || watcherRunning || !prepared || current;
+    upload.textContent = current ? 'Current' : 'Upload';
     upload.title = watcherRunning
       ? 'Automatic uploader is running. Manual uploads will be available when it finishes.'
-      : 'Upload this transcript or check it for local changes';
+      : !prepared ? 'Waiting for upload preparation to finish'
+      : current ? 'This transcript matches the uploaded version'
+      : 'Upload this prepared transcript';
   });
 
   button.title = watcherRunning
@@ -1041,8 +1036,8 @@ function updatePendingCounts() {
     button.textContent = 'Upload 0 transcripts now';
     button.disabled = true;
   } else if (selectedHistoryUnknown) {
-    button.textContent = `Upload ${selectedTranscripts} transcript${selectedTranscripts === 1 ? '' : 's'} now`;
-    button.disabled = watcherRunning;
+    button.textContent = `Preparing ${selectedTranscripts} transcript${selectedTranscripts === 1 ? '' : 's'}…`;
+    button.disabled = true;
   } else {
     button.textContent = selectedPending
       ? `Upload ${selectedPending} transcript${selectedPending === 1 ? '' : 's'} now`
@@ -1185,7 +1180,8 @@ function loadJob() { try { return localStorage.getItem('ctc_job'); } catch (e) {
 
 function uploadNow() {
   const rows = Array.from(document.querySelectorAll('.project'))
-    .flatMap(project => consentedRows(project));
+    .flatMap(project => consentedRows(project))
+    .filter(row => !row.classList.contains('uploaded'));
   startUpload(rows);
 }
 
@@ -1220,7 +1216,11 @@ async function startUpload(rows) {
     const resp = await fetch('/api/upload', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ selected, contributor_name: contributorName }),
+      body: JSON.stringify({
+        selected,
+        contributor_name: contributorName,
+        plan_id: uploadPlanId,
+      }),
     });
     const data = await resp.json();
     if (resp.status === 409) {            // already running — attach to it
