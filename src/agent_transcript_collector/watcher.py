@@ -31,7 +31,7 @@ PACKAGE_SPEC = "git+https://github.com/redwoodresearch/agent-transcript-collecto
 LAUNCHD_LABEL = "com.redwoodresearch.agent-transcript-collector"
 SYSTEMD_NAME = "agent-transcript-collector"
 WATCH_INTERVAL_SECONDS = 60 * 60
-AUTO_UPLOADER_VERSION = 3
+AUTO_UPLOADER_VERSION = 4
 SOURCE_ENV_VARS = (
     "CLAUDE_CONFIG_DIR",
     "CODEX_HOME",
@@ -346,6 +346,10 @@ def install(
     """
     platform = platform or sys.platform
     config.auto_uploader_version = AUTO_UPLOADER_VERSION
+    # Scheduled installs must follow the supported release branch. Persisting a
+    # development-branch package spec can permanently break the watcher once
+    # that temporary branch is removed.
+    config.package_spec = PACKAGE_SPEC
     config.uv_path = config.uv_path or _find_uv()
     target = save_config(config, config_path)
     if platform == "darwin":
