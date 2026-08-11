@@ -571,6 +571,16 @@ function formatUploadTime(value) {
     : {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'});
 }
 
+function nextScheduledUpload(lastFinished, intervalSeconds) {
+  const finishedAt = new Date(lastFinished).getTime();
+  const interval = Number(intervalSeconds) * 1000;
+  if (!Number.isFinite(finishedAt) || !Number.isFinite(interval) || interval <= 0) {
+    return null;
+  }
+  const intervalsElapsed = Math.max(0, Math.floor((Date.now() - finishedAt) / interval));
+  return new Date(finishedAt + (intervalsElapsed + 1) * interval);
+}
+
 async function loadWatcher(refreshHistory = true) {
   const status = document.getElementById('watcher-status');
   const schedule = document.getElementById('watcher-schedule');
@@ -614,13 +624,21 @@ async function loadWatcher(refreshHistory = true) {
     const last = data.state || {};
     const lastError = (last.errors || [])[0];
     const lastUploaded = formatUploadTime(last.last_uploaded_at);
-    const nextUpload = autoUploadEnabled && last.finished_at
-      ? formatUploadTime(new Date(
-          new Date(last.finished_at).getTime() + data.interval_seconds * 1000))
+    const intervalMs = Number(data.interval_seconds) * 1000;
+    const lastFinishedMs = new Date(last.finished_at).getTime();
+    const runOverdue = autoUploadEnabled && Number.isFinite(lastFinishedMs)
+      && Number.isFinite(intervalMs) && Date.now() - lastFinishedMs > intervalMs * 2;
+    const nextScheduled = autoUploadEnabled && last.finished_at
+      ? nextScheduledUpload(last.finished_at, data.interval_seconds)
+      : null;
+    const nextUpload = nextScheduled
+      ? formatUploadTime(nextScheduled)
       : autoUploadEnabled ? 'soon' : 'disabled';
-    schedule.textContent = `Last uploaded ${lastUploaded} · Next upload ${nextUpload}`;
+    schedule.textContent = `Last uploaded ${lastUploaded} · ${runOverdue ? 'Next scheduled attempt' : 'Next upload'} ${nextUpload}`;
     const error = data.error
-      || (last.status === 'failed' && lastError
+      || (runOverdue
+        ? `Automatic uploader has not reported a completed run since ${formatUploadTime(last.finished_at)}. The scheduler will keep retrying.`
+        : last.status === 'failed' && lastError
         ? (lastError.includes('TokenRetrievalError')
           ? `Last automatic upload failed ${formatUploadTime(last.finished_at)} because AWS credentials were unavailable during that run. The next scheduled run will retry.`
           : `Last automatic upload failed ${formatUploadTime(last.finished_at)}: ${lastError}`)
