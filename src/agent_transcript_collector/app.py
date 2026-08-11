@@ -819,18 +819,32 @@ def _find_free_port(start: int, host: str = "127.0.0.1", tries: int = 20) -> int
     return None
 
 
-def main() -> int:
-    base = int(os.environ.get("PORT", "8899"))
-    port = _find_free_port(base)
+def main(
+    *,
+    host: str = "127.0.0.1",
+    port: int | None = None,
+    open_browser: bool = True,
+    strict_port: bool = False,
+) -> int:
+    base = port if port is not None else int(os.environ.get("PORT", "8899"))
+    port = base if strict_port else _find_free_port(base, host=host)
     if port is None:
         print(f"No free port found in {base}-{base + 19}; is something stuck?")
         return 1
+    if strict_port and _find_free_port(base, host=host, tries=1) is None:
+        print(f"Port {base} is already in use.")
+        return 1
     if port != base:
         print(f"Port {base} is in use — using {port} instead.")
-    threading.Timer(1.0, lambda: webbrowser.open(f"http://localhost:{port}")).start()
-    print(f"Opening browser at http://localhost:{port}")
+    if open_browser:
+        threading.Timer(
+            1.0, lambda: webbrowser.open(f"http://localhost:{port}")
+        ).start()
+        print(f"Opening browser at http://localhost:{port}")
+    else:
+        print(f"Serving UI at http://localhost:{port}")
     print("Press Ctrl+C to stop.")
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    uvicorn.run(app, host=host, port=port, log_level="warning")
     return 0
 
 

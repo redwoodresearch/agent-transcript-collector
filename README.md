@@ -8,7 +8,7 @@ to `s3://rr-agent-transcripts` in `us-east-1`.
 
 - [Prerequisites](#prerequisites)
 - [Install](#install)
-- [Upload transcripts](#upload-transcripts)
+- [Review and upload transcripts](#review-and-upload-transcripts)
 - [Automatic uploads](#automatic-uploads)
 - [Browse uploaded transcripts](#browse-uploaded-transcripts)
 - [What gets collected](#what-gets-collected)
@@ -36,47 +36,54 @@ browser only requires `s3:ListBucket`.
 
 ## Install
 
-Run it directly with no install:
+Run the default setup command:
 
 ```bash
 uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
-  rr-trans ui
+  rr-trans
 ```
 
-Or install once so the commands are on your `PATH`:
+This installs `rr-trans` on your `PATH`, starts the review UI in the background,
+and configures it to start whenever you log in. The UI is then always available
+at <http://localhost:8123>. Run the same command again to fetch the latest version
+from the repository and restart the UI with it. The background process also
+checks for an updated version whenever it starts.
 
-```bash
-uv tool install 'git+https://github.com/redwoodresearch/agent-transcript-collector'
-```
+The service is installed for your user account with a macOS LaunchAgent or Linux
+systemd user service. It does not require `sudo`. `uv` must remain installed at
+the path recorded during setup.
 
-The user-facing command is `rr-trans`:
+After setup, the user-facing command is `rr-trans`:
 
 | Command | Purpose |
 |---|---|
-| `rr-trans ui` | Local review UI, uploads, watcher setup |
+| `rr-trans` or `rr-trans install` | Install/update the CLI and background UI |
+| `rr-trans ui` | Run a temporary foreground UI session |
+| `rr-trans ui-service status` | Show the background UI status and log path |
+| `rr-trans ui-service uninstall` | Stop and remove the background UI service |
 | `rr-trans tui` | Explore uploaded transcript folders in S3 |
 | `rr-trans watcher` | Watcher status and removal |
 
-Examples below use the short names. If you prefer `uvx`, prefix each one with
-`uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector'`.
+## Review and upload transcripts
 
-## Upload transcripts
+After setup, open <http://localhost:8123>. Preview the transcripts, select the
+projects you want to share, enter your name, and click **Upload X transcripts
+now**.
 
-Open the local review UI:
+For a one-off foreground session instead:
 
 ```bash
 rr-trans ui
 ```
 
-This serves a web UI at <http://localhost:8899> (if that port is busy, the next
-free port is used). The page opens immediately and scans local transcript folders
-in the background; use **Refresh** after creating or moving sessions. Preview the
-transcripts, select the projects you want to share, enter your name, and click
-**Upload X transcripts now**. Refresh stores a persistent filesystem signature
-for every transcript, so it only reads and redacts new or changed content. Those
-changed transcripts are compared with S3 and packaged into durable prepared
-archives. The upload button only sends those archives; it never repeats scanning,
-redaction, or upload-history work.
+The foreground command serves at <http://localhost:8899> and opens it in your
+browser (if that port is busy, the next free port is used). Both modes scan local
+transcript folders in the background; use **Refresh** after creating or moving
+sessions. Refresh stores a persistent filesystem signature for every transcript,
+so it only reads and redacts new or changed content. Those changed transcripts
+are compared with S3 and packaged into durable prepared archives. The upload
+button only sends those archives; it never repeats scanning, redaction, or
+upload-history work.
 
 ## Automatic uploads
 
