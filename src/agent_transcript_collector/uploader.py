@@ -205,6 +205,48 @@ def _already_uploaded(prepared: PreparedTranscript, remote: dict) -> bool:
     )
 
 
+def existing_transcripts(s3, source, sessions, contributor: str):
+    """Return sessions that already have an S3 object, without reading bodies.
+
+    This is the lightweight UI status path. Exact content fingerprints remain
+    the upload worker's responsibility, so checking status cannot monopolize
+    the app while it hashes large local transcripts.
+    """
+    sessions = list(sessions)
+    existing = []
+    errors = []
+
+    def exists(session):
+        key = transcript_key(contributor, source.id, session)
+        try:
+            s3.head_object(Bucket=S3_BUCKET, Key=key)
+        except ClientError as exc:
+            code = str(exc.response.get("Error", {}).get("Code", ""))
+            if code in {"404", "NoSuchKey", "NotFound"}:
+                return False
+            raise
+        return True
+
+    workers = min(metadata_concurrency(), len(sessions))
+    if not workers:
+        return existing, errors
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(exists, session): session for session in sessions}
+        for future in as_completed(futures):
+            session = futures[future]
+            try:
+                found = future.result()
+            except Exception as exc:
+                errors.append({
+                    "source": source.id,
+                    "error": f"{session.id}: {type(exc).__name__}: {exc}",
+                })
+            else:
+                if found:
+                    existing.append(session)
+    return existing, errors
+
+
 def _prepare(source, session, contributor: str) -> PreparedTranscript:
     path = Path(session.path)
     stat = path.stat()

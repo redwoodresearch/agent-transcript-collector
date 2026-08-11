@@ -31,7 +31,7 @@ from .sources.base import human_size, session_sidecars
 from .uploader import (
     UploadBusy,
     UploadLock,
-    partition_transcripts,
+    existing_transcripts,
 )
 from .uploader import (
     upload_transcripts as _upload_transcripts,
@@ -355,7 +355,6 @@ def _uploaded_sessions(body: dict):
 
     try:
         s3 = _make_s3_client()
-        uploaded_metadata: dict[str, dict] = {}
         uploaded = []
         errors = []
         for source_id, source_sessions in by_source.items():
@@ -378,12 +377,11 @@ def _uploaded_sessions(body: dict):
                 )
                 if session is not None:
                     resolved_items.append((item, session))
-            _, found, source_errors = partition_transcripts(
+            found, source_errors = existing_transcripts(
                 s3,
                 source,
                 [session for _, session in resolved_items],
                 contributor,
-                uploaded_metadata,
             )
             errors.extend(source_errors)
             found_ids = {
