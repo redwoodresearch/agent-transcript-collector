@@ -277,7 +277,7 @@
         <span id="watcher-schedule">Checking last and next upload…</span>
       </div>
       <button id="upload-btn" onclick="uploadNow()"
-              title="Upload transcripts from projects selected for automatic upload" disabled>Upload selected projects</button>
+              title="Upload transcripts from projects selected for automatic upload" disabled>Upload 0 transcripts now</button>
       <button class="secondary" id="auto-upload-toggle" onclick="toggleAutoUpload()"
               title="Enable or disable automatic uploads every hour" disabled>Enable</button>
       <button class="secondary" id="reinstall-watcher" onclick="reinstallWatcher()"
@@ -931,6 +931,7 @@ function updatePendingCounts() {
   const button = document.getElementById('upload-btn');
   let selectedPending = 0;
   let selectedProjects = 0;
+  let selectedTranscripts = 0;
   let selectedHistoryUnknown = false;
 
   document.querySelectorAll('.project').forEach(project => {
@@ -953,6 +954,7 @@ function updatePendingCounts() {
     const consented = consentedRows(project);
     if (consented.length) {
       selectedProjects += 1;
+      selectedTranscripts += consented.length;
       if (available) {
         selectedPending += consented.filter(row => !row.classList.contains('uploaded')).length;
       } else {
@@ -969,14 +971,14 @@ function updatePendingCounts() {
     button.textContent = 'Uploading…';
     button.disabled = true;
   } else if (!selectedProjects) {
-    button.textContent = 'Upload now';
+    button.textContent = 'Upload 0 transcripts now';
     button.disabled = true;
   } else if (selectedHistoryUnknown) {
-    button.textContent = 'Upload selected projects';
+    button.textContent = `Upload ${selectedTranscripts} transcript${selectedTranscripts === 1 ? '' : 's'} now`;
     button.disabled = false;
   } else {
     button.textContent = selectedPending
-      ? 'Upload selected projects'
+      ? `Upload ${selectedPending} transcript${selectedPending === 1 ? '' : 's'} now`
       : 'Check selected for changes';
     button.disabled = false;
   }
