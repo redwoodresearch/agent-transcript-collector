@@ -90,7 +90,7 @@
 
   .readiness-controls {
     display: flex; align-items: center; gap: 14px; padding: 10px 12px;
-    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
   }
   .readiness-copy { display: flex; flex-direction: column; min-width: 190px; }
   .readiness-copy strong { font-size: 0.84rem; }
@@ -99,7 +99,7 @@
   }
   .readiness-progress { flex: 1; }
   .readiness-progress .bar { width: 100%; }
-  .readiness-actions { display: flex; gap: 8px; }
+  .readiness-actions { display: flex; gap: 8px; margin-left: auto; }
   .readiness-controls.failed { background: rgba(210,153,34,0.05); }
   .readiness-controls.failed #readiness-title,
   .readiness-controls.failed #readiness-status { color: var(--yellow); }
@@ -264,6 +264,19 @@
 <p class="subtitle">Select the transcripts you'd like to share. Preview any session before deciding. Secrets and credentials are always redacted.</p>
 
 <div class="control-card">
+  <div class="readiness-controls" id="readiness-controls" data-status="scanning">
+    <div class="readiness-copy">
+      <strong id="readiness-title">Finding transcripts…</strong>
+      <span id="readiness-status">Starting local scan</span>
+    </div>
+    <div class="readiness-progress" id="readiness-progress">
+      <div class="bar"><div class="bar-fill" id="readiness-bar-fill"></div></div>
+    </div>
+    <div class="readiness-actions">
+      <button class="secondary" id="refresh-btn" onclick="startScan(true)"
+              title="Scan transcripts and prepare uploads again" disabled>Refresh</button>
+    </div>
+  </div>
 <div class="auto-upload-controls">
   <div class="sharing-settings">
     <label class="name-setting">
@@ -278,7 +291,7 @@
         <span id="watcher-schedule">Checking last and next upload…</span>
       </div>
       <button id="upload-btn" onclick="uploadNow()"
-              title="Upload transcripts from projects selected for automatic upload" disabled>Upload 0 transcripts now</button>
+              title="Upload prepared transcripts from projects selected for automatic upload" disabled>Upload 0 transcripts now</button>
       <button class="secondary" id="auto-upload-toggle" onclick="toggleAutoUpload()"
               title="Enable or disable automatic uploads every hour" disabled>Enable</button>
       <button class="secondary" id="reinstall-watcher" onclick="reinstallWatcher()"
@@ -288,20 +301,6 @@
   <span id="watcher-status" hidden></span>
   <div id="unavailable-watcher-groups" hidden></div>
 </div>
-  <div class="readiness-controls" id="readiness-controls" data-status="scanning">
-    <div class="readiness-copy">
-      <strong id="readiness-title">Finding transcripts…</strong>
-      <span id="readiness-status">Starting local scan</span>
-    </div>
-    <div class="readiness-progress">
-      <div class="bar"><div class="bar-fill" id="readiness-bar-fill"></div></div>
-    </div>
-    <div class="readiness-actions">
-      <button class="secondary" id="rescan-btn" onclick="startScan(true)" disabled>Rescan</button>
-      <button class="secondary" id="history-refresh-btn"
-              onclick="startHistoryScan(true)" hidden disabled>Prepare again</button>
-    </div>
-  </div>
   <div class="upload-progress-row" id="upload-progress">
     <div class="upload-progress-copy">
       <strong>Uploading transcripts…</strong>
@@ -348,17 +347,18 @@ function renderScanStatus(state) {
   const controls = document.getElementById('readiness-controls');
   const title = document.getElementById('readiness-title');
   const status = document.getElementById('readiness-status');
+  const progress = document.getElementById('readiness-progress');
   const fill = document.getElementById('readiness-bar-fill');
-  const button = document.getElementById('rescan-btn');
-  const prepare = document.getElementById('history-refresh-btn');
+  const button = document.getElementById('refresh-btn');
   const total = state.total_sources || 1;
   const percent = state.status === 'ready' ? 100
     : Math.round(((state.completed_sources || 0) / total) * 100);
   fill.style.width = `${percent}%`;
   controls.dataset.status = state.status;
   controls.classList.toggle('failed', state.status === 'failed');
-  button.disabled = state.status === 'scanning';
-  prepare.hidden = true;
+  progress.hidden = state.status !== 'scanning';
+  // A successful scan is only the first half of refresh; preparation enables it.
+  button.disabled = state.status !== 'failed';
   if (state.status === 'scanning') {
     title.textContent = 'Finding transcripts…';
     status.textContent = `${state.source ? `Scanning ${state.source}` : 'Starting scan'} · ${state.session_count || 0} found`;
@@ -395,7 +395,7 @@ function renderProjectScanFailure(message) {
   projectsLoaded = false;
   const error = document.createElement('p');
   error.className = 'empty';
-  error.textContent = `Scan failed: ${message || 'Could not scan transcripts'} Press Rescan to try again.`;
+  error.textContent = `Scan failed: ${message || 'Could not scan transcripts'} Press Refresh to try again.`;
   document.getElementById('projects-container').replaceChildren(error);
 }
 
@@ -895,16 +895,14 @@ function renderHistoryProgress(status, checked, total, message = '') {
   const controls = document.getElementById('readiness-controls');
   const title = document.getElementById('readiness-title');
   const detail = document.getElementById('readiness-status');
+  const progress = document.getElementById('readiness-progress');
   const fill = document.getElementById('readiness-bar-fill');
-  const rescan = document.getElementById('rescan-btn');
-  const refresh = document.getElementById('history-refresh-btn');
+  const refresh = document.getElementById('refresh-btn');
   controls.dataset.status = status;
   controls.classList.toggle('failed', status === 'failed');
   fill.style.width = `${total ? Math.round((checked / total) * 100) : 0}%`;
-  rescan.disabled = status === 'checking';
-  refresh.hidden = false;
+  progress.hidden = status !== 'checking';
   refresh.disabled = status === 'checking' || status === 'paused';
-  refresh.textContent = status === 'failed' ? 'Retry' : 'Prepare again';
   if (status === 'checking') {
     title.textContent = 'Preparing uploads…';
     detail.textContent = message || 'Checking transcripts';
@@ -1034,7 +1032,7 @@ function updatePendingCounts() {
 
   button.title = watcherRunning
     ? 'Automatic uploader is running. Manual uploads will be available when it finishes.'
-    : 'Upload transcripts from projects selected for automatic upload';
+    : 'Upload prepared transcripts from projects selected for automatic upload';
   if (uploadBusy) {
     button.textContent = 'Uploading…';
     button.disabled = true;
@@ -1045,10 +1043,8 @@ function updatePendingCounts() {
     button.textContent = `Preparing ${selectedTranscripts} transcript${selectedTranscripts === 1 ? '' : 's'}…`;
     button.disabled = true;
   } else {
-    button.textContent = selectedPending
-      ? `Upload ${selectedPending} transcript${selectedPending === 1 ? '' : 's'} now`
-      : 'Check for changes';
-    button.disabled = watcherRunning;
+    button.textContent = `Upload ${selectedPending} transcript${selectedPending === 1 ? '' : 's'} now`;
+    button.disabled = watcherRunning || selectedPending === 0;
   }
 }
 
@@ -1189,7 +1185,7 @@ function uploadNow() {
     .flatMap(project => consentedRows(project))
     .filter(row => !row.classList.contains('uploaded'));
   if (!rows.length) {
-    startHistoryScan(true);
+    showToast('No prepared transcripts to upload');
     return;
   }
   startUpload(rows);
