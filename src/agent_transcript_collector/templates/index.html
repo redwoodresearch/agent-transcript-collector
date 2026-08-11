@@ -88,22 +88,22 @@
   button.secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
   button.secondary:hover { border-color: var(--accent); }
 
-  .scan-controls, .history-controls {
+  .readiness-controls {
     display: flex; align-items: center; gap: 14px; padding: 10px 12px;
     border-top: 1px solid var(--border);
   }
-  .history-controls[hidden] { display: none; }
-  .scan-copy, .history-copy { display: flex; flex-direction: column; min-width: 190px; }
-  .scan-copy strong, .history-copy strong { font-size: 0.84rem; }
-  #scan-status, #history-status, .inline-status {
+  .readiness-copy { display: flex; flex-direction: column; min-width: 190px; }
+  .readiness-copy strong { font-size: 0.84rem; }
+  #readiness-status, .inline-status {
     color: var(--text-muted); font-size: 0.76rem;
   }
-  .scan-progress, .history-progress { flex: 1; }
-  .scan-progress .bar, .history-progress .bar { width: 100%; }
-  .history-controls.failed { background: rgba(210,153,34,0.05); }
-  .history-controls.failed #history-title,
-  .history-controls.failed #history-status { color: var(--yellow); }
-  .history-controls[data-status="checking"] #history-bar-fill {
+  .readiness-progress { flex: 1; }
+  .readiness-progress .bar { width: 100%; }
+  .readiness-actions { display: flex; gap: 8px; }
+  .readiness-controls.failed { background: rgba(210,153,34,0.05); }
+  .readiness-controls.failed #readiness-title,
+  .readiness-controls.failed #readiness-status { color: var(--yellow); }
+  .readiness-controls[data-status="checking"] #readiness-bar-fill {
     width: 35% !important; animation: history-pulse 1.2s ease-in-out infinite alternate;
   }
   @keyframes history-pulse {
@@ -288,26 +288,19 @@
   <span id="watcher-status" hidden></span>
   <div id="unavailable-watcher-groups" hidden></div>
 </div>
-  <div class="scan-controls">
-    <div class="scan-copy">
-      <strong id="scan-title">Finding transcripts…</strong>
-      <span id="scan-status">Starting local scan</span>
+  <div class="readiness-controls" id="readiness-controls" data-status="scanning">
+    <div class="readiness-copy">
+      <strong id="readiness-title">Finding transcripts…</strong>
+      <span id="readiness-status">Starting local scan</span>
     </div>
-    <div class="scan-progress" id="scan-progress">
-      <div class="bar"><div class="bar-fill" id="scan-bar-fill"></div></div>
+    <div class="readiness-progress">
+      <div class="bar"><div class="bar-fill" id="readiness-bar-fill"></div></div>
     </div>
-    <button class="secondary" id="rescan-btn" onclick="startScan(true)" disabled>Rescan</button>
-  </div>
-  <div class="history-controls" id="history-controls" hidden>
-    <div class="history-copy">
-      <strong id="history-title">Preparing uploads…</strong>
-      <span id="history-status">Waiting for transcript scan</span>
+    <div class="readiness-actions">
+      <button class="secondary" id="rescan-btn" onclick="startScan(true)" disabled>Rescan</button>
+      <button class="secondary" id="history-refresh-btn"
+              onclick="startHistoryScan(true)" hidden disabled>Prepare again</button>
     </div>
-    <div class="history-progress">
-      <div class="bar"><div class="bar-fill" id="history-bar-fill"></div></div>
-    </div>
-    <button class="secondary" id="history-refresh-btn"
-            onclick="startHistoryScan(true)" disabled>Prepare again</button>
   </div>
   <div class="upload-progress-row" id="upload-progress">
     <div class="upload-progress-copy">
@@ -352,15 +345,20 @@ let scanRequest = 0;
 let projectsLoaded = false;
 
 function renderScanStatus(state) {
-  const title = document.getElementById('scan-title');
-  const status = document.getElementById('scan-status');
-  const fill = document.getElementById('scan-bar-fill');
+  const controls = document.getElementById('readiness-controls');
+  const title = document.getElementById('readiness-title');
+  const status = document.getElementById('readiness-status');
+  const fill = document.getElementById('readiness-bar-fill');
   const button = document.getElementById('rescan-btn');
+  const prepare = document.getElementById('history-refresh-btn');
   const total = state.total_sources || 1;
   const percent = state.status === 'ready' ? 100
     : Math.round(((state.completed_sources || 0) / total) * 100);
   fill.style.width = `${percent}%`;
+  controls.dataset.status = state.status;
+  controls.classList.toggle('failed', state.status === 'failed');
   button.disabled = state.status === 'scanning';
+  prepare.hidden = true;
   if (state.status === 'scanning') {
     title.textContent = 'Finding transcripts…';
     status.textContent = `${state.source ? `Scanning ${state.source}` : 'Starting scan'} · ${state.session_count || 0} found`;
@@ -894,15 +892,17 @@ function preparationMessage(data, total) {
 }
 
 function renderHistoryProgress(status, checked, total, message = '') {
-  const controls = document.getElementById('history-controls');
-  const title = document.getElementById('history-title');
-  const detail = document.getElementById('history-status');
-  const fill = document.getElementById('history-bar-fill');
+  const controls = document.getElementById('readiness-controls');
+  const title = document.getElementById('readiness-title');
+  const detail = document.getElementById('readiness-status');
+  const fill = document.getElementById('readiness-bar-fill');
+  const rescan = document.getElementById('rescan-btn');
   const refresh = document.getElementById('history-refresh-btn');
-  controls.hidden = false;
   controls.dataset.status = status;
   controls.classList.toggle('failed', status === 'failed');
   fill.style.width = `${total ? Math.round((checked / total) * 100) : 0}%`;
+  rescan.disabled = status === 'checking';
+  refresh.hidden = false;
   refresh.disabled = status === 'checking' || status === 'paused';
   refresh.textContent = status === 'failed' ? 'Retry' : 'Prepare again';
   if (status === 'checking') {
@@ -995,7 +995,7 @@ function updatePendingCounts() {
     const available = project.classList.contains('history-checked');
     label.classList.remove('complete');
     if (!available) {
-      const backgroundChecking = document.getElementById('history-controls')
+      const backgroundChecking = document.getElementById('readiness-controls')
         .dataset.status === 'checking';
       label.textContent = project.classList.contains('history-checking')
         ? 'checking uploads…'
