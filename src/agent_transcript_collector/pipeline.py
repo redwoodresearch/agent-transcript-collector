@@ -33,7 +33,7 @@ CACHE_VERSION = 1
 
 def redaction_concurrency() -> int:
     """Return the number of transcripts prepared in parallel."""
-    return max(1, int(os.environ.get("CTC_REDACTION_CONCURRENCY", "4")))
+    return max(1, int(os.environ.get("CTC_REDACTION_CONCURRENCY", "16")))
 
 
 def _identity(source_id: str, session) -> str:
