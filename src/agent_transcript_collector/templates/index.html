@@ -377,6 +377,11 @@ async function loadProjects(request = scanRequest) {
     pausePipelineForUpload();
     return;
   }
+  if (watcherRunning) {
+    renderPipelineProgress('paused', 0, 0, 'Automatic uploader is running');
+    updatePendingCounts();
+    return;
+  }
   if (nameRevision !== syncedNameRevision) {
     refreshSettings();
   } else {
@@ -594,6 +599,7 @@ function nextScheduledUpload(lastFinished, intervalSeconds) {
 }
 
 async function loadWatcher(refreshPipeline = true) {
+  const wasWatcherRunning = watcherRunning;
   const status = document.getElementById('watcher-status');
   const schedule = document.getElementById('watcher-schedule');
   const toggle = document.getElementById('auto-upload-toggle');
@@ -666,6 +672,11 @@ async function loadWatcher(refreshPipeline = true) {
       ? `Last run: ${last.status}, ${last.sessions_uploaded || 0} uploaded`
       : schedule.textContent);
     updatePendingCounts();
+    if (refreshPipeline && wasWatcherRunning && !watcherRunning
+        && projectsLoaded && !uploadBusy) {
+      // Reconcile the UI with whatever the background uploader just changed.
+      startPipeline();
+    }
   } catch (e) {
     schedule.textContent = 'Upload schedule unavailable';
     status.textContent = 'Watcher status unavailable';
@@ -790,8 +801,8 @@ async function startPipeline() {
     project.classList.add('pipeline-running');
   });
   setPipelineStatus('');
-  updatePendingCounts();
   renderPipelineProgress('running', 0, 0, 'Preparing pipeline…');
+  updatePendingCounts();
   try {
     const resp = await fetch('/api/pipeline', {
       method: 'POST',
@@ -838,11 +849,11 @@ async function startPipeline() {
       project.classList.remove('pipeline-running');
       project.classList.toggle('pipeline-ready', data.status !== 'failed');
     });
-    updatePendingCounts();
     if (data.status === 'failed') {
       const first = (data.errors || [])[0];
       renderPipelineProgress('failed', 0, 0,
         first && (first.error || String(first)) || 'Pipeline failed');
+      updatePendingCounts();
       return;
     }
     const readyCount = ready.size;
@@ -851,6 +862,7 @@ async function startPipeline() {
       : 'Everything is up to date';
     renderPipelineProgress('ready', 0, 0,
       data.status === 'partial' ? `${detail} · some transcripts failed` : detail);
+    updatePendingCounts();
   } catch (e) {
     projects.forEach(project => project.classList.remove('pipeline-running'));
     if (request !== pipelineRevision || pipelineController !== controller) return;
@@ -936,6 +948,8 @@ function setPipelineStatus(message, retry = false) {
 
 function updatePendingCounts() {
   const button = document.getElementById('upload-btn');
+  const pipelineRunning = document.getElementById('readiness-controls')
+    .dataset.status === 'running';
   let selectedPending = 0;
   let selectedProjects = 0;
   let selectedTranscripts = 0;
@@ -946,8 +960,6 @@ function updatePendingCounts() {
     const available = project.classList.contains('pipeline-ready');
     label.classList.remove('complete');
     if (!available) {
-      const pipelineRunning = document.getElementById('readiness-controls')
-        .dataset.status === 'running';
       label.textContent = project.classList.contains('pipeline-running')
         ? 'refreshing…'
         : pipelineRunning ? 'waiting…' : 'not refreshed';
@@ -977,9 +989,12 @@ function updatePendingCounts() {
     const row = upload.closest('.session');
     const current = row.classList.contains('uploaded');
     const prepared = current || row.classList.contains('pipeline-prepared');
-    upload.disabled = uploadBusy || watcherRunning || !prepared || current;
+    upload.disabled = uploadBusy || watcherRunning || pipelineRunning
+      || !prepared || current;
     upload.textContent = current ? 'Current' : 'Upload';
-    upload.title = watcherRunning
+    upload.title = pipelineRunning
+      ? 'Upload preparation is refreshing'
+      : watcherRunning
       ? 'Automatic uploader is running. Manual uploads will be available when it finishes.'
       : !prepared ? 'Waiting for upload preparation to finish'
       : current ? 'This transcript matches the uploaded version'
