@@ -623,6 +623,10 @@ async def upload(request: Request):
     return JSONResponse({"job_id": job_id}, status_code=202)
 
 
+def _is_legacy_project_alias(group: str, label: str) -> bool:
+    return group == f"_project-{label}"
+
+
 @app.get("/api/watcher")
 def get_watcher_status():
     result = watcher_status()
@@ -644,14 +648,17 @@ def get_watcher_status():
         for (source, group), label in discovered.items()
         if (source, group) in configured
     }
-    # Stable project IDs gained a hash during the identity migration. Once the
-    # replacement ID is configured, hide its obsolete alias instead of showing
-    # a wall of duplicate "unavailable" folders.
+    # Stable project IDs gained a hash during the identity migration. Only the
+    # exact old ``_project-{label}`` shape is an obsolete alias. A different
+    # hashed ID with the same label can be a real, temporarily offline repo.
     groups = [
         item
         for item in config.get("groups", [])
         if (item.get("source", ""), item.get("group", "")) in discovered
         or (item.get("source", ""), item.get("label", "")) not in active_labels
+        or not _is_legacy_project_alias(
+            item.get("group", ""), item.get("label", "")
+        )
     ]
     result["ignored_migrated_groups"] = len(config.get("groups", [])) - len(groups)
     config["groups"] = groups
@@ -696,7 +703,10 @@ def _put_watcher(body: dict):
                 for group in existing.groups
                 if (group.source, group.group) not in discovered
                 and (group.source, group.group) not in removed
-                and (group.source, group.label) not in requested_labels
+                and (
+                    not _is_legacy_project_alias(group.group, group.label)
+                    or (group.source, group.label) not in requested_labels
+                )
             )
         config = WatcherConfig(
             auto_uploader_version=(
