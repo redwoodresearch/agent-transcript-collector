@@ -20,10 +20,13 @@
   h1 { font-size: 1.5rem; margin-bottom: 4px; }
   .subtitle { color: var(--text-muted); margin-bottom: 24px; font-size: 0.9rem; }
 
+  .control-card {
+    margin-bottom: 12px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface); overflow: hidden;
+  }
   .auto-upload-controls {
-    display: flex; gap: 8px; align-items: center; margin: 0 0 20px;
-    padding: 8px 10px; background: rgba(88,166,255,0.05);
-    border: 1px solid var(--border); border-radius: 8px; flex-wrap: wrap;
+    display: flex; gap: 8px; align-items: center; padding: 12px;
+    background: rgba(88,166,255,0.04); flex-wrap: wrap;
   }
   .auto-upload-controls .label { font-size: 0.8rem; font-weight: 600; }
   .auto-upload-controls button { padding: 5px 10px; font-size: 0.78rem; }
@@ -70,14 +73,10 @@
   button.secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
   button.secondary:hover { border-color: var(--accent); }
 
-  .activity-card {
-    margin-bottom: 12px; border: 1px solid var(--border); border-radius: 8px;
-    background: var(--surface); overflow: hidden;
-  }
   .scan-controls, .history-controls {
     display: flex; align-items: center; gap: 14px; padding: 10px 12px;
+    border-top: 1px solid var(--border);
   }
-  .scan-controls { border-bottom: 1px solid var(--border); }
   .history-controls[hidden] { display: none; }
   .scan-copy, .history-copy { display: flex; flex-direction: column; min-width: 190px; }
   .scan-copy strong, .history-copy strong { font-size: 0.84rem; }
@@ -245,6 +244,7 @@
 <h1>Redwood Research Transcript Collector</h1>
 <p class="subtitle">Select the transcripts you'd like to share. Preview any session before deciding. Secrets and credentials are always redacted.</p>
 
+<div class="control-card">
 <div class="auto-upload-controls">
   <span class="auto-upload-heading">
     <span class="label">Auto upload</span>
@@ -266,8 +266,6 @@
           title="Reinstall the current auto uploader version" hidden>Reinstall</button>
   <div id="unavailable-watcher-groups" hidden></div>
 </div>
-
-<div class="activity-card">
   <div class="scan-controls">
     <div class="scan-copy">
       <strong id="scan-title">Finding transcripts…</strong>
