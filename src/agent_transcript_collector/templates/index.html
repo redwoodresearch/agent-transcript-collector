@@ -34,9 +34,14 @@
     flex-basis: 100%; color: var(--yellow); font-size: 0.75rem;
   }
   #unavailable-watcher-groups summary { cursor: pointer; width: fit-content; }
-  .unavailable-watcher-list { margin-top: 4px; }
+  .unavailable-watcher-explanation {
+    color: var(--text-muted); margin-top: 5px; max-width: 760px;
+  }
+  .unavailable-watcher-list {
+    display: flex; flex-direction: column; align-items: flex-start; margin-top: 3px;
+  }
   .unavailable-watcher-group {
-    display: inline-flex; align-items: center; gap: 6px; margin: 4px 8px 0 0;
+    display: inline-flex; align-items: center; gap: 8px; margin-top: 5px;
   }
   .unavailable-watcher-group button { padding: 2px 7px; font-size: 0.7rem; }
   .name-setting {
@@ -493,30 +498,43 @@ function renderUnavailableGroups(groups) {
 
   const details = document.createElement('details');
   const heading = document.createElement('summary');
-  heading.textContent = `${unavailable.length} saved auto-upload folder${unavailable.length === 1 ? '' : 's'} unavailable`;
+  heading.textContent = `${unavailable.length} old auto-upload selection${unavailable.length === 1 ? '' : 's'} need cleanup`;
+  const explanation = document.createElement('p');
+  explanation.className = 'unavailable-watcher-explanation';
+  explanation.textContent = 'These saved selections no longer match a transcript folder found on this machine, usually because a folder was renamed or its internal ID changed. Removing them only cleans up auto-upload settings; it does not delete local or uploaded transcripts.';
   const list = document.createElement('div');
   list.className = 'unavailable-watcher-list';
-  details.append(heading, list);
+  details.append(heading, explanation, list);
   container.appendChild(details);
+  const sourceNames = {
+    claude_code: 'Claude Code', codex: 'Codex', cursor: 'Cursor', pi: 'Pi',
+  };
+  const grouped = new Map();
   unavailable.forEach(item => {
+    const key = `${item.source}|${item.label || item.group}`;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(item);
+  });
+  grouped.forEach(items => {
+    const item = items[0];
     const entry = document.createElement('span');
     entry.className = 'unavailable-watcher-group';
     const label = document.createElement('span');
-    label.textContent = `${item.label || item.group} (${item.source})`;
+    label.textContent = `${item.label || item.group} · ${sourceNames[item.source] || item.source}${items.length > 1 ? ` · ${items.length} old entries` : ''}`;
     const remove = document.createElement('button');
     remove.className = 'secondary';
-    remove.textContent = 'Remove';
-    remove.onclick = () => removeUnavailableGroup(item, remove);
+    remove.textContent = items.length > 1 ? `Remove all ${items.length}` : 'Remove';
+    remove.onclick = () => removeUnavailableGroups(items, remove);
     entry.append(label, remove);
     list.appendChild(entry);
   });
 }
 
-async function removeUnavailableGroup(item, button) {
+async function removeUnavailableGroups(items, button) {
   button.disabled = true;
   try {
-    await updateAutoUploadConfig(autoUploadEnabled, [item]);
-    showToast('Saved folder removed from auto upload');
+    await updateAutoUploadConfig(autoUploadEnabled, items);
+    showToast(`${items.length} old auto-upload selection${items.length === 1 ? '' : 's'} removed`);
     await loadWatcher();
   } catch (e) {
     showToast(e.message, true);
