@@ -381,6 +381,10 @@ async function loadProjects(request = scanRequest) {
   projectsLoaded = true;
   updatePendingCounts();
   await loadWatcher(false);
+  if (uploadBusy) {
+    pauseHistoryScanForUpload();
+    return;
+  }
   if (nameRevision !== syncedNameRevision) {
     refreshSettings();
   } else {

@@ -212,7 +212,13 @@ def preview_session(source: str, group: str, session: str, parent: str = "",
     if sess is None or src is None:
         return JSONResponse({"error": "Session not found; try Rescan"}, status_code=404)
 
-    raw = Path(sess.path).read_text(encoding="utf-8", errors="replace")
+    try:
+        raw = Path(sess.path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return JSONResponse(
+            {"error": "Session file is no longer available; try Rescan"},
+            status_code=404,
+        )
     # Resolve side files before redaction rewrites their referenced paths.
     sidecars = session_sidecars(src, sess, raw)
     parsed = src.parse_messages(raw)
