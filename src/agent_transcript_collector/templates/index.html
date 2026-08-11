@@ -25,16 +25,27 @@
     background: var(--surface); overflow: hidden;
   }
   .auto-upload-controls {
-    display: flex; gap: 8px; align-items: center; padding: 12px;
-    background: rgba(88,166,255,0.04); flex-wrap: wrap;
+    background: rgba(88,166,255,0.035);
   }
-  .auto-upload-controls .label { font-size: 0.8rem; font-weight: 600; }
+  .sharing-header {
+    display: flex; align-items: center; gap: 16px; padding: 14px 16px 12px;
+  }
+  .sharing-heading { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+  .sharing-heading .label { font-size: 0.95rem; font-weight: 650; }
+  .sharing-description { color: var(--text-muted); font-size: 0.76rem; }
+  .sharing-settings {
+    display: grid; grid-template-columns: minmax(240px, 0.8fr) minmax(330px, 1.2fr);
+    gap: 24px; padding: 11px 16px; border-top: 1px solid var(--border);
+  }
+  .setting-label { color: var(--text); font-size: 0.74rem; font-weight: 600; }
+  .setting-hint { color: var(--text-muted); font-size: 0.7rem; }
   .auto-upload-controls button { padding: 5px 10px; font-size: 0.78rem; }
-  .auto-upload-heading { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
-  .auto-upload-description, #watcher-version { color: var(--text-muted); font-size: 0.72rem; }
+  .auto-upload-setting { display: flex; align-items: center; gap: 10px; }
+  .auto-upload-setting-copy { display: flex; flex-direction: column; flex: 1; }
+  #watcher-version { color: var(--text-muted); font-size: 0.68rem; font-weight: 400; }
   #watcher-version.mismatch { color: var(--yellow); }
   #unavailable-watcher-groups {
-    flex-basis: 100%; color: var(--yellow); font-size: 0.75rem;
+    margin: 0 16px 12px; color: var(--yellow); font-size: 0.75rem;
   }
   #unavailable-watcher-groups summary { cursor: pointer; width: fit-content; }
   .unavailable-watcher-explanation {
@@ -48,12 +59,14 @@
   }
   .unavailable-watcher-group button { padding: 2px 7px; font-size: 0.7rem; }
   .name-setting {
-    display: flex; align-items: center; gap: 6px; color: var(--text-muted);
-    font-size: 0.78rem; white-space: nowrap;
+    display: flex; align-items: center; gap: 10px; white-space: nowrap;
   }
   #watcher-status {
-    color: var(--text-muted); font-size: 0.78rem; flex: 1; min-width: 160px;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    display: block; margin: 0 16px 12px; padding: 7px 9px; border-radius: 6px;
+    color: var(--text-muted); background: rgba(139,148,158,0.07); font-size: 0.74rem;
+  }
+  #watcher-status.error {
+    color: var(--yellow); background: rgba(210,153,34,0.08);
   }
   .auto-upload {
     display: flex; align-items: center; gap: 4px; color: var(--text-muted);
@@ -62,7 +75,7 @@
   #contributor-name:placeholder-shown { border-color: var(--yellow); }
   #contributor-name {
     background: var(--surface); border: 1px solid var(--border); color: var(--text);
-    width: 150px; padding: 4px 8px; border-radius: 6px; font-size: 0.8rem;
+    width: 100%; min-width: 0; padding: 5px 8px; border-radius: 6px; font-size: 0.8rem;
   }
   button {
     background: var(--accent); color: #000; border: none; padding: 8px 16px;
@@ -237,6 +250,11 @@
 
   .empty { color: var(--text-muted); padding: 40px 0; text-align: center; }
   input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
+  @media (max-width: 720px) {
+    .sharing-header { align-items: flex-start; flex-wrap: wrap; }
+    .sharing-header #upload-btn { width: 100%; }
+    .sharing-settings { grid-template-columns: 1fr; gap: 10px; }
+  }
 </style>
 </head>
 <body>
@@ -246,24 +264,33 @@
 
 <div class="control-card">
 <div class="auto-upload-controls">
-  <span class="auto-upload-heading">
-    <span class="label">Auto upload</span>
-    <span class="auto-upload-description">Uploads changed transcripts every hour.</span>
-    <span id="watcher-version" title="Auto uploader version"></span>
-  </span>
-  <label class="name-setting">
-    Your name:
-    <input type="text" id="contributor-name" placeholder="your name"
-           value="{{ default_contributor_name }}"
-           oninput="onNameInput()">
-  </label>
-  <span id="watcher-status">Checking status…</span>
-  <button id="upload-btn" onclick="uploadNow()"
-          title="Upload pending transcripts from selected projects" disabled>Upload now</button>
-  <button class="secondary" id="auto-upload-toggle" onclick="toggleAutoUpload()"
-          title="Enable or disable automatic uploads every hour" disabled>Enable</button>
-  <button class="secondary" id="reinstall-watcher" onclick="reinstallWatcher()"
-          title="Reinstall the current auto uploader version" hidden>Reinstall</button>
+  <div class="sharing-header">
+    <div class="sharing-heading">
+      <span class="label">Transcript sharing</span>
+      <span class="sharing-description">Send selected projects now or keep them synced automatically.</span>
+    </div>
+    <button id="upload-btn" onclick="uploadNow()"
+            title="Upload transcripts from selected projects" disabled>Upload now</button>
+  </div>
+  <div class="sharing-settings">
+    <label class="name-setting">
+      <span class="setting-label">Contributor</span>
+      <input type="text" id="contributor-name" placeholder="your name"
+             value="{{ default_contributor_name }}"
+             oninput="onNameInput()">
+    </label>
+    <div class="auto-upload-setting">
+      <div class="auto-upload-setting-copy">
+        <span class="setting-label">Automatic uploads <span id="watcher-version" title="Auto uploader version"></span></span>
+        <span class="setting-hint">Checks selected projects every hour</span>
+      </div>
+      <button class="secondary" id="auto-upload-toggle" onclick="toggleAutoUpload()"
+              title="Enable or disable automatic uploads every hour" disabled>Enable</button>
+      <button class="secondary" id="reinstall-watcher" onclick="reinstallWatcher()"
+              title="Reinstall the current auto uploader version" hidden>Reinstall</button>
+    </div>
+  </div>
+  <span id="watcher-status">Checking automatic upload status…</span>
   <div id="unavailable-watcher-groups" hidden></div>
 </div>
   <div class="scan-controls">
@@ -610,9 +637,13 @@ async function loadWatcher(refreshHistory = true) {
         ? `Last run: ${last.status}, ${last.sessions_uploaded || 0} uploaded`
         : status.textContent;
     }
+    status.classList.toggle('error', Boolean(
+      data.error || (data.state && data.state.status === 'failed' &&
+        (data.state.errors || []).length)));
     updatePendingCounts();
   } catch (e) {
     status.textContent = 'Watcher status unavailable';
+    status.classList.add('error');
     toggle.disabled = true;
     reinstall.hidden = true;
   }
