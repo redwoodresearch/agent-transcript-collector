@@ -970,22 +970,30 @@ function updatePendingCounts() {
   document.querySelectorAll('.project').forEach(project => {
     const label = project.querySelector('.project-pending');
     const available = project.classList.contains('pipeline-ready');
+    const consented = consentedRows(project);
     label.classList.remove('complete');
+    label.removeAttribute('title');
     if (project.classList.contains('pipeline-running')) {
       label.textContent = 'refreshing…';
     } else if (!available) {
       label.textContent = pipelineRunning ? 'waiting…' : 'not refreshed';
     } else {
-      const pending = project.querySelectorAll('.session.pipeline-prepared').length;
+      const pendingRows = Array.from(project.querySelectorAll('.session.pipeline-prepared'));
+      const pending = pendingRows.length;
       const failed = project.querySelectorAll('.session.pipeline-error').length;
+      const consentedPending = pendingRows.filter(row => consented.includes(row)).length;
+      const partiallySelected = project.querySelector('.auto-upload-checkbox').indeterminate;
       label.textContent = failed
         ? `${failed} unavailable`
         : pending
-        ? `${pending} not uploaded`
+        ? `${pending} not uploaded${partiallySelected ? ` · ${consentedPending} selected` : ''}`
         : 'all uploaded';
+      if (pending && partiallySelected) {
+        label.title = `${pending} prepared transcript${pending === 1 ? '' : 's'} not uploaded; `
+          + `${consentedPending} selected for automatic upload`;
+      }
       label.classList.toggle('complete', pending === 0 && failed === 0);
     }
-    const consented = consentedRows(project);
     if (consented.length) {
       selectedProjects += 1;
       selectedTranscripts += consented.length;
