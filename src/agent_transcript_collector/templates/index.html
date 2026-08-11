@@ -39,6 +39,7 @@
   }
   .auto-upload-setting-copy { display: flex; flex-direction: column; flex: 1; }
   #watcher-schedule { color: var(--text-muted); font-size: 0.7rem; }
+  #watcher-schedule.running { color: var(--accent); }
   #watcher-version { color: var(--text-muted); font-size: 0.68rem; font-weight: 400; }
   #watcher-version.mismatch { color: var(--yellow); }
   #unavailable-watcher-groups {
@@ -625,7 +626,7 @@ async function loadWatcher(refreshHistory = true) {
     const lastUploaded = formatUploadTime(last.last_uploaded_at);
     const intervalMs = Number(data.interval_seconds) * 1000;
     const lastFinishedMs = new Date(last.finished_at).getTime();
-    const runOverdue = autoUploadEnabled && Number.isFinite(lastFinishedMs)
+    const runOverdue = autoUploadEnabled && !data.running && Number.isFinite(lastFinishedMs)
       && Number.isFinite(intervalMs) && Date.now() - lastFinishedMs > intervalMs * 2;
     const nextScheduled = autoUploadEnabled && last.finished_at
       ? nextScheduledUpload(last.finished_at, data.interval_seconds)
@@ -633,7 +634,10 @@ async function loadWatcher(refreshHistory = true) {
     const nextUpload = nextScheduled
       ? formatUploadTime(nextScheduled)
       : autoUploadEnabled ? 'soon' : 'disabled';
-    schedule.textContent = `Last uploaded ${lastUploaded} · ${runOverdue ? 'Next scheduled attempt' : 'Next upload'} ${nextUpload}`;
+    schedule.textContent = data.running
+      ? `Last uploaded ${lastUploaded} · Automatic upload running now…`
+      : `Last uploaded ${lastUploaded} · ${runOverdue ? 'Next scheduled attempt' : 'Next upload'} ${nextUpload}`;
+    schedule.classList.toggle('running', Boolean(data.running));
     const error = data.error
       || (runOverdue
         ? `Automatic uploader has not reported a completed run since ${formatUploadTime(last.finished_at)}. The scheduler will keep retrying.`

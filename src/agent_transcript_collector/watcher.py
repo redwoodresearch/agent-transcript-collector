@@ -438,6 +438,7 @@ def status(
     if platform == "darwin":
         service_files = [launchd_path()]
         active = False
+        running = False
         if all(path.exists() for path in service_files):
             completed = run_command(
                 ["launchctl", "print", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"],
@@ -445,27 +446,36 @@ def status(
                 capture_output=True,
             )
             active = completed.returncode == 0
+            running = active and b"state = running" in completed.stdout
     elif platform.startswith("linux"):
         service_files = list(systemd_paths())
         active = False
+        running = False
         if all(path.exists() for path in service_files):
             enabled = run_command(
                 ["systemctl", "--user", "is-enabled", "--quiet", f"{SYSTEMD_NAME}.timer"],
                 check=False,
             )
-            running = run_command(
+            timer_active = run_command(
                 ["systemctl", "--user", "is-active", "--quiet", f"{SYSTEMD_NAME}.timer"],
                 check=False,
             )
-            active = enabled.returncode == 0 and running.returncode == 0
+            active = enabled.returncode == 0 and timer_active.returncode == 0
+            service = run_command(
+                ["systemctl", "--user", "is-active", "--quiet", f"{SYSTEMD_NAME}.service"],
+                check=False,
+            )
+            running = service.returncode == 0
     else:
         service_files = []
         active = False
+        running = False
     service_files_present = bool(service_files) and all(
         path.exists() for path in service_files
     )
     result = {
         "installed": active,
+        "running": running,
         "service_files_present": service_files_present,
         "configured": config_path.exists(),
         "current_version": AUTO_UPLOADER_VERSION,
