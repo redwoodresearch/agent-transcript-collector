@@ -1041,7 +1041,7 @@ function updatePendingCounts() {
   } else {
     button.textContent = selectedPending
       ? `Upload ${selectedPending} transcript${selectedPending === 1 ? '' : 's'} now`
-      : 'Check selected for changes';
+      : 'Check for changes';
     button.disabled = watcherRunning;
   }
 }
@@ -1182,6 +1182,10 @@ function uploadNow() {
   const rows = Array.from(document.querySelectorAll('.project'))
     .flatMap(project => consentedRows(project))
     .filter(row => !row.classList.contains('uploaded'));
+  if (!rows.length) {
+    startHistoryScan(true);
+    return;
+  }
   startUpload(rows);
 }
 

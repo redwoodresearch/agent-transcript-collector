@@ -412,7 +412,15 @@ def signature_is_current(signature: object) -> bool:
 
 
 def artifact_is_current(artifact: dict) -> bool:
-    return signature_is_current(artifact.get("signature"))
+    try:
+        archive = Path(artifact["path"])
+        archive_ready = (
+            archive.is_file()
+            and archive.stat().st_size == int(artifact["zip_size_bytes"])
+        )
+    except (KeyError, OSError, TypeError, ValueError):
+        return False
+    return archive_ready and signature_is_current(artifact.get("signature"))
 
 
 def build_upload_artifact(
