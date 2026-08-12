@@ -1,15 +1,26 @@
-"""Migrate legacy upload metadata to original-content fingerprints."""
+"""One-off migration from legacy upload hashes to original-content hashes.
+
+This script is intentionally not installed with the collector. Delete it after
+the production migration has been run and verified.
+"""
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import json
+import os
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 from botocore.exceptions import ClientError
 
-from .redactor import canonicalize_secrets, redact_identity
-from .s3client import S3_BUCKET
-from .uploader import (
+from agent_transcript_collector.migrate import migrate_config
+from agent_transcript_collector.paths import pipeline_cache_path, watcher_config_path
+from agent_transcript_collector.redactor import canonicalize_secrets, redact_identity
+from agent_transcript_collector.s3client import S3_BUCKET, make_s3_client
+from agent_transcript_collector.uploader import (
     BODY_FINGERPRINT_METADATA,
     FINGERPRINT_METADATA,
     FINGERPRINT_VERSION,
@@ -19,9 +30,11 @@ from .uploader import (
     REDACTION_VERSION_METADATA,
     SIDECAR_COUNT_METADATA,
     TRANSCRIPT_FORMAT_VERSION,
+    UploadLock,
     metadata_concurrency,
     prepare_transcript,
 )
+from agent_transcript_collector.watcher import discover_allowed
 
 LEGACY_FINGERPRINT_VERSION = 2
 
@@ -108,9 +121,6 @@ def _replacement_metadata(prepared, metadata: dict) -> dict | None:
         metadata.get(FINGERPRINT_METADATA)
         and len(prepared.sidecars.files) < remote_sidecars
     ):
-        # The old upload contains sidecars that have since disappeared locally.
-        # Preserve a non-matching content fingerprint so the normal fuller-
-        # archive rule continues to compare the raw body and sidecar count.
         source_fingerprint = f"legacy-fuller:{metadata[FINGERPRINT_METADATA]}"
     else:
         return None
@@ -155,7 +165,6 @@ def migrate_uploads(
     dry_run: bool = False,
     on_progress=None,
 ) -> dict:
-    """Attach raw fingerprints to verified legacy uploads without re-redacting."""
     work = [
         (source, session)
         for source, sessions in selections
@@ -214,3 +223,37 @@ def migrate_uploads(
     if result["errors"]:
         result["status"] = "partial"
     return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=watcher_config_path())
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+
+    config = migrate_config(args.config)
+    os.environ.update(config.source_env)
+    os.environ["CTC_AWS_PROFILE"] = config.aws_profile
+    selections = discover_allowed(config)
+
+    def progress(done, total):
+        print(f"\rChecked {done}/{total} uploads", end="", file=sys.stderr)
+
+    with UploadLock():
+        result = migrate_uploads(
+            selections,
+            config.contributor,
+            make_s3_client(),
+            dry_run=args.dry_run,
+            on_progress=progress,
+        )
+        if not args.dry_run:
+            pipeline_cache_path().unlink(missing_ok=True)
+    if result["total"]:
+        print(file=sys.stderr)
+    print(json.dumps(result, indent=2))
+    return 0 if not result["errors"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

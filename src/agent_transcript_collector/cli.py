@@ -4,12 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import sys
 import webbrowser
-from pathlib import Path
 
-from .paths import pipeline_cache_path, watcher_config_path
 from .storage import STORAGE_PREFIX
 
 
@@ -41,29 +37,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--prefix",
         default=f"{STORAGE_PREFIX}/",
         help=f"S3 prefix to browse (default: {STORAGE_PREFIX}/).",
-    )
-
-    migrate = commands.add_parser(
-        "migrate-uploads",
-        help="Add original-content fingerprints to verified legacy uploads.",
-    )
-    migrate.add_argument(
-        "--config",
-        type=Path,
-        help="Use a watcher config's contributor, AWS profile, and project selection.",
-    )
-    migrate.add_argument(
-        "--contributor",
-        help="Contributor whose existing uploads should be migrated.",
-    )
-    migrate.add_argument(
-        "--aws-profile",
-        help="AWS profile override (default: normal collector profile selection).",
-    )
-    migrate.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Report eligible uploads without changing S3 metadata.",
     )
 
     watcher = commands.add_parser("watcher", help="Manage automatic uploads.")
@@ -113,65 +86,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.watcher_command == "uninstall" and args.purge:
             watcher_args.append("--purge")
         return run_watcher(watcher_args)
-    if args.command == "migrate-uploads":
-        from .migrate import migrate_config
-        from .migrate_uploads import migrate_uploads
-        from .s3client import make_s3_client
-        from .sources import SOURCES
-        from .uploader import UploadLock
-        from .watcher import discover_allowed
-
-        config_path = args.config
-        if config_path is None and not args.contributor:
-            default_config = watcher_config_path()
-            if default_config.exists():
-                config_path = default_config
-
-        if config_path is not None:
-            config = migrate_config(config_path)
-            contributor = args.contributor or config.contributor
-            os.environ.update(config.source_env)
-            os.environ["CTC_AWS_PROFILE"] = args.aws_profile or config.aws_profile
-            selections = discover_allowed(config)
-        else:
-            if not args.contributor:
-                print(
-                    "migrate-uploads requires --contributor when no watcher "
-                    "config exists",
-                    file=sys.stderr,
-                )
-                return 2
-            contributor = args.contributor
-            if args.aws_profile:
-                os.environ["CTC_AWS_PROFILE"] = args.aws_profile
-            selections = [
-                (source, [session for group in source.discover()
-                          for session in group.sessions])
-                for source in SOURCES
-            ]
-            selections = [(source, sessions) for source, sessions in selections
-                          if sessions]
-
-        def progress(done, total):
-            print(f"\rChecked {done}/{total} uploads", end="", file=sys.stderr)
-
-        with UploadLock():
-            result = migrate_uploads(
-                selections,
-                contributor,
-                make_s3_client(),
-                dry_run=args.dry_run,
-                on_progress=progress,
-            )
-            if not args.dry_run:
-                # A cached "ready" record predates the metadata migration and
-                # would otherwise stay pending until its local file changed.
-                pipeline_cache_path().unlink(missing_ok=True)
-        if result["total"]:
-            print(file=sys.stderr)
-        print(json.dumps(result, indent=2))
-        return 0 if not result["errors"] else 1
-
     from .tui import main as run_tui
 
     return run_tui(args.prefix)

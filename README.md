@@ -271,39 +271,6 @@ Uploaded metadata also records the fingerprint, redaction-policy, and
 archive-format versions; changing a policy version causes the transcript to be
 redacted and uploaded again.
 
-### Migrating existing uploads
-
-Uploads created before original-content fingerprints were introduced can be
-migrated without redacting or uploading their ZIP bodies again. The migration
-recomputes both the legacy privacy-safe fingerprint and the new source
-fingerprint locally. It updates an object's S3 metadata only when the legacy
-fingerprint proves that the local transcript matches the existing upload.
-
-If automatic upload is configured, its contributor, AWS profile, source paths,
-and selected projects are used by default:
-
-```bash
-rr-trans migrate-uploads --dry-run
-rr-trans migrate-uploads
-```
-
-Without a watcher config, provide the contributor explicitly. Every locally
-discovered session is checked, but only an already-existing object under that
-contributor can be changed:
-
-```bash
-rr-trans migrate-uploads --contributor your-name --dry-run
-rr-trans migrate-uploads --contributor your-name
-```
-
-Objects that are missing, already current, or cannot be proven equivalent are
-left untouched. Unverified objects remain pending and follow the normal
-redaction-and-upload path. Because the migration changes metadata only, a
-legacy ZIP's manifest keeps its older fingerprint fields until that transcript
-is uploaded again; S3 metadata is authoritative for change detection. A
-successful non-dry migration clears the local pipeline cache so the next UI or
-watcher refresh reconciles the migrated metadata.
-
 Two kinds of content are rewritten:
 
 - **Credentials** matched by a set of high-precision patterns: AWS keys, `sk-`
