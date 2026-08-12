@@ -64,6 +64,7 @@ class AllowedProject:
 class LegacyAllowedGroup:
     source: str
     group: str
+    label: str = ""
 
 
 @dataclass
@@ -89,6 +90,7 @@ class WatcherConfig:
                 LegacyAllowedGroup(
                     source=str(item.get("source", "")),
                     group=str(item.get("group", "")),
+                    label=str(item.get("label", "")),
                 )
                 for item in data.get("groups", [])
                 if item.get("source") and item.get("group")
@@ -105,7 +107,15 @@ class WatcherConfig:
                 for item in data.get("projects", [])
                 if item.get("identity") or item.get("directory")
             }
-            legacy_groups = set()
+            legacy_groups = {
+                LegacyAllowedGroup(
+                    source=str(item.get("source", "")),
+                    group=str(item.get("group", "")),
+                    label=str(item.get("label", "")),
+                )
+                for item in data.get("legacy_groups", [])
+                if item.get("source") and item.get("group")
+            }
         projects = sorted(
             projects,
             key=lambda item: (item.identity, item.label),
@@ -157,7 +167,8 @@ def _atomic_write(path: Path, data: bytes, mode: int = 0o600) -> None:
 
 def _config_payload(config: WatcherConfig) -> bytes:
     data = asdict(config)
-    data.pop("legacy_groups", None)
+    if not config.legacy_groups:
+        data.pop("legacy_groups", None)
     return json.dumps(data, indent=2, sort_keys=True).encode() + b"\n"
 
 
@@ -249,22 +260,41 @@ def migrate_config(path: Path | None = None) -> WatcherConfig:
             config = WatcherConfig.from_dict(json.loads(target.read_text()))
             if not config.legacy_groups:
                 return config
-            discovered = [
-                (source, group)
-                for source in SOURCES
-                for group in source.discover()
-            ]
+            old_source_env = {
+                name: os.environ.get(name) for name in config.source_env
+            }
+            os.environ.update(config.source_env)
+            try:
+                discovered = [
+                    (source, group)
+                    for source in SOURCES
+                    for group in source.discover()
+                ]
+            finally:
+                for name, value in old_source_env.items():
+                    if value is None:
+                        os.environ.pop(name, None)
+                    else:
+                        os.environ[name] = value
             legacy = {(item.source, item.group) for item in config.legacy_groups}
-            config.projects = [
-                AllowedProject(project["identity"], project["label"])
-                for project in projects_from_groups(discovered)
-                if legacy & {
+            matched = set()
+            projects = set(config.projects)
+            for project in projects_from_groups(discovered):
+                project_groups = {
                     (harness["source"], group)
                     for harness in project["harnesses"]
                     for group in harness["groups"]
                 }
+                selected_groups = legacy & project_groups
+                if selected_groups:
+                    projects.add(AllowedProject(project["identity"], project["label"]))
+                    matched.update(selected_groups)
+            config.projects = sorted(projects, key=lambda item: item.identity)
+            config.legacy_groups = [
+                item
+                for item in config.legacy_groups
+                if (item.source, item.group) not in matched
             ]
-            config.legacy_groups = []
             _atomic_write(target, _config_payload(config))
             return config
         finally:

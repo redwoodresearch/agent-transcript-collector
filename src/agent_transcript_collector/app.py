@@ -48,7 +48,6 @@ from .watcher import (
 from .watcher import (
     load_config as load_watcher_config,
 )
-from .watcher import migrate_config as migrate_watcher_config
 from .watcher import (
     save_config as save_watcher_config,
 )
@@ -649,15 +648,17 @@ def get_watcher_status():
     config = result.get("config")
     if not config:
         return result
+    legacy_items = config.get("legacy_groups", [])
     legacy = {
         (item.get("source", ""), item.get("group", ""))
-        for item in config.pop("legacy_groups", [])
+        for item in legacy_items
     }
     if not legacy:
         return result
     with SCAN_LOCK:
         projects = list(SCAN_CACHE["projects"] or [])
     selected = list(config.get("projects", []))
+    matched = set()
     for project in projects:
         groups = {
             (harness["source"], group)
@@ -665,11 +666,17 @@ def get_watcher_status():
             for group in harness["groups"]
         }
         if legacy & groups:
+            matched.update(legacy & groups)
             selected.append({
                 "identity": project.get("identity", ""),
                 "label": project.get("label", ""),
             })
     config["projects"] = selected
+    config["legacy_groups"] = [
+        item
+        for item in legacy_items
+        if (item.get("source", ""), item.get("group", "")) not in matched
+    ]
     return result
 
 
@@ -682,13 +689,21 @@ def _put_watcher(body: dict):
         (str(item.get("identity", "")), str(item.get("label", "")))
         for item in body.get("removed_projects", [])
     }
+    removed_legacy = {
+        (str(item.get("source", "")), str(item.get("group", "")))
+        for item in body.get("removed_legacy_groups", [])
+    }
     requested -= removed
     with SCAN_LOCK:
-        discovered = {
-            (str(project.get("identity", "")), str(project.get("label", "")))
+        discovered_projects = {
+            (str(project.get("identity", "")), str(project.get("label", ""))): {
+                (harness["source"], group)
+                for harness in project["harnesses"]
+                for group in harness["groups"]
+            }
             for project in (SCAN_CACHE["projects"] or [])
         }
-    invalid = sorted(requested - discovered)
+    invalid = sorted(requested - discovered_projects.keys())
     if invalid:
         return JSONResponse(
             {"error": "One or more selected projects are no longer available"},
@@ -702,12 +717,23 @@ def _put_watcher(body: dict):
             for identity, label in sorted(requested)
         ]
         if existing:
+            covered_groups = set().union(
+                *(discovered_projects[project] for project in requested),
+            ) if requested else set()
             projects.extend(
                 project
                 for project in existing.projects
-                if (project.identity, project.label) not in discovered
+                if (project.identity, project.label) not in discovered_projects
                 and (project.identity, project.label) not in removed
             )
+            legacy_groups = [
+                group
+                for group in existing.legacy_groups
+                if (group.source, group.group) not in covered_groups
+                and (group.source, group.group) not in removed_legacy
+            ]
+        else:
+            legacy_groups = []
         config = WatcherConfig(
             auto_uploader_version=(
                 existing.auto_uploader_version
@@ -717,6 +743,7 @@ def _put_watcher(body: dict):
             contributor=_safe_name(body.get("contributor_name", "anonymous")),
             aws_profile=existing.aws_profile if existing else selected_profile(),
             projects=projects,
+            legacy_groups=legacy_groups,
             source_env=capture_source_env(),
             package_spec=WatcherConfig.package_spec,
             uv_path=existing.uv_path if existing else "",
@@ -755,7 +782,7 @@ def reinstall_watcher():
                 {"error": "Configure auto upload before reinstalling it"},
                 status_code=400,
             )
-        config = migrate_watcher_config()
+        config = load_watcher_config()
         config.source_env = capture_source_env()
         return install_watcher(config)
     except Exception as e:
