@@ -654,25 +654,46 @@ def get_watcher_status():
         (item.get("source", ""), item.get("group", ""))
         for item in legacy_items
     }
-    if not legacy:
-        return result
     with SCAN_LOCK:
         projects = list(SCAN_CACHE["projects"] or [])
-    selected = list(config.get("projects", []))
-    matched = set()
-    for project in projects:
-        groups = {
-            (harness["source"], group)
-            for harness in project["harnesses"]
-            for group in harness["groups"]
+    visible_projects = [
+        (
+            project,
+            {
+                (harness["source"], group)
+                for harness in project["harnesses"]
+                for group in harness["groups"]
+            },
+        )
+        for project in projects
+    ]
+    selected = []
+    for saved in config.get("projects", []):
+        members = {
+            (item.get("source", ""), item.get("group", ""))
+            for item in saved.get("members", [])
         }
+        current = next((
+            project
+            for project, groups in visible_projects
+            if saved.get("identity") == project.get("identity")
+            or bool(members & groups)
+        ), None)
+        selected.append({
+            "identity": current.get("identity", ""),
+            "label": current.get("label", ""),
+        } if current else saved)
+    matched = set()
+    for project, groups in visible_projects:
         if legacy & groups:
             matched.update(legacy & groups)
             selected.append({
                 "identity": project.get("identity", ""),
                 "label": project.get("label", ""),
             })
-    config["projects"] = selected
+    config["projects"] = list({
+        item.get("identity", ""): item for item in selected
+    }.values())
     config["legacy_groups"] = [
         item
         for item in legacy_items
@@ -734,7 +755,13 @@ def _put_watcher(body: dict):
             projects.extend(
                 project
                 for project in existing.projects
-                if (project.identity, project.label) not in discovered_projects
+                if (
+                    (project.identity, project.label) not in discovered_projects
+                    and not (
+                        {(member.source, member.group) for member in project.members}
+                        & visible_groups
+                    )
+                )
                 and (project.identity, project.label) not in removed
             )
             legacy_groups = [
