@@ -55,16 +55,17 @@ SOURCE_ENV_VARS = (
 
 
 @dataclass(frozen=True)
-class AllowedProject:
-    identity: str
-    label: str = ""
-
-
-@dataclass(frozen=True)
 class LegacyAllowedGroup:
     source: str
     group: str
     label: str = ""
+
+
+@dataclass(frozen=True)
+class AllowedProject:
+    identity: str
+    label: str = ""
+    members: tuple[LegacyAllowedGroup, ...] = ()
 
 
 @dataclass
@@ -103,6 +104,17 @@ class WatcherConfig:
                         or f'directory:{item["directory"]}'
                     ),
                     label=str(item.get("label", "")),
+                    members=tuple(sorted(
+                        (
+                            LegacyAllowedGroup(
+                                source=str(member.get("source", "")),
+                                group=str(member.get("group", "")),
+                            )
+                            for member in item.get("members", [])
+                            if member.get("source") and member.get("group")
+                        ),
+                        key=lambda member: (member.source, member.group),
+                    )),
                 )
                 for item in data.get("projects", [])
                 if item.get("identity") or item.get("directory")
@@ -235,6 +247,8 @@ def _resolve_allowed(config: WatcherConfig):
         }
         selected = any(
             item.identity == project["identity"]
+            or bool({(member.source, member.group) for member in item.members}
+                    & project_groups)
             for item in config.projects
         ) or bool(legacy & project_groups)
         if not selected:
@@ -278,7 +292,7 @@ def migrate_config(path: Path | None = None) -> WatcherConfig:
                         os.environ[name] = value
             legacy = {(item.source, item.group) for item in config.legacy_groups}
             matched = set()
-            projects = set(config.projects)
+            projects = {item.identity: item for item in config.projects}
             for project in projects_from_groups(discovered):
                 project_groups = {
                     (harness["source"], group)
@@ -287,9 +301,21 @@ def migrate_config(path: Path | None = None) -> WatcherConfig:
                 }
                 selected_groups = legacy & project_groups
                 if selected_groups:
-                    projects.add(AllowedProject(project["identity"], project["label"]))
+                    projects[project["identity"]] = AllowedProject(
+                        project["identity"],
+                        project["label"],
+                        tuple(sorted(
+                            (
+                                LegacyAllowedGroup(source, group)
+                                for source, group in project_groups
+                            ),
+                            key=lambda item: (item.source, item.group),
+                        )),
+                    )
                     matched.update(selected_groups)
-            config.projects = sorted(projects, key=lambda item: item.identity)
+            config.projects = sorted(
+                projects.values(), key=lambda item: item.identity
+            )
             config.legacy_groups = [
                 item
                 for item in config.legacy_groups

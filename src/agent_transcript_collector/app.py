@@ -39,6 +39,7 @@ from .uploader import (
 )
 from .watcher import (
     AllowedProject,
+    LegacyAllowedGroup,
     WatcherConfig,
     capture_source_env,
 )
@@ -713,7 +714,17 @@ def _put_watcher(body: dict):
         watcher = watcher_status()
         existing = load_watcher_config() if watcher.get("config") else None
         projects = [
-            AllowedProject(identity=identity, label=label)
+            AllowedProject(
+                identity=identity,
+                label=label,
+                members=tuple(sorted(
+                    (
+                        LegacyAllowedGroup(source, group)
+                        for source, group in discovered_projects[(identity, label)]
+                    ),
+                    key=lambda item: (item.source, item.group),
+                )),
+            )
             for identity, label in sorted(requested)
         ]
         if existing:
