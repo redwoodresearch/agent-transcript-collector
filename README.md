@@ -46,8 +46,7 @@ from the repository and restart the UI with it. The background process also
 checks for an updated version whenever it starts.
 
 The service is installed for your user account with a macOS LaunchAgent or Linux
-systemd user service. It does not require `sudo`. `uv` must remain installed at
-the path recorded during setup.
+systemd user service.
 
 After setup, the user-facing command is `rr-trans`:
 
