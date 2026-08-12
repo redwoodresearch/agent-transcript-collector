@@ -142,7 +142,7 @@ that are present appear in the review UI.
 
 Each session goes through the same pipeline:
 
-1. **Discover:** find native transcripts and group them by project and source.
+1. **Discover:** find native transcripts and assign each one a project and source.
 2. **Assemble:** keep each transcript in its native JSONL or text format, link
    subagent sessions to their parents, and resolve referenced external files.
 3. **Compare:** hash the original transcript and external files, then compare
@@ -159,9 +159,16 @@ conversion.
 
 [`scan.py`](src/agent_transcript_collector/scan.py) is the single entry point
 for local transcript discovery. `scan_transcripts()` runs each source adapter
-once and returns a `ScanResult` containing projects, groups, a subagent-aware
-session index, and selection helpers shared by the UI and automatic watcher.
+once and returns a `ScanResult` containing a flat transcript collection,
+derived projects, a subagent-aware session index, and selection helpers shared
+by the UI and automatic watcher.
 The adapters retain only their harness-specific file and parent-link rules.
+`scan.py` assigns the canonical merged project identity to every transcript, so
+there is no separate source-level group model.
+
+Watcher configuration stores only each selected project's identity and label.
+For compatibility, old `members` entries are understood when read, but they are
+omitted the next time the configuration is saved.
 
 Sidecars are resolved by `load_transcript_inputs()` when an individual session
 is previewed, hashed, or uploaded. They are not read eagerly during the initial
@@ -183,7 +190,7 @@ helpers. A record is approximately:
     "<contributor and local session identity>": {
       "source": "codex",
       "contributor": "example-contributor",
-      "group": "project-key",
+      "project": "project-key",
       "session": "session-id",
       "parent": null,
       "filesystem_snapshot": [

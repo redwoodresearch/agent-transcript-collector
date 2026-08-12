@@ -25,7 +25,7 @@ class FilesystemSnapshotEntry(TypedDict, total=False):
 class CacheRecord(TypedDict, total=False):
     source: str
     contributor: str
-    group: str
+    project: str
     parent: str | None
     session: str
     filesystem_snapshot: list[FilesystemSnapshotEntry]

@@ -26,7 +26,6 @@ from pathlib import Path
 
 from ..sidecars import SidecarBuilder, SidecarSet
 from .base import (
-    Group,
     Session,
     canonical_project_directory,
     decode_existing_project_path,
@@ -187,13 +186,13 @@ class CursorSource:
     label = "Cursor"
     source_format = "cursor-agent-transcript"
 
-    def discover(self) -> list[Group]:
+    def discover(self) -> list[Session]:
         projects_dir = _projects_dir()
         if not projects_dir.exists():
             return []
 
         label_by_key = _project_label_map()
-        by_group: dict[str, Group] = {}
+        sessions = []
         for project_dir in sorted(projects_dir.iterdir()):
             transcripts_dir = project_dir / "agent-transcripts"
             if not project_dir.is_dir() or not transcripts_dir.exists():
@@ -211,24 +210,15 @@ class CursorSource:
                 if exact_cwd is not None or recovered is not None
                 else None
             )
-            group = by_group.get(key)
-            if group is None:
-                group = by_group[key] = Group(
-                    key=key,
-                    label=label,
-                    sessions=[],
-                    directory=directory,
-                )
-            elif group.directory is None and directory is not None:
-                group.directory = directory
             for f in self._transcript_files(transcripts_dir):
                 first, count = self._summary(f)
                 parent = self._parent_id(transcripts_dir, f)
-                group.sessions.append(Session(
+                sessions.append(Session(
                     source=self.id,
                     id=self._session_id(transcripts_dir, f),
-                    group_key=key,
-                    group_label=label,
+                    project_id="",
+                    project_label=label,
+                    project_directory=directory,
                     path=f,
                     size_bytes=f.stat().st_size,
                     first_message=first,
@@ -236,8 +226,9 @@ class CursorSource:
                     modified=mtime(f),
                     is_subagent=parent is not None,
                     parent=parent,
+                    legacy_watcher_project_id=key,
                 ))
-        return [group for group in by_group.values() if group.sessions]
+        return sessions
 
     def _transcript_files(self, transcripts_dir: Path) -> list[Path]:
         files = []

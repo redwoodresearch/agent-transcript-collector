@@ -36,7 +36,7 @@ from .pipeline import (
 from .redactor import redact_identity, redact_jsonl_content
 from .s3client import make_s3_client as _make_s3_client
 from .s3client import selected_profile
-from .scan import ScanResult, load_transcript_inputs, project_groups, scan_transcripts
+from .scan import ScanResult, load_transcript_inputs, scan_transcripts
 from .sources import SOURCES, get_source
 from .sources.base import human_size
 from .uploader import (
@@ -46,9 +46,10 @@ from .uploader import (
 )
 from .watcher import (
     AllowedProject,
-    ProjectMember,
     WatcherConfig,
     capture_source_env,
+    project_is_selected,
+    selected_project_identities,
 )
 from .watcher import (
     install as install_watcher,
@@ -177,10 +178,10 @@ def _start_scan(force: bool = False) -> dict:
     return status
 
 
-def _cached_session(source: str, group: str, session: str, parent: str | None):
+def _cached_session(source: str, project: str, session: str, parent: str | None):
     with SCAN_LOCK:
         result = SCAN_RESULT
-    return result.find_session(source, group, session, parent) if result else None
+    return result.find_session(source, project, session, parent) if result else None
 
 
 @app.post("/api/scan")
@@ -199,14 +200,16 @@ def project_list():
         result = SCAN_RESULT
     if result is None:
         return JSONResponse(_scan_status(), status_code=202)
-    return jinja_env.get_template("_projects.html").render(projects=result.projects)
+    return jinja_env.get_template("_projects.html").render(
+        projects=result.project_dicts
+    )
 
 
 @app.get("/api/preview")
-def preview_session(source: str, group: str, session: str, parent: str = "",
+def preview_session(source: str, project: str, session: str, parent: str = "",
                     offset: int = 0, limit: int = 100):
     """Preview one bounded page of messages with displayed text redacted."""
-    sess = _cached_session(source, group, session, parent or None)
+    sess = _cached_session(source, project, session, parent or None)
     src = get_source(source)
     if sess is None or src is None:
         return JSONResponse({"error": "Session not found; try Refresh"}, status_code=404)
@@ -468,13 +471,13 @@ def _upload_worker(serialized_selections, candidates, contributor, events):
                 )
                 errors.extend(upload_errors)
             successful = {
-                (item.get("source"), item.get("group"), item.get("parent") or "",
+                (item.get("source"), item.get("project"), item.get("parent") or "",
                  item.get("session"))
                 for item in uploads
             }
             uploaded_candidates = [
                 item for item in candidates
-                if (item.get("source"), item.get("group"),
+                if (item.get("source"), item.get("project"),
                     item.get("parent") or "", item.get("session")) in successful
             ]
             if uploaded_candidates:
@@ -643,30 +646,25 @@ def get_watcher_status():
         return result
     with SCAN_LOCK:
         scan = SCAN_RESULT
-    projects = list(scan.projects) if scan else []
-    visible_projects = [
-        (
-            project,
-            project_groups(project),
-        )
-        for project in projects
+    projects = scan.project_dicts if scan else []
+    visible_projects = {project["identity"]: project for project in projects}
+    saved_config = load_watcher_config()
+    selected_ids = (
+        selected_project_identities(scan, saved_config) if scan else set()
+    )
+    selected = [
+        {"identity": identity, "label": visible_projects[identity]["label"]}
+        for identity in selected_ids
     ]
-    selected = []
-    for saved in config.get("projects", []):
-        members = {
-            (item.get("source", ""), item.get("group", ""))
-            for item in saved.get("members", [])
-        }
-        current = next((
-            project
-            for project, groups in visible_projects
-            if saved.get("identity") == project.get("identity")
-            or bool(members & groups)
-        ), None)
-        selected.append({
-            "identity": current.get("identity", ""),
-            "label": current.get("label", ""),
-        } if current else saved)
+    selected.extend(
+        {"identity": saved.identity, "label": saved.label}
+        for saved in saved_config.projects
+        if saved.identity not in visible_projects
+        and not any(
+            project_is_selected(project, saved)
+            for project in (scan.projects if scan else ())
+        )
+    )
     config["projects"] = list({
         item.get("identity", ""): item for item in selected
     }.values())
@@ -674,23 +672,22 @@ def get_watcher_status():
 
 
 def _put_watcher(body: dict):
-    requested = {
-        (str(item.get("identity", "")), str(item.get("label", "")))
-        for item in body.get("projects", [])
+    requested_ids = {
+        str(item.get("identity", "")) for item in body.get("projects", [])
+        if item.get("identity")
     }
-    removed = {
-        (str(item.get("identity", "")), str(item.get("label", "")))
-        for item in body.get("removed_projects", [])
+    removed_ids = {
+        str(item.get("identity", "")) for item in body.get("removed_projects", [])
+        if item.get("identity")
     }
-    requested -= removed
+    requested_ids -= removed_ids
     with SCAN_LOCK:
         scan = SCAN_RESULT
     discovered_projects = {
-        (str(project.get("identity", "")), str(project.get("label", ""))):
-            project_groups(project)
-        for project in (scan.projects if scan else [])
+        str(project.get("identity", "")): str(project.get("label", ""))
+        for project in (scan.project_dicts if scan else [])
     }
-    invalid = sorted(requested - discovered_projects.keys())
+    invalid = sorted(requested_ids - discovered_projects.keys())
     if invalid:
         return JSONResponse(
             {"error": "One or more selected projects are no longer available"},
@@ -702,32 +699,20 @@ def _put_watcher(body: dict):
         projects = [
             AllowedProject(
                 identity=identity,
-                label=label,
-                members=tuple(sorted(
-                    (
-                        ProjectMember(source, group)
-                        for source, group in discovered_projects[(identity, label)]
-                    ),
-                    key=lambda item: (item.source, item.group),
-                )),
+                label=discovered_projects[identity],
             )
-            for identity, label in sorted(requested)
+            for identity in sorted(requested_ids)
         ]
         if existing:
-            visible_groups = set().union(
-                *discovered_projects.values(),
-            ) if discovered_projects else set()
             projects.extend(
                 project
                 for project in existing.projects
-                if (
-                    (project.identity, project.label) not in discovered_projects
-                    and not (
-                        {(member.source, member.group) for member in project.members}
-                        & visible_groups
-                    )
+                if project.identity not in discovered_projects
+                and project.identity not in removed_ids
+                and not any(
+                    project_is_selected(discovered, project)
+                    for discovered in (scan.projects if scan else ())
                 )
-                and (project.identity, project.label) not in removed
             )
         config = WatcherConfig(
             auto_uploader_version=(

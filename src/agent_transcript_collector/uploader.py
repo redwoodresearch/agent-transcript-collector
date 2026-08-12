@@ -153,7 +153,7 @@ def _safe_segment(value: str) -> str:
 
 
 def _project_segment(session) -> str:
-    value = session.group_label
+    value = session.project_label
     if not value:
         return "%00"
     return value.replace("%", "%25").replace("/", "%2F").replace("\\", "%5C")
@@ -352,12 +352,12 @@ def _redacted_sidecars(
 def _build_transcript_zip(source, prepared: PreparedTranscript, contributor: str):
     session = prepared.session
     raw, redaction_count = _redact(prepared.raw_bytes.decode("utf-8", errors="replace"))
-    group_key, group_label = session.group_key, session.group_label
+    project_id, project_label = session.project_id, session.project_label
     sidecar_contents, sidecar_section, count = _redacted_sidecars(prepared)
     redaction_count += count
-    group_key, count = redact_path_token(group_key)
+    project_id, count = redact_path_token(project_id)
     redaction_count += count
-    group_label, count = redact_identity(group_label)
+    project_label, count = redact_identity(project_label)
     redaction_count += count
 
     suffix = Path(session.path).suffix.lower()
@@ -368,7 +368,7 @@ def _build_transcript_zip(source, prepared: PreparedTranscript, contributor: str
         "source": source.id,
         "source_format": source.source_format,
         "contributor": contributor,
-        "project": {"key": group_key, "name": group_label},
+        "project": {"key": project_id, "name": project_label},
         "session": {
             "id": session.id,
             "is_subagent": session.is_subagent,
@@ -450,7 +450,7 @@ def build_upload_artifact(
     session = prepared.session
     return {
         "source": source.id,
-        "group": session.group_key,
+        "project": session.project_id,
         "session": session.id,
         "parent": session.parent,
         "path": temporary,
@@ -487,7 +487,7 @@ def upload_artifacts(s3, artifacts: list[dict], on_progress=None):
         return {
             key: artifact[key]
             for key in (
-                "source", "group", "session", "parent", "zip_size_bytes",
+                "source", "project", "session", "parent", "zip_size_bytes",
                 "redactions", "sidecar_count",
             )
         } | {"s3_key": artifact["key"], "transcript_count": 1}

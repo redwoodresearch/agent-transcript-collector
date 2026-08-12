@@ -321,13 +321,13 @@
 
 <script>
 function sessionKey(row) {
-  return [row.dataset.source, row.dataset.group, row.dataset.parent || '', row.dataset.session].join('|');
+  return [row.dataset.source, row.dataset.project, row.dataset.parent || '', row.dataset.session].join('|');
 }
 
 function sessionDescriptor(row) {
   return {
     source: row.dataset.source,
-    group: row.dataset.group,
+    project: row.dataset.project,
     session: row.dataset.session,
     parent: row.dataset.parent || null,
   };
@@ -455,15 +455,6 @@ function runWatcherMutation(operation) {
   const result = watcherMutation.catch(() => {}).then(operation);
   watcherMutation = result;
   return result;
-}
-
-function harnessGroups(harness) {
-  try { return JSON.parse(harness.dataset.groups || '[]'); } catch (e) { return []; }
-}
-
-function projectGroups(project) {
-  return Array.from(project.querySelectorAll('.harness')).flatMap(harness =>
-    harnessGroups(harness).map(group => ({source: harness.dataset.source, group})));
 }
 
 function consentedRows(project) {
@@ -827,13 +818,13 @@ async function startPipeline() {
     }
     const current = new Set((data.items || [])
       .filter(item => item.state === 'current')
-      .map(item => [item.source, item.group, item.parent || '', item.session].join('|')));
+      .map(item => [item.source, item.project, item.parent || '', item.session].join('|')));
     const ready = new Set((data.items || [])
       .filter(item => item.state === 'ready')
-      .map(item => [item.source, item.group, item.parent || '', item.session].join('|')));
+      .map(item => [item.source, item.project, item.parent || '', item.session].join('|')));
     const failed = new Set((data.items || [])
       .filter(item => item.state === 'error')
-      .map(item => [item.source, item.group, item.parent || '', item.session].join('|')));
+      .map(item => [item.source, item.project, item.parent || '', item.session].join('|')));
     rows.forEach(row => {
       const key = sessionKey(row);
       row.classList.toggle('uploaded', current.has(key));
@@ -1032,7 +1023,7 @@ function showPreviewError(body, footer, message, offset) {
 
 async function previewSession(el, offset = 0) {
   const row = el.closest('.session');
-  const source = row.dataset.source, group = row.dataset.group, session = row.dataset.session;
+  const source = row.dataset.source, project = row.dataset.project, session = row.dataset.session;
   const parent = row.dataset.parent || '';
   const pane = document.getElementById('preview-pane');
   const body = document.getElementById('preview-body');
@@ -1041,7 +1032,7 @@ async function previewSession(el, offset = 0) {
   const redactCount = document.getElementById('preview-redaction-count');
   const request = ++previewRequest;
 
-  currentPreview = {row, source, group, session, parent, offset};
+  currentPreview = {row, source, project, session, parent, offset};
   if (offset === 0) {
     body.innerHTML = '<p style="color: var(--text-muted)">Loading preview…</p>';
     redactCount.textContent = '';
@@ -1052,7 +1043,7 @@ async function previewSession(el, offset = 0) {
   title.textContent = session.substring(0, 8) + '...';
 
   try {
-    const q = new URLSearchParams({ source, group, session, parent, offset, limit: 100 });
+    const q = new URLSearchParams({ source, project, session, parent, offset, limit: 100 });
     const resp = await fetch('/api/preview?' + q.toString());
     const data = await resp.json();
     if (request !== previewRequest) return;
@@ -1265,7 +1256,7 @@ function renderProgress(j) {
 
 function markUploaded(uploads) {
   const uploaded = new Set(uploads.map(item =>
-    [item.source, item.group, item.parent || '', item.session].join('|')));
+    [item.source, item.project, item.parent || '', item.session].join('|')));
   document.querySelectorAll('.session').forEach(row => {
     if (uploaded.has(sessionKey(row))) {
       row.classList.add('uploaded');

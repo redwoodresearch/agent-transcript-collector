@@ -17,7 +17,6 @@ from pathlib import Path
 
 from ..sidecars import SidecarBuilder, SidecarSet
 from .base import (
-    Group,
     Session,
     canonical_project_directory,
     decode_existing_project_path,
@@ -117,12 +116,12 @@ class ClaudeCodeSource:
     label = "Claude Code"
     source_format = "claude-jsonl"
 
-    def discover(self) -> list[Group]:
+    def discover(self) -> list[Session]:
         projects_dir = _projects_dir()
         if not projects_dir.exists():
             return []
 
-        by_group: dict[str, Group] = {}
+        sessions = []
         for project_dir in sorted(projects_dir.iterdir()):
             if not project_dir.is_dir():
                 continue
@@ -150,24 +149,16 @@ class ClaudeCodeSource:
                     if cwd is not None or container_cwd is not None or recovered is not None
                     else None
                 )
-                group = by_group.get(key)
-                if group is None:
-                    group = by_group[key] = Group(
-                        key=key,
-                        label=label,
-                        sessions=[],
-                        directory=directory,
-                    )
-                elif group.directory is None and directory is not None:
-                    group.directory = directory
-                group.sessions.append(Session(
+                sessions.append(Session(
                     source=self.id, id=f.stem,
-                    group_key=key, group_label=label,
+                    project_id="", project_label=label,
+                    project_directory=directory,
                     path=f, size_bytes=f.stat().st_size,
                     first_message=first, message_count=count, modified=mtime(f),
                     is_subagent=parent is not None, parent=parent,
+                    legacy_watcher_project_id=key,
                 ))
-        return list(by_group.values())
+        return sessions
 
     def _summary(self, path: Path) -> tuple[str | None, str, int]:
         cwd = None

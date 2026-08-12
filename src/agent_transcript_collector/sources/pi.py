@@ -21,7 +21,6 @@ import os
 from pathlib import Path
 
 from .base import (
-    Group,
     Session,
     canonical_project_directory,
     mtime,
@@ -132,8 +131,8 @@ class PiSource:
                 out.setdefault(f, None)
         return sorted(out.items())
 
-    def discover(self) -> list[Group]:
-        by_group: dict[str, Group] = {}
+    def discover(self) -> list[Session]:
+        sessions = []
         for f, run_parent in self._candidate_files():
             objs = _read_objects(f)
             if not _is_pi_transcript(objs):
@@ -161,21 +160,12 @@ class PiSource:
                 # (whose file is literally session.jsonl).
                 sid = f"{f.parent.parent.name}-{f.parent.name}" if run_parent else _short_id(f.stem)
 
-            group = by_group.get(key)
-            if group is None:
-                group = by_group[key] = Group(
-                    key=key,
-                    label=label,
-                    sessions=[],
-                    directory=directory,
-                )
-            elif group.directory is None and directory is not None:
-                group.directory = directory
-            group.sessions.append(Session(
+            sessions.append(Session(
                 source=self.id,
                 id=sid,
-                group_key=key,
-                group_label=label,
+                project_id="",
+                project_label=label,
+                project_directory=directory,
                 path=f,
                 size_bytes=f.stat().st_size,
                 first_message=first,
@@ -183,8 +173,9 @@ class PiSource:
                 modified=mtime(f),
                 is_subagent=is_subagent,
                 parent=parent,
+                legacy_watcher_project_id=key,
             ))
-        return list(by_group.values())
+        return sessions
 
     def _summary(self, objs: list[dict]) -> tuple[str, int]:
         first = ""

@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,7 +28,7 @@ from .pipeline import (
     refresh as refresh_pipeline,
 )
 from .s3client import make_s3_client
-from .scan import ScanResult, project_groups, scan_transcripts
+from .scan import ScanResult, scan_transcripts
 from .uploader import (
     UploadBusy,
     UploadLock,
@@ -64,6 +64,8 @@ class ProjectMember:
 class AllowedProject:
     identity: str
     label: str = ""
+    # Read-only compatibility for watcher configs written before projects were
+    # flattened. save_config deliberately never persists these members again.
     members: tuple[ProjectMember, ...] = ()
 
 
@@ -148,7 +150,20 @@ def _atomic_write(path: Path, data: bytes, mode: int = 0o600) -> None:
 
 def save_config(config: WatcherConfig, path: Path | None = None) -> Path:
     target = path or watcher_config_path()
-    payload = json.dumps(asdict(config), indent=2, sort_keys=True).encode() + b"\n"
+    data = {
+        "schema_version": config.schema_version,
+        "auto_uploader_version": config.auto_uploader_version,
+        "contributor": config.contributor,
+        "aws_profile": config.aws_profile,
+        "projects": [
+            {"identity": project.identity, "label": project.label}
+            for project in config.projects
+        ],
+        "source_env": config.source_env,
+        "package_spec": config.package_spec,
+        "uv_path": config.uv_path,
+    }
+    payload = json.dumps(data, indent=2, sort_keys=True).encode() + b"\n"
     _atomic_write(target, payload)
     return target
 
@@ -178,25 +193,32 @@ def capture_source_env() -> dict[str, str]:
     return {name: os.environ[name] for name in SOURCE_ENV_VARS if os.environ.get(name)}
 
 
-def _allowed_groups(scan: ScanResult, config: WatcherConfig) -> set[tuple[str, str]]:
-    """Resolve project-level consent against one discovery snapshot."""
-    allowed = set()
-    for project in scan.projects:
-        groups = project_groups(project)
-        selected = any(
-            item.identity == project["identity"]
-            or bool({(member.source, member.group) for member in item.members}
-                    & groups)
-            for item in config.projects
-        )
-        if selected:
-            allowed.update(groups)
-    return allowed
+def project_is_selected(project, saved: AllowedProject) -> bool:
+    """Match a project directly, or through members from an old config."""
+    if saved.identity == project.identity:
+        return True
+    legacy_members = {(member.source, member.group) for member in saved.members}
+    return bool(legacy_members & {
+        (transcript.source, transcript.legacy_watcher_project_id)
+        for transcript in project.transcripts
+        if transcript.legacy_watcher_project_id
+    })
+
+
+def selected_project_identities(
+    scan: ScanResult, config: WatcherConfig
+) -> set[str]:
+    """Resolve project consent from one discovery snapshot."""
+    return {
+        project.identity
+        for project in scan.projects
+        if any(project_is_selected(project, saved) for saved in config.projects)
+    }
 
 
 def discover_allowed(config: WatcherConfig):
     scan = scan_transcripts()
-    return scan.sessions_for_groups(_allowed_groups(scan, config))
+    return scan.sessions_for_projects(selected_project_identities(scan, config))
 
 
 def _sso_hint(exc: Exception, profile: str) -> str:
@@ -252,13 +274,13 @@ def run_once(
                 )
                 uploads, upload_errors = upload_artifacts(client, artifacts)
             successful = {
-                (item.get("source"), item.get("group"), item.get("parent") or "",
+                (item.get("source"), item.get("project"), item.get("parent") or "",
                  item.get("session"))
                 for item in uploads
             }
             uploaded_candidates = [
                 item for item in candidates
-                if (item.get("source"), item.get("group"),
+                if (item.get("source"), item.get("project"),
                     item.get("parent") or "", item.get("session")) in successful
             ]
             if uploaded_candidates:
@@ -544,7 +566,10 @@ def status(
             result["config"] = {
                 "auto_uploader_version": config.auto_uploader_version,
                 "contributor": config.contributor,
-                "projects": [asdict(project) for project in config.projects],
+                "projects": [
+                    {"identity": project.identity, "label": project.label}
+                    for project in config.projects
+                ],
                 "aws_profile": config.aws_profile,
             }
             result["needs_reinstall"] = (

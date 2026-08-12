@@ -43,22 +43,24 @@ def redaction_concurrency() -> int:
 def _item(source_id: str, session, status: str) -> dict:
     return {
         "source": source_id,
-        "group": session.group_key,
+        "project": session.project_id,
         "parent": session.parent,
         "session": session.id,
         "state": status,
     }
 
 
-def _record_is_current(record: CacheRecord) -> bool:
-    if (
-        record.get("source_hash_version") != SOURCE_HASH_VERSION
-        or record.get("redaction_version") != REDACTION_VERSION
-        or record.get("format_version") != TRANSCRIPT_FORMAT_VERSION
-        or not filesystem_snapshot_is_current(record.get("filesystem_snapshot"))
-    ):
-        return False
-    return True
+def _record_is_current(record: CacheRecord, source_id: str, session) -> bool:
+    return (
+        record.get("source") == source_id
+        and record.get("project") == session.project_id
+        and record.get("parent") == session.parent
+        and record.get("session") == session.id
+        and record.get("source_hash_version") == SOURCE_HASH_VERSION
+        and record.get("redaction_version") == REDACTION_VERSION
+        and record.get("format_version") == TRANSCRIPT_FORMAT_VERSION
+        and filesystem_snapshot_is_current(record.get("filesystem_snapshot"))
+    )
 
 
 def _prepare_changed(source, session, contributor: str) -> tuple:
@@ -67,7 +69,7 @@ def _prepare_changed(source, session, contributor: str) -> tuple:
     record = {
         "source": source.id,
         "contributor": contributor,
-        "group": session.group_key,
+        "project": session.project_id,
         "parent": session.parent,
         "session": session.id,
         "source_hash_version": SOURCE_HASH_VERSION,
@@ -126,12 +128,13 @@ def refresh(
         key = cache_record_key(contributor, source.id, session)
         record = get_cache_for_transcript(cache, contributor, source.id, session)
         status = record.get("state") if record is not None else None
-        if record is not None and status == "current" and _record_is_current(record):
+        if (record is not None and status == "current"
+                and _record_is_current(record, source.id, session)):
             items_by_key[key] = _item(source.id, session, "current")
         elif (
             record is not None
             and status == "ready"
-            and _record_is_current(record)
+            and _record_is_current(record, source.id, session)
             and (cached := _prepared_from_record(record, session)) is not None
         ):
             prepared_by_key[key] = cached
@@ -165,7 +168,7 @@ def refresh(
                     {
                         "source": source.id,
                         "contributor": contributor,
-                        "group": session.group_key,
+                        "project": session.project_id,
                         "parent": session.parent,
                         "session": session.id,
                         "state": "error",
@@ -250,13 +253,13 @@ def artifacts_for(selections, contributor: str, cache_path: Path | None = None):
             if (
                 record is not None
                 and record.get("state") == "current"
-                and _record_is_current(record)
+                and _record_is_current(record, source.id, session)
             ):
                 continue
             if (
                 record is not None
                 and record.get("state") == "ready"
-                and _record_is_current(record)
+                and _record_is_current(record, source.id, session)
             ):
                 candidates.append(dict(record))
             else:
@@ -273,7 +276,7 @@ def prepare_upload_artifacts(
 ):
     """Revalidate, redact, and package candidates selected for upload."""
     wanted = {
-        (item.get("source"), item.get("group"), item.get("parent") or "",
+        (item.get("source"), item.get("project"), item.get("parent") or "",
          item.get("session")): item
         for item in candidates
     }
@@ -281,7 +284,7 @@ def prepare_upload_artifacts(
     resolved = set()
     for source, sessions in selections:
         for session in sessions:
-            identity = (source.id, session.group_key, session.parent or "", session.id)
+            identity = (source.id, session.project_id, session.parent or "", session.id)
             if identity in wanted and identity not in resolved:
                 work.append((source, session, wanted[identity]))
                 resolved.add(identity)
@@ -345,7 +348,7 @@ def mark_uploaded(artifacts: list[dict], contributor: str,
     cache = get_cache(cache_path)
     records = cache["records"]
     uploaded = {
-        (item.get("source"), item.get("group"), item.get("parent") or "",
+        (item.get("source"), item.get("project"), item.get("parent") or "",
          item.get("session"))
         for item in artifacts
     }
@@ -353,7 +356,7 @@ def mark_uploaded(artifacts: list[dict], contributor: str,
         if record.get("contributor") != contributor:
             continue
         identity = (
-            record.get("source"), record.get("group"), record.get("parent") or "",
+            record.get("source"), record.get("project"), record.get("parent") or "",
             record.get("session"),
         )
         if identity in uploaded:

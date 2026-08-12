@@ -28,8 +28,7 @@
   </div>
   <div class="project-body">
     {% for harness in project.harnesses %}
-    <div class="harness" data-source="{{ harness.source }}"
-         data-groups='{{ harness.groups | tojson }}'>
+    <div class="harness" data-source="{{ harness.source }}">
       <div class="harness-header" onclick="toggleHarness(this)" title="Expand or collapse {{ harness.source_label }} transcripts">
         <span class="arrow harness-arrow">&#9654;</span>
         <span class="harness-label">{{ harness.source_label }}</span>
@@ -39,7 +38,7 @@
       {% for session in harness.sessions %}
       <div class="session"
            data-source="{{ harness.source }}"
-           data-group="{{ session.group_key }}"
+           data-project="{{ session.project_id }}"
            data-session="{{ session.id }}"
            data-parent="{{ session.parent or '' }}">
         <span class="session-summary" onclick="previewSession(this)" title="Click to preview">
