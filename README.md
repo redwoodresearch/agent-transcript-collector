@@ -253,6 +253,20 @@ size, and `redactions` is the total number of replacements. Each sidecar entry
 records its ZIP path, type, redacted original reference, redacted size, and hash.
 The three sidecar arrays are present even when empty.
 
+### S3 object properties
+
+Each `transcript.zip` has these custom metadata fields:
+
+| Field | Meaning |
+|---|---|
+| `content-fingerprint` | Privacy-safe fingerprint of the transcript and included sidecars. |
+| `body-fingerprint` | Privacy-safe fingerprint of the transcript alone. |
+| `sidecar-count` | Number of sidecars included in the ZIP. |
+
+The fingerprints identify redacted content, not the ZIP bytes. The standard S3
+`LastModified` property is the time the session's ZIP was last uploaded or
+overwritten and can be used to find recent uploads.
+
 ## Privacy and redaction
 
 Redaction happens on your machine before anything is written to a ZIP, and the
