@@ -3,6 +3,14 @@
 {% elif not projects %}
 <p class="empty">No transcripts found for any supported agent (Claude Code, Codex, Cursor, Pi) on this machine.</p>
 {% else %}
+<div class="upload-state-legend" aria-label="Transcript upload status legend">
+  <span class="legend-item state-not-uploaded icon-tooltip" tabindex="0"
+        data-tooltip="No S3 object exists for this transcript"><i></i> Not uploaded</span>
+  <span class="legend-item state-changed icon-tooltip" tabindex="0"
+        data-tooltip="An upload exists, but its source or processing version differs"><i></i> Uploaded, changed</span>
+  <span class="legend-item state-current icon-tooltip" tabindex="0"
+        data-tooltip="The uploaded object matches the current transcript and policy"><i></i> Current</span>
+</div>
 <div class="project-list">
 {% for project in projects %}
 <div class="project" data-project="{{ project.key }}"
@@ -15,9 +23,16 @@
         {{ project.directory or 'Directory unavailable' }}
       </div>
     </div>
-    <span class="project-meta">
-      {{ project.session_count }} session{{ 's' if project.session_count != 1 else '' }}
-      &middot; <span class="project-pending">preparation pending</span>
+    <span class="project-meta project-state-counts" aria-label="Upload status pending">
+      <span class="state-count state-not-uploaded icon-tooltip" tabindex="0"
+            data-tooltip="Not uploaded">–</span>
+      <span class="count-divider" aria-hidden="true">|</span>
+      <span class="state-count state-changed icon-tooltip" tabindex="0"
+            data-tooltip="Uploaded, but changed">–</span>
+      <span class="count-divider" aria-hidden="true">|</span>
+      <span class="state-count state-current icon-tooltip" tabindex="0"
+            data-tooltip="Uploaded and current">–</span>
+      <span class="state-failed" hidden></span>
     </span>
     <label class="auto-upload" title="Automatically upload new transcripts from this project"
            onclick="event.stopPropagation()">
@@ -73,7 +88,7 @@
           <button class="session-upload secondary" onclick="uploadTranscript(this); event.stopPropagation()"
                   title="Upload this transcript after preparation">Upload</button>
           <span class="uploaded-icon icon-tooltip" role="img" tabindex="0"
-                aria-label="Uploaded" data-tooltip="Already uploaded">&#10003;</span>
+                aria-label="Uploaded and current" data-tooltip="Uploaded and current">&#10003;</span>
         </span>
       </div>
       {% endfor %}

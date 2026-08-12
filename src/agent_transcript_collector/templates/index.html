@@ -127,8 +127,19 @@
     white-space: nowrap;
   }
   .project-meta { color: var(--text-muted); font-size: 0.8rem; white-space: nowrap; }
-  .project-pending { color: var(--yellow); }
-  .project-pending.complete { color: var(--green); }
+  .upload-state-legend {
+    display: flex; justify-content: flex-end; gap: 16px; margin: 0 2px 8px;
+    color: var(--text-muted); font-size: 0.75rem;
+  }
+  .legend-item { display: inline-flex; align-items: center; gap: 5px; }
+  .legend-item i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .state-not-uploaded { color: var(--red); }
+  .state-changed { color: var(--yellow); }
+  .state-current { color: var(--green); }
+  .project-state-counts { display: inline-flex; align-items: center; gap: 6px; }
+  .state-count { min-width: 1.2em; text-align: center; font-weight: 700; }
+  .count-divider { color: var(--border); }
+  .state-failed { color: var(--red); margin-left: 3px; }
   .arrow { color: var(--text-muted); transition: transform 0.15s; font-size: 0.7rem; }
   .arrow.open { transform: rotate(90deg); }
 
@@ -734,7 +745,8 @@ function onNameInput() {
   document.querySelectorAll('.project').forEach(project =>
     project.classList.remove('pipeline-ready', 'pipeline-running'));
   document.querySelectorAll('.session').forEach(row =>
-    row.classList.remove('uploaded', 'pipeline-prepared', 'pipeline-error'));
+    row.classList.remove('uploaded', 'pipeline-prepared', 'pipeline-not-uploaded',
+      'pipeline-changed', 'pipeline-error'));
   saveName(document.getElementById('contributor-name').value.trim());
   clearTimeout(pipelineTimer);
   pipelineTimer = setTimeout(refreshSettings, 400);
@@ -819,8 +831,11 @@ async function startPipeline() {
     const current = new Set((data.items || [])
       .filter(item => item.state === 'current')
       .map(item => [item.source, item.project, item.parent || '', item.session].join('|')));
-    const ready = new Set((data.items || [])
-      .filter(item => item.state === 'ready')
+    const notUploaded = new Set((data.items || [])
+      .filter(item => item.state === 'not_uploaded')
+      .map(item => [item.source, item.project, item.parent || '', item.session].join('|')));
+    const changed = new Set((data.items || [])
+      .filter(item => item.state === 'changed')
       .map(item => [item.source, item.project, item.parent || '', item.session].join('|')));
     const failed = new Set((data.items || [])
       .filter(item => item.state === 'error')
@@ -828,16 +843,18 @@ async function startPipeline() {
     rows.forEach(row => {
       const key = sessionKey(row);
       row.classList.toggle('uploaded', current.has(key));
-      row.classList.toggle('pipeline-prepared', ready.has(key));
+      row.classList.toggle('pipeline-not-uploaded', notUploaded.has(key));
+      row.classList.toggle('pipeline-changed', changed.has(key));
+      row.classList.toggle('pipeline-prepared', notUploaded.has(key) || changed.has(key));
       row.classList.toggle('pipeline-error', failed.has(key));
     });
     projects.forEach(project => {
       project.classList.remove('pipeline-running');
       project.classList.add('pipeline-ready');
     });
-    const readyCount = ready.size;
-    const detail = readyCount
-      ? `${readyCount} transcript${readyCount === 1 ? '' : 's'} ready to upload`
+    const pendingCount = notUploaded.size + changed.size;
+    const detail = pendingCount
+      ? `${pendingCount} transcript${pendingCount === 1 ? '' : 's'} ready to upload`
       : 'Everything is up to date';
     renderPipelineProgress('ready', 0, 0,
       data.status === 'partial' ? `${detail} · some transcripts failed` : detail);
@@ -935,22 +952,28 @@ function updatePendingCounts() {
   let selectedPipelineUnknown = false;
 
   document.querySelectorAll('.project').forEach(project => {
-    const label = project.querySelector('.project-pending');
+    const notUploadedLabel = project.querySelector('.state-count.state-not-uploaded');
+    const changedLabel = project.querySelector('.state-count.state-changed');
+    const currentLabel = project.querySelector('.state-count.state-current');
+    const failedLabel = project.querySelector('.state-failed');
     const available = project.classList.contains('pipeline-ready');
-    label.classList.remove('complete');
-    if (project.classList.contains('pipeline-running')) {
-      label.textContent = 'refreshing…';
-    } else if (!available) {
-      label.textContent = pipelineRunning ? 'waiting…' : 'not refreshed';
+    if (project.classList.contains('pipeline-running') || !available) {
+      notUploadedLabel.textContent = '–';
+      changedLabel.textContent = '–';
+      currentLabel.textContent = '–';
+      failedLabel.hidden = true;
     } else {
-      const pending = project.querySelectorAll('.session.pipeline-prepared').length;
+      const notUploaded = project.querySelectorAll('.session.pipeline-not-uploaded').length;
+      const changed = project.querySelectorAll('.session.pipeline-changed').length;
+      const current = project.querySelectorAll('.session.uploaded').length;
       const failed = project.querySelectorAll('.session.pipeline-error').length;
-      label.textContent = failed
-        ? `${failed} unavailable`
-        : pending
-        ? `${pending} not uploaded`
-        : 'all uploaded';
-      label.classList.toggle('complete', pending === 0 && failed === 0);
+      notUploadedLabel.textContent = String(notUploaded);
+      changedLabel.textContent = String(changed);
+      currentLabel.textContent = String(current);
+      project.querySelector('.project-state-counts').setAttribute(
+        'aria-label', `${notUploaded} not uploaded, ${changed} uploaded but changed, ${current} current${failed ? `, ${failed} unavailable` : ''}`);
+      failedLabel.textContent = failed ? `+ ${failed} unavailable` : '';
+      failedLabel.hidden = !failed;
     }
     const consented = consentedRows(project);
     if (consented.length) {
@@ -1260,7 +1283,8 @@ function markUploaded(uploads) {
   document.querySelectorAll('.session').forEach(row => {
     if (uploaded.has(sessionKey(row))) {
       row.classList.add('uploaded');
-      row.classList.remove('pipeline-prepared', 'pipeline-error');
+      row.classList.remove('pipeline-prepared', 'pipeline-not-uploaded',
+        'pipeline-changed', 'pipeline-error');
     }
   });
   if (uploaded.size) {

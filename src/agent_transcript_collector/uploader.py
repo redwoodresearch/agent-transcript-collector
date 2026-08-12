@@ -163,7 +163,9 @@ def transcript_key(contributor: str, source_id: str, session) -> str:
     return f"{transcript_prefix(contributor, source_id, session)}transcript.zip"
 
 
-def _uploaded_metadata(s3, key: str, cache: dict[str, dict]) -> dict:
+def _uploaded_metadata(
+    s3, key: str, cache: dict[str, tuple[bool, dict]]
+) -> tuple[bool, dict]:
     if key in cache:
         return cache[key]
     try:
@@ -172,11 +174,11 @@ def _uploaded_metadata(s3, key: str, cache: dict[str, dict]) -> dict:
         code = str(exc.response.get("Error", {}).get("Code", ""))
         if code not in {"404", "NoSuchKey", "NotFound"}:
             raise
-        metadata = {}
+        result = (False, {})
     else:
-        metadata = response.get("Metadata", {})
-    cache[key] = metadata
-    return metadata
+        result = (True, response.get("Metadata", {}))
+    cache[key] = result
+    return result
 
 
 def _already_uploaded(prepared: PreparedTranscript, remote: dict) -> bool:
@@ -231,21 +233,24 @@ def prepare_transcript(source, session, contributor: str) -> PreparedTranscript:
 def classify_prepared(
     s3,
     prepared_items: list[PreparedTranscript],
-    uploaded_metadata: dict[str, dict] | None = None,
+    uploaded_metadata: dict[str, tuple[bool, dict]] | None = None,
     on_status=None,
 ):
-    """Split hashed transcripts by their remote source hash."""
+    """Split transcripts into absent, changed, and current S3 objects."""
     existing = uploaded_metadata if uploaded_metadata is not None else {}
-    pending = []
+    not_uploaded = []
+    changed = []
     current = []
     errors = []
 
     def check_one(prepared):
-        remote = _uploaded_metadata(s3, prepared.key, existing)
-        return _already_uploaded(prepared, remote)
+        exists, remote = _uploaded_metadata(s3, prepared.key, existing)
+        if not exists:
+            return "not_uploaded"
+        return "current" if _already_uploaded(prepared, remote) else "changed"
 
     if not prepared_items:
-        return pending, current, errors
+        return not_uploaded, changed, current, errors
     workers = min(metadata_concurrency(), len(prepared_items))
     completed = 0
     with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -256,7 +261,7 @@ def classify_prepared(
             prepared = futures[future]
             completed += 1
             try:
-                is_current = future.result()
+                state = future.result()
             except Exception as exc:
                 errors.append({
                     "session": prepared.session.id,
@@ -264,10 +269,14 @@ def classify_prepared(
                     "error": f"{type(exc).__name__}: {exc}",
                 })
             else:
-                (current if is_current else pending).append(prepared)
+                {
+                    "not_uploaded": not_uploaded,
+                    "changed": changed,
+                    "current": current,
+                }[state].append(prepared)
             if on_status:
                 on_status(completed, len(prepared_items))
-    return pending, current, errors
+    return not_uploaded, changed, current, errors
 
 
 def _redact(text: str) -> tuple[str, int]:

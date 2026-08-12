@@ -129,11 +129,11 @@ def refresh(
             items_by_key[key] = _item(source.id, session, "current")
         elif (
             record is not None
-            and status == "ready"
+            and status in {"not_uploaded", "changed"}
             and _record_is_current(record, source.id, session)
-            and (cached := _prepared_from_record(record, session)) is not None
+            and _prepared_from_record(record, session) is not None
         ):
-            prepared_by_key[key] = cached
+            items_by_key[key] = _item(source.id, session, status)
         else:
             changed.append((key, source, session))
 
@@ -193,18 +193,21 @@ def refresh(
 
         if on_progress:
             on_progress("checking", 0, len(prepared_items))
-        pending, current, check_errors = classify_prepared(
+        not_uploaded, changed_remote, current, check_errors = classify_prepared(
             client, prepared_items, on_status=checked
         )
-        pending_ids = {id(item) for item in pending}
+        not_uploaded_ids = {id(item) for item in not_uploaded}
+        changed_ids = {id(item) for item in changed_remote}
         current_ids = {id(item) for item in current}
         errors.extend(check_errors)
         for key, prepared in prepared_by_key.items():
             record = records[key]
             if id(prepared) in current_ids:
                 record["state"] = "current"
-            elif id(prepared) in pending_ids:
-                record["state"] = "ready"
+            elif id(prepared) in not_uploaded_ids:
+                record["state"] = "not_uploaded"
+            elif id(prepared) in changed_ids:
+                record["state"] = "changed"
             else:
                 record["state"] = "error"
                 record["error"] = next(
@@ -224,7 +227,10 @@ def refresh(
         item = items_by_key.get(key)
         if item is not None:
             items.append(item)
-    usable = any(item["state"] in {"current", "ready"} for item in items)
+    usable = any(
+        item["state"] in {"not_uploaded", "changed", "current"}
+        for item in items
+    )
     return {
         "status": "partial" if errors and usable else "failed" if errors else "ready",
         "items": items,
@@ -254,7 +260,7 @@ def artifacts_for(selections, contributor: str, cache_path: Path | None = None):
                 continue
             if (
                 record is not None
-                and record.get("state") == "ready"
+                and record.get("state") in {"not_uploaded", "changed"}
                 and _record_is_current(record, source.id, session)
             ):
                 candidates.append(dict(record))

@@ -201,7 +201,7 @@ helpers. A record is approximately:
       "key": "S3 object key",
       "redaction_version": 1,
       "format_version": 4,
-      "state": "checking, current, ready, or error"
+      "state": "checking, not_uploaded, changed, current, or error"
     }
   }
 }
@@ -333,6 +333,12 @@ confirm guesses about exact original content and reveal when content is equal.
 Uploaded metadata also records the hash-algorithm, redaction-policy, and
 archive-format versions; changing a policy version causes the transcript to be
 redacted and uploaded again.
+
+The UI reports three upload states. A missing S3 object is **Not uploaded**. An
+existing object whose source hash or policy versions differ is **Uploaded,
+changed**. An existing object with matching source hash and versions is
+**Current**. Object existence comes from an S3 `HEAD` request; freshness also
+requires hashing the current original transcript and its available sidecars.
 
 Two kinds of content are rewritten:
 
