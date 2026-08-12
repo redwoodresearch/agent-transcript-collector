@@ -133,28 +133,35 @@ browser only lists object names and sizes. It does not download or extract data.
 The collector discovers native transcript files on your machine. Only sources
 that are present appear in the review UI.
 
-| Source | Search path | Transcript layout | External content |
-|---|---|---|---|
-| Claude Code | `~/.claude/projects/` (`CLAUDE_CONFIG_DIR`) | `<encoded-cwd>/<uuid>.jsonl` | `tool-results/` and temporary `tasks/` output |
-| Codex | `~/.codex/sessions/` (`CODEX_HOME`) | `YYYY/MM/DD/rollout-*.jsonl` | Kept inline |
-| Cursor | `~/.cursor/projects/` (`CURSOR_HOME`) | `<encoded-project>/agent-transcripts/<id>/<id>.jsonl` | `agent-tools/` and `terminals/` output |
-| Pi | `~/.pi/agent/sessions/` (`PI_CODING_AGENT_SESSION_DIR` or `PI_CODING_AGENT_DIR`) | `--<encoded-cwd>--/<ts>_<id>.jsonl` | Kept inline |
+| Source | Search path | Transcript layout |
+|---|---|---|
+| Claude Code | `~/.claude/projects/` (`CLAUDE_CONFIG_DIR`) | `<encoded-cwd>/<uuid>.jsonl` |
+| Codex | `~/.codex/sessions/` (`CODEX_HOME`) | `YYYY/MM/DD/rollout-*.jsonl` |
+| Cursor | `~/.cursor/projects/` (`CURSOR_HOME`) | `<encoded-project>/agent-transcripts/<id>/<id>.jsonl` |
+| Pi | `~/.pi/agent/sessions/` (`PI_CODING_AGENT_SESSION_DIR` or `PI_CODING_AGENT_DIR`) | `--<encoded-cwd>--/<ts>_<id>.jsonl` |
 
 Each session goes through the same pipeline:
 
-1. **Discover:** find the native transcript and group it by project and source.
-   Monitor or scaffolding sessions are excluded when the source identifies them.
-2. **Assemble:** keep the transcript in its native JSONL or text format, identify
-   subagent sessions, and resolve any external files it references.
+1. **Discover:** find native transcripts and group them by project and source.
+2. **Assemble:** keep each transcript in its native JSONL or text format, link
+   subagent sessions to their parents, and resolve referenced external files.
 3. **Redact:** replace detected credentials and local identity data on the local
    machine, in both the transcript and its external files.
 4. **Store:** package one redacted session per ZIP and upload it to a stable S3
    key. A changed session replaces its previous ZIP; unchanged content is skipped.
 
-The uploaded transcript contains whatever its native source recorded, without
-schema conversion. Cursor transcripts contain user messages, assistant text,
-and tool-call inputs, but do not contain tool output unless Cursor wrote that
-output to a referenced external file.
+The uploaded transcript contains the source's native data without schema
+conversion.
+
+### What is not collected
+
+- Cursor's native transcripts omit tool output. The collector can include only
+  output that Cursor saved to a referenced external file.
+- Codex's internal review, compaction, and memory-maintenance sessions are
+  ignored; user sessions and task subagents are collected.
+- An external file is omitted if it has disappeared or exceeds the size budget.
+  Its redacted reference remains in the manifest under `missing` or
+  `skipped_too_large`.
 
 ### Subagents and sidecars
 
@@ -164,14 +171,12 @@ ID. Its ZIP is stored below the parent under `subagents/`.
 
 A **sidecar** is agent-visible content that a transcript points to instead of
 embedding, such as an oversized tool result or background-task output. The
-collector follows only explicit pointers from Claude Code and Cursor transcripts
-and only within folders owned by that source. It does not treat a referenced
-subagent transcript as a sidecar.
+collector follows only explicit pointers that stay within folders owned by the
+source. It does not treat a referenced subagent transcript as a sidecar.
 
-Sidecars are redacted and stored in the referring session's ZIP. The manifest
-lists included files, pointers whose files have disappeared, and files skipped
-for exceeding the per-session size budget. Codex and Pi keep tool output inline
-and do not produce sidecars.
+Sidecars are redacted and stored in the referring session's ZIP. Their manifest
+entries record the archive path, original reference after identity redaction,
+size, and content hash.
 
 ### Folder structure
 
@@ -189,18 +194,13 @@ referenced by that transcript:
 transcript.zip
 ├── transcript.<ext>             # .jsonl or .txt
 ├── manifest.json
-├── tool-results/                # Claude Code oversized tool results
-│   └── <name>.txt
-├── task-outputs/                # Claude Code background-task output
-│   └── <name>.output
-├── agent-tools/                 # Cursor oversized tool results
-│   └── <name>.txt
-└── terminals/                   # Cursor terminal output
-    └── <name>.txt
+└── <sidecar-kind>/              # only when sidecars are present
+    └── <name>
 ```
 
 The transcript and manifest are always present. Sidecar folders appear only
-when the session includes files of that kind.
+when the session includes files of that kind. Current sidecar kinds are
+`tool-results`, `task-outputs`, `agent-tools`, and `terminals`.
 
 ### `manifest.json`
 
