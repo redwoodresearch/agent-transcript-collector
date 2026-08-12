@@ -27,6 +27,7 @@ from jinja2 import Environment, PackageLoader
 
 from .redactor import redact_identity, redact_jsonl_content
 from .pipeline import artifacts_for, mark_uploaded, refresh as refresh_pipeline
+from .paths import watcher_config_path
 from .s3client import make_s3_client as _make_s3_client
 from .s3client import selected_profile
 from .sources import SOURCES, get_source, projects_from_groups
@@ -38,7 +39,8 @@ from .uploader import (
     upload_artifacts,
 )
 from .watcher import (
-    AllowedGroup,
+    AllowedProject,
+    ProjectMember,
     WatcherConfig,
     capture_source_env,
 )
@@ -642,10 +644,6 @@ async def upload(request: Request):
     return JSONResponse({"job_id": job_id}, status_code=202)
 
 
-def _is_legacy_project_alias(group: str, label: str) -> bool:
-    return group == f"_project-{label}"
-
-
 @app.get("/api/watcher")
 def get_watcher_status():
     result = watcher_status()
@@ -653,79 +651,97 @@ def get_watcher_status():
     if not config:
         return result
     with SCAN_LOCK:
-        discovered = {
-            (source_id, group.key): group.label
-            for source_id, groups in SCAN_CACHE["groups_by_source"].items()
-            for group in groups
-        }
-    configured = {
-        (item.get("source", ""), item.get("group", ""))
-        for item in config.get("groups", [])
-    }
-    active_labels = {
-        (source, label)
-        for (source, group), label in discovered.items()
-        if (source, group) in configured
-    }
-    # Stable project IDs gained a hash during the identity migration. Only the
-    # exact old ``_project-{label}`` shape is an obsolete alias. A different
-    # hashed ID with the same label can be a real, temporarily offline repo.
-    groups = [
-        item
-        for item in config.get("groups", [])
-        if (item.get("source", ""), item.get("group", "")) in discovered
-        or (item.get("source", ""), item.get("label", "")) not in active_labels
-        or not _is_legacy_project_alias(
-            item.get("group", ""), item.get("label", "")
+        projects = list(SCAN_CACHE["projects"] or [])
+    visible_projects = [
+        (
+            project,
+            {
+                (harness["source"], group)
+                for harness in project["harnesses"]
+                for group in harness["groups"]
+            },
         )
+        for project in projects
     ]
-    result["ignored_migrated_groups"] = len(config.get("groups", [])) - len(groups)
-    config["groups"] = groups
+    selected = []
+    for saved in config.get("projects", []):
+        members = {
+            (item.get("source", ""), item.get("group", ""))
+            for item in saved.get("members", [])
+        }
+        current = next((
+            project
+            for project, groups in visible_projects
+            if saved.get("identity") == project.get("identity")
+            or bool(members & groups)
+        ), None)
+        selected.append({
+            "identity": current.get("identity", ""),
+            "label": current.get("label", ""),
+        } if current else saved)
+    config["projects"] = list({
+        item.get("identity", ""): item for item in selected
+    }.values())
     return result
 
 
 def _put_watcher(body: dict):
     requested = {
-        (str(item.get("source", "")), str(item.get("group", "")))
-        for item in body.get("groups", [])
+        (str(item.get("identity", "")), str(item.get("label", "")))
+        for item in body.get("projects", [])
     }
     removed = {
-        (str(item.get("source", "")), str(item.get("group", "")))
-        for item in body.get("removed_groups", [])
+        (str(item.get("identity", "")), str(item.get("label", "")))
+        for item in body.get("removed_projects", [])
     }
     requested -= removed
     with SCAN_LOCK:
-        discovered = {
-            (source_id, group.key): group.label
-            for source_id, groups in SCAN_CACHE["groups_by_source"].items()
-            for group in groups
+        discovered_projects = {
+            (str(project.get("identity", "")), str(project.get("label", ""))): {
+                (harness["source"], group)
+                for harness in project["harnesses"]
+                for group in harness["groups"]
+            }
+            for project in (SCAN_CACHE["projects"] or [])
         }
-    invalid = sorted(requested - discovered.keys())
+    invalid = sorted(requested - discovered_projects.keys())
     if invalid:
         return JSONResponse(
-            {"error": "One or more selected folders are no longer available"},
+            {"error": "One or more selected projects are no longer available"},
             status_code=400,
         )
     try:
         watcher = watcher_status()
         existing = load_watcher_config() if watcher.get("config") else None
-        groups = [
-            AllowedGroup(source=source, group=group, label=discovered[(source, group)])
-            for source, group in sorted(requested)
+        projects = [
+            AllowedProject(
+                identity=identity,
+                label=label,
+                members=tuple(sorted(
+                    (
+                        ProjectMember(source, group)
+                        for source, group in discovered_projects[(identity, label)]
+                    ),
+                    key=lambda item: (item.source, item.group),
+                )),
+            )
+            for identity, label in sorted(requested)
         ]
         if existing:
-            requested_labels = {
-                (source, discovered[(source, group)]) for source, group in requested
-            }
-            groups.extend(
-                group
-                for group in existing.groups
-                if (group.source, group.group) not in discovered
-                and (group.source, group.group) not in removed
-                and (
-                    not _is_legacy_project_alias(group.group, group.label)
-                    or (group.source, group.label) not in requested_labels
+            visible_groups = set().union(
+                *discovered_projects.values(),
+            ) if discovered_projects else set()
+            projects.extend(
+                project
+                for project in existing.projects
+                if (
+                    (project.identity, project.label) not in discovered_projects
+                    and not (
+                        {(member.source, member.group) for member in project.members}
+                        & visible_groups
+                    )
                 )
+                and (project.identity, project.label) not in removed
             )
         config = WatcherConfig(
             auto_uploader_version=(
@@ -735,7 +751,7 @@ def _put_watcher(body: dict):
             ),
             contributor=_safe_name(body.get("contributor_name", "anonymous")),
             aws_profile=existing.aws_profile if existing else selected_profile(),
-            groups=groups,
+            projects=projects,
             source_env=capture_source_env(),
             package_spec=WatcherConfig.package_spec,
             uv_path=existing.uv_path if existing else "",
@@ -826,6 +842,11 @@ def main(
     open_browser: bool = True,
     strict_port: bool = False,
 ) -> int:
+    config_path = watcher_config_path()
+    if config_path.exists():
+        from .migrate import migrate_config
+
+        migrate_config(config_path)
     base = port if port is not None else int(os.environ.get("PORT", "8899"))
     port = base if strict_port else _find_free_port(base, host=host)
     if port is None:

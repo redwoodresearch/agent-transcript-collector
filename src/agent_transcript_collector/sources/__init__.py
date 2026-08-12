@@ -78,6 +78,7 @@ def projects_from_groups(discovered: list[tuple[Source, Group]]) -> list[dict]:
         if project is None:
             project = projects_by_identity[identity] = {
                 "key": f"project-{len(projects_by_identity)}",
+                "identity": identity,
                 "label": group.label,
                 "directory": directory,
                 "session_count": 0,

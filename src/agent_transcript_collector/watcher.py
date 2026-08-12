@@ -21,7 +21,7 @@ from .paths import (
 )
 from .pipeline import artifacts_for, mark_uploaded, refresh as refresh_pipeline
 from .s3client import make_s3_client
-from .sources import SOURCES
+from .sources import SOURCES, projects_from_groups
 from .uploader import (
     UploadBusy,
     UploadLock,
@@ -48,41 +48,62 @@ SOURCE_ENV_VARS = (
 
 
 @dataclass(frozen=True)
-class AllowedGroup:
+class ProjectMember:
     source: str
     group: str
+
+
+@dataclass(frozen=True)
+class AllowedProject:
+    identity: str
     label: str = ""
+    members: tuple[ProjectMember, ...] = ()
 
 
 @dataclass
 class WatcherConfig:
-    schema_version: int = 1
+    schema_version: int = 2
     auto_uploader_version: int = AUTO_UPLOADER_VERSION
     contributor: str = "anonymous"
     aws_profile: str = "rw-eng"
-    groups: list[AllowedGroup] = field(default_factory=list)
+    projects: list[AllowedProject] = field(default_factory=list)
     source_env: dict[str, str] = field(default_factory=dict)
     package_spec: str = PACKAGE_SPEC
     uv_path: str = ""
 
     @classmethod
     def from_dict(cls, data: dict) -> "WatcherConfig":
-        if data.get("schema_version") != 1:
+        if data.get("schema_version") != 2:
             raise ValueError("unsupported watcher configuration version")
-        groups = [
-            AllowedGroup(
-                source=str(item["source"]),
-                group=str(item["group"]),
+        projects = {
+            AllowedProject(
+                identity=str(item["identity"]),
                 label=str(item.get("label", "")),
+                members=tuple(sorted(
+                    (
+                        ProjectMember(
+                            source=str(member.get("source", "")),
+                            group=str(member.get("group", "")),
+                        )
+                        for member in item.get("members", [])
+                        if member.get("source") and member.get("group")
+                    ),
+                    key=lambda member: (member.source, member.group),
+                )),
             )
-            for item in data.get("groups", [])
-        ]
+            for item in data.get("projects", [])
+            if item.get("identity")
+        }
+        projects = sorted(
+            projects,
+            key=lambda item: (item.identity, item.label),
+        )
         return cls(
-            schema_version=1,
+            schema_version=2,
             auto_uploader_version=int(data.get("auto_uploader_version", 0)),
             contributor=str(data.get("contributor", "anonymous")),
             aws_profile=str(data.get("aws_profile", "rw-eng")),
-            groups=groups,
+            projects=projects,
             source_env={
                 str(key): str(value)
                 for key, value in data.get("source_env", {}).items()
@@ -151,12 +172,31 @@ def capture_source_env() -> dict[str, str]:
 
 
 def _resolve_allowed(config: WatcherConfig):
-    """Pair configured consent with exact current source-group keys."""
-    allowed = {(item.source, item.group) for item in config.groups}
-    return [
+    """Resolve project-level consent to every current group in each project."""
+    discovered = [
         (source, group)
         for source in SOURCES
         for group in source.discover()
+    ]
+    allowed = set()
+    for project in projects_from_groups(discovered):
+        project_groups = {
+            (harness["source"], group)
+            for harness in project["harnesses"]
+            for group in harness["groups"]
+        }
+        selected = any(
+            item.identity == project["identity"]
+            or bool({(member.source, member.group) for member in item.members}
+                    & project_groups)
+            for item in config.projects
+        )
+        if not selected:
+            continue
+        allowed.update(project_groups)
+    return [
+        (source, group)
+        for source, group in discovered
         if (source.id, group.key) in allowed
     ]
 
@@ -507,7 +547,7 @@ def status(
             result["config"] = {
                 "auto_uploader_version": config.auto_uploader_version,
                 "contributor": config.contributor,
-                "groups": [asdict(group) for group in config.groups],
+                "projects": [asdict(project) for project in config.projects],
                 "aws_profile": config.aws_profile,
             }
             result["needs_reinstall"] = (
@@ -528,8 +568,15 @@ def main(argv: list[str] | None = None) -> int:
     uninstall_parser = subparsers.add_parser("uninstall")
     uninstall_parser.add_argument("--purge", action="store_true")
     args = parser.parse_args(argv)
+    config = None
+    if args.command in {"run", "status"}:
+        from .migrate import migrate_config
+
+        config_path = args.config if args.command == "run" else watcher_config_path()
+        if config_path.exists():
+            config = migrate_config(config_path)
     if args.command == "run":
-        result = run_once(load_config(args.config))
+        result = run_once(config or load_config(args.config))
         print(json.dumps(result))
         return 0 if result["status"] in {"completed", "skipped"} else 1
     if args.command == "status":

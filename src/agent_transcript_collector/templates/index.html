@@ -446,7 +446,6 @@ function loadName() { try { return localStorage.getItem('ctc_name'); } catch (e)
 let autoUploadEnabled = false;
 let watcherConfigured = false;
 let watcherRunning = false;
-let watcherGroups = new Set();
 let nameRevision = 0;
 let syncedNameRevision = 0;
 let watcherMutation = Promise.resolve();
@@ -467,44 +466,34 @@ function projectGroups(project) {
     harnessGroups(harness).map(group => ({source: harness.dataset.source, group})));
 }
 
-// A partially selected project keeps exactly its previously consented source
-// groups, so saving another project cannot quietly broaden or revoke consent.
-function consentedGroups(project) {
-  const cb = project.querySelector('.auto-upload-checkbox');
-  const groups = projectGroups(project);
-  if (cb.checked) return groups;
-  if (cb.indeterminate) {
-    return groups.filter(item => watcherGroups.has(`${item.source}|${item.group}`));
-  }
-  return [];
-}
-
 function consentedRows(project) {
-  const allowed = new Set(consentedGroups(project).map(item => `${item.source}|${item.group}`));
-  return Array.from(project.querySelectorAll('.session')).filter(row =>
-    allowed.has(`${row.dataset.source}|${row.dataset.group}`));
+  const cb = project.querySelector('.auto-upload-checkbox');
+  return cb.checked ? Array.from(project.querySelectorAll('.session')) : [];
 }
 
 function consentedProjects() {
   return Array.from(document.querySelectorAll('.project'))
-    .filter(project => consentedGroups(project).length > 0);
+    .filter(project => project.querySelector('.auto-upload-checkbox').checked);
 }
 
-function selectedAutoUploadGroups() {
-  return Array.from(document.querySelectorAll('.project'))
-    .flatMap(project => consentedGroups(project));
+function projectDescriptor(project) {
+  return {identity: project.dataset.identity, label: project.dataset.label};
 }
 
-async function updateAutoUploadConfig(enabled, removedGroups = []) {
+function selectedAutoUploadProjects() {
+  return consentedProjects().map(projectDescriptor);
+}
+
+async function updateAutoUploadConfig(enabled, removedProjects = []) {
   const submittedNameRevision = nameRevision;
   const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
-  const groups = selectedAutoUploadGroups();
+  const projects = selectedAutoUploadProjects();
   const resp = await runWatcherMutation(() => fetch('/api/watcher', {
     method: 'PUT',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
-      groups,
-      removed_groups: removedGroups,
+      projects,
+      removed_projects: removedProjects,
       contributor_name: contributorName,
       enabled,
     }),
@@ -518,16 +507,16 @@ async function updateAutoUploadConfig(enabled, removedGroups = []) {
   return data;
 }
 
-function renderUnavailableGroups(groups) {
+function renderUnavailableProjects(projects) {
   const container = document.getElementById('unavailable-watcher-groups');
   if (!projectsLoaded) {
     container.hidden = true;
     return;
   }
-  const visible = new Set(Array.from(document.querySelectorAll('.project'))
-    .flatMap(project => projectGroups(project))
-    .map(item => `${item.source}|${item.group}`));
-  const unavailable = groups.filter(item => !visible.has(`${item.source}|${item.group}`));
+  const visible = Array.from(document.querySelectorAll('.project')).map(projectDescriptor);
+  const unavailable = projects
+    .filter(item => !visible.some(project => item.identity === project.identity))
+    .map(item => ({project: item, label: item.label}));
   container.replaceChildren();
   container.hidden = unavailable.length === 0;
   if (!unavailable.length) return;
@@ -542,35 +531,25 @@ function renderUnavailableGroups(groups) {
   list.className = 'unavailable-watcher-list';
   details.append(heading, explanation, list);
   container.appendChild(details);
-  const sourceNames = {
-    claude_code: 'Claude Code', codex: 'Codex', cursor: 'Cursor', pi: 'Pi',
-  };
-  const grouped = new Map();
   unavailable.forEach(item => {
-    const key = `${item.source}|${item.label || item.group}`;
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key).push(item);
-  });
-  grouped.forEach(items => {
-    const item = items[0];
     const entry = document.createElement('span');
     entry.className = 'unavailable-watcher-group';
     const label = document.createElement('span');
-    label.textContent = `${item.label || item.group} · ${sourceNames[item.source] || item.source}${items.length > 1 ? ` · ${items.length} old entries` : ''}`;
+    label.textContent = item.label;
     const remove = document.createElement('button');
     remove.className = 'secondary';
-    remove.textContent = items.length > 1 ? `Remove all ${items.length}` : 'Remove';
-    remove.onclick = () => removeUnavailableGroups(items, remove);
+    remove.textContent = 'Remove';
+    remove.onclick = () => removeUnavailableProject(item.project, remove);
     entry.append(label, remove);
     list.appendChild(entry);
   });
 }
 
-async function removeUnavailableGroups(items, button) {
+async function removeUnavailableProject(project, button) {
   button.disabled = true;
   try {
-    await updateAutoUploadConfig(autoUploadEnabled, items);
-    showToast(`${items.length} old auto-upload selection${items.length === 1 ? '' : 's'} removed`);
+    await updateAutoUploadConfig(autoUploadEnabled, [project]);
+    showToast('Old auto-upload selection removed');
     await loadWatcher();
   } catch (e) {
     showToast(e.message, true);
@@ -618,16 +597,13 @@ async function loadWatcher(refreshPipeline = true) {
         if (settingsChanged && projectsLoaded && refreshPipeline) startPipeline();
       }
     }
-    watcherGroups = new Set(
-      ((data.config && data.config.groups) || []).map(item => `${item.source}|${item.group}`));
-    renderUnavailableGroups((data.config && data.config.groups) || []);
+    const configuredProjects = (data.config && data.config.projects) || [];
+    renderUnavailableProjects(configuredProjects);
     document.querySelectorAll('.project').forEach(project => {
       const cb = project.querySelector('.auto-upload-checkbox');
-      const groups = projectGroups(project);
-      const enabled = groups.filter(item =>
-        watcherGroups.has(`${item.source}|${item.group}`)).length;
-      cb.checked = groups.length > 0 && enabled === groups.length;
-      cb.indeterminate = enabled > 0 && enabled < groups.length;
+      const descriptor = projectDescriptor(project);
+      cb.checked = configuredProjects.some(item =>
+        item.identity === descriptor.identity);
     });
     autoUploadEnabled = watcherEnabledOverride ?? Boolean(data.installed);
     watcherRunning = Boolean(data.running);
@@ -725,7 +701,7 @@ async function saveAutoUploadProjects(changed) {
 
 async function toggleAutoUpload() {
   const button = document.getElementById('auto-upload-toggle');
-  if (!autoUploadEnabled && !selectedAutoUploadGroups().length) {
+  if (!autoUploadEnabled && !selectedAutoUploadProjects().length) {
     showToast('Select at least one project for auto upload', true);
     return;
   }
