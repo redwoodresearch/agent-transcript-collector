@@ -15,12 +15,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
 
-from .paths import pipeline_cache_path
+from .paths import pipeline_cache_path, prepared_artifacts_dir
 from .s3client import make_s3_client
 from .uploader import (
     FINGERPRINT_VERSION,
     REDACTION_VERSION,
     TRANSCRIPT_FORMAT_VERSION,
+    PreparedTranscript,
     build_upload_artifact,
     classify_prepared,
     prepare_transcript,
@@ -28,7 +29,23 @@ from .uploader import (
     signature_is_current,
 )
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3
+
+
+def _cleanup_legacy_artifacts() -> None:
+    """Remove private ZIPs left by the pre-upload-redaction pipeline."""
+    root = prepared_artifacts_dir()
+    try:
+        resolved_root = root.resolve()
+        archives = list(root.rglob("transcript-*.zip"))
+    except OSError:
+        return
+    for archive in archives:
+        try:
+            if archive.resolve().is_relative_to(resolved_root):
+                archive.unlink(missing_ok=True)
+        except (OSError, RuntimeError):
+            continue
 
 
 def redaction_concurrency() -> int:
@@ -57,6 +74,8 @@ def _load(path: Path | None = None) -> dict:
     except (OSError, json.JSONDecodeError):
         value = {}
     if value.get("cache_version") != CACHE_VERSION:
+        if path is None:
+            _cleanup_legacy_artifacts()
         return {"cache_version": CACHE_VERSION, "records": {}}
     records = value.get("records")
     if not isinstance(records, dict):
@@ -119,15 +138,32 @@ def _prepare_changed(source, session, contributor: str) -> tuple:
         "fingerprint_version": FINGERPRINT_VERSION,
         "redaction_version": REDACTION_VERSION,
         "format_version": TRANSCRIPT_FORMAT_VERSION,
-        "signature": prepared_signature(prepared),
+        "signature": prepared.signature,
         "fingerprint": prepared.fingerprint,
         "body_fingerprint": prepared.body_fingerprint,
+        "key": prepared.key,
+        "sidecar_count": prepared.sidecar_count,
         "state": "checking",
     }
     # Remote comparison only needs fingerprints, sidecar count, and identity.
     # Release transcript bodies as each worker finishes instead of retaining a
     # cold cache's entire corpus until every S3 metadata check completes.
     return replace(prepared, raw_bytes=b""), record
+
+
+def _prepared_from_record(record: dict, session) -> PreparedTranscript | None:
+    try:
+        return PreparedTranscript(
+            session=session,
+            raw_bytes=b"",
+            body_fingerprint=str(record["body_fingerprint"]),
+            fingerprint=str(record["fingerprint"]),
+            key=str(record["key"]),
+            signature=record["signature"],
+            sidecar_count=int(record.get("sidecar_count", 0)),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def refresh(
@@ -149,23 +185,27 @@ def refresh(
     state = _load(cache_path)
     records = state["records"]
     changed = []
+    prepared_by_key = {}
     items_by_key = {}
 
     for source, session in all_sessions:
         key = _record_key(contributor, source.id, session)
         record = records.get(key)
         status = record.get("state") if isinstance(record, dict) else None
-        if status in {"current", "ready"} and _record_is_current(
-            record
+        if status == "current" and _record_is_current(record):
+            items_by_key[key] = _item(source.id, session, "current")
+        elif (
+            status == "ready"
+            and _record_is_current(record)
+            and (cached := _prepared_from_record(record, session)) is not None
         ):
-            items_by_key[key] = _item(source.id, session, status)
+            prepared_by_key[key] = cached
         else:
             changed.append((
                 key, source, session,
                 record if isinstance(record, dict) else {},
             ))
 
-    prepared_by_key = {}
     total_changed = len(changed)
     if on_progress:
         on_progress("fingerprinting", 0, total_changed)
@@ -298,21 +338,31 @@ def prepare_upload_artifacts(
         for item in candidates
     }
     work = []
+    resolved = set()
     for source, sessions in selections:
         for session in sessions:
             identity = (source.id, session.group_key, session.parent or "", session.id)
-            if identity in wanted:
+            if identity in wanted and identity not in resolved:
                 work.append((source, session, wanted[identity]))
+                resolved.add(identity)
 
     artifacts = []
-    errors = []
+    errors = [
+        {
+            "source": str(identity[0] or ""),
+            "session": str(identity[3] or ""),
+            "error": "Upload candidate is no longer available; refresh and try again",
+        }
+        for identity in wanted
+        if identity not in resolved
+    ]
 
     def prepare_one(source, session, candidate):
         prepared = prepare_transcript(source, session, contributor)
         if (
             prepared.fingerprint != candidate.get("fingerprint")
             or prepared.body_fingerprint != candidate.get("body_fingerprint")
-            or prepared_signature(prepared) != candidate.get("signature")
+            or prepared.signature != candidate.get("signature")
         ):
             raise RuntimeError("Transcript changed after Refresh; refresh and try again")
         artifact = build_upload_artifact(
@@ -323,9 +373,11 @@ def prepare_upload_artifacts(
             raise RuntimeError("Transcript changed during redaction; refresh and try again")
         return artifact
 
-    total = len(work)
-    workers = max(1, min(redaction_concurrency(), total))
-    completed = 0
+    total = len(wanted)
+    workers = max(1, min(redaction_concurrency(), len(work)))
+    completed = len(errors)
+    if on_progress and completed:
+        on_progress(completed, total)
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
             executor.submit(prepare_one, source, session, candidate):

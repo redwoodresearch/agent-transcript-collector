@@ -30,6 +30,8 @@ from .storage import STORAGE_PREFIX
 
 TRANSCRIPT_FORMAT_VERSION = 4
 FINGERPRINT_VERSION = 3
+# Increment this whenever redaction behavior or policy changes so unchanged
+# source content is redacted and uploaded again under the new policy.
 REDACTION_VERSION = 1
 FINGERPRINT_METADATA = "content-fingerprint"
 BODY_FINGERPRINT_METADATA = "body-fingerprint"
@@ -104,6 +106,8 @@ class PreparedTranscript:
     fingerprint: str
     key: str
     sidecars: SidecarSet = NO_SIDECARS
+    signature: list[dict] | None = None
+    sidecar_count: int | None = None
 
 
 def transcript_fingerprint(raw_bytes: bytes) -> str:
@@ -202,27 +206,49 @@ def _already_uploaded(prepared: PreparedTranscript, remote: dict) -> bool:
         return False
     return (
         remote.get(BODY_FINGERPRINT_METADATA) == prepared.body_fingerprint
-        and len(prepared.sidecars.files) < uploaded_count
+        and (
+            prepared.sidecar_count
+            if prepared.sidecar_count is not None
+            else len(prepared.sidecars.files)
+        ) < uploaded_count
     )
 
 
 def prepare_transcript(source, session, contributor: str) -> PreparedTranscript:
-    """Read and fingerprint one transcript and every referenced side file."""
+    """Read and fingerprint one stable transcript/sidecar snapshot."""
     path = Path(session.path)
-    raw_bytes = path.read_bytes()
-    body_fingerprint = transcript_fingerprint(raw_bytes)
-    sidecars = session_sidecars(
-        source, session, raw_bytes.decode("utf-8", errors="replace")
-    )
     key = transcript_key(contributor, source.id, session)
-    return PreparedTranscript(
-        session,
-        raw_bytes,
-        body_fingerprint,
-        content_fingerprint(body_fingerprint, sidecars),
-        key,
-        sidecars,
-    )
+    for _attempt in range(2):
+        transcript_before = _path_signature(path)
+        raw_bytes = path.read_bytes()
+        if transcript_before != _path_signature(path):
+            continue
+        body_fingerprint = transcript_fingerprint(raw_bytes)
+        sidecars = session_sidecars(
+            source, session, raw_bytes.decode("utf-8", errors="replace")
+        )
+        probe = PreparedTranscript(
+            session=session,
+            raw_bytes=raw_bytes,
+            body_fingerprint=body_fingerprint,
+            fingerprint="",
+            key=key,
+            sidecars=sidecars,
+        )
+        signature = prepared_signature(probe)
+        prepared = PreparedTranscript(
+            session=session,
+            raw_bytes=raw_bytes,
+            body_fingerprint=body_fingerprint,
+            fingerprint=content_fingerprint(body_fingerprint, sidecars),
+            key=key,
+            sidecars=sidecars,
+            signature=signature,
+            sidecar_count=len(sidecars.files),
+        )
+        if signature == prepared_signature(prepared):
+            return prepared
+    raise RuntimeError("Transcript changed while it was being fingerprinted")
 
 
 def classify_prepared(
@@ -411,7 +437,7 @@ def artifact_is_current(artifact: dict) -> bool:
 def build_upload_artifact(
     source, prepared: PreparedTranscript, contributor: str, directory: str | Path
 ) -> dict:
-    """Build a private, reusable redacted archive for a confirmed pending item."""
+    """Build a temporary redacted archive for a confirmed pending item."""
     archive, manifest = _build_transcript_zip(source, prepared, contributor)
     target_dir = Path(directory)
     target_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -444,7 +470,7 @@ def build_upload_artifact(
 
 
 def upload_artifacts(s3, artifacts: list[dict], on_progress=None):
-    """Upload already-redacted archives produced by the readiness worker."""
+    """Upload redacted archives produced when the upload was started."""
     results = []
     errors = []
 

@@ -296,7 +296,7 @@
 </div>
   <div class="upload-progress-row" id="upload-progress">
     <div class="upload-progress-copy">
-      <strong>Uploading transcripts…</strong>
+      <strong>Redacting and uploading transcripts…</strong>
       <span id="progress-text">Preparing…</span>
     </div>
     <div class="upload-progress-bar">
@@ -1002,7 +1002,7 @@ function updatePendingCounts() {
     button.textContent = 'Upload 0 transcripts now';
     button.disabled = true;
   } else if (selectedPipelineUnknown) {
-    button.textContent = `Preparing ${selectedTranscripts} transcript${selectedTranscripts === 1 ? '' : 's'}…`;
+    button.textContent = `Checking ${selectedTranscripts} transcript${selectedTranscripts === 1 ? '' : 's'}…`;
     button.disabled = true;
   } else {
     button.textContent = `Upload ${selectedPending} transcript${selectedPending === 1 ? '' : 's'} now`;
@@ -1220,6 +1220,13 @@ function trackJob(jobId) {
       markUploaded(j.uploads || []);
       finishToast(j);
       resetUploadBtn();
+      if ((j.errors || []).length) {
+        // A transcript may have changed between Refresh and Upload, or an S3
+        // operation may have failed. Reconcile instead of leaving a stale row
+        // enabled for a retry that is guaranteed to fail the same way.
+        startPipeline();
+        return;
+      }
       const needsPipeline = Array.from(document.querySelectorAll('.project'))
         .some(project => !project.classList.contains('pipeline-ready'));
       if (needsPipeline) {
@@ -1252,7 +1259,8 @@ function renderProgress(j) {
     fill.style.width = '0';
     text.textContent = `${labels[j.stage] || 'Preparing'}…`;
   }
-  document.getElementById('upload-btn').textContent = 'Uploading…';
+  document.getElementById('upload-btn').textContent =
+    j.stage === 'redacting' ? 'Redacting…' : 'Uploading…';
 }
 
 function markUploaded(uploads) {
