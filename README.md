@@ -30,10 +30,6 @@ export AWS_PROFILE=<profile>
 The profile name is a local label. Use the same name when refreshing an expired
 session with `aws sso login --profile <profile>`.
 
-Uploads require `s3:PutObject` and `s3:GetObject`: the collector checks each
-session object's fingerprint so unchanged content can be skipped. The transcript
-browser only requires `s3:ListBucket`.
-
 ## Install
 
 Run the default setup command:
