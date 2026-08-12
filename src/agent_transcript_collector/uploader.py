@@ -28,7 +28,7 @@ from .sidecars import SidecarSet
 from .sources.base import session_sidecars
 from .storage import STORAGE_PREFIX
 
-TRANSCRIPT_FORMAT_VERSION = 5
+TRANSCRIPT_FORMAT_VERSION = 4
 FINGERPRINT_VERSION = 3
 REDACTION_VERSION = 1
 FINGERPRINT_METADATA = "content-fingerprint"
@@ -335,8 +335,8 @@ def _build_transcript_zip(source, prepared: PreparedTranscript, contributor: str
             "parent": session.parent,
         },
         "version": {
-            "source_fingerprint": prepared.fingerprint,
-            "source_body_fingerprint": prepared.body_fingerprint,
+            "fingerprint": prepared.fingerprint,
+            "body_fingerprint": prepared.body_fingerprint,
             "fingerprint_version": FINGERPRINT_VERSION,
             "redaction_version": REDACTION_VERSION,
             "content_sha256": hashlib.sha256(raw.encode()).hexdigest(),
