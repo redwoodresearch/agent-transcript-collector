@@ -166,7 +166,11 @@ class CodexSource:
                 path=f,
                 size_bytes=f.stat().st_size,
                 is_subagent=(kind == "task"),
-                parent=_parent_thread_id(first_obj, source) if kind == "task" else None,
+                parent=(
+                    _parent_thread_id(first_obj, source)
+                    if kind == "task" and first_obj is not None
+                    else None
+                ),
                 first_message=first,
                 message_count=count,
                 modified=mtime(f),

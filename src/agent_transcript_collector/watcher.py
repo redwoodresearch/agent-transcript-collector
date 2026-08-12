@@ -13,6 +13,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from .paths import (
     log_path,
@@ -119,7 +120,21 @@ def _migrate_config(data: dict) -> tuple[dict, bool]:
         for member in project.get("members", [])
     ]
     wanted = {(source, group) for source, group in members if source and group}
-    scan = scan_transcripts()
+    source_env = {
+        str(key): str(value)
+        for key, value in data.get("source_env", {}).items()
+        if key in SOURCE_ENV_VARS
+    }
+    old_source_env = {name: os.environ.get(name) for name in source_env}
+    os.environ.update(source_env)
+    try:
+        scan = scan_transcripts()
+    finally:
+        for name, value in old_source_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
     matched: set[tuple[str, str]] = set()
     migrated: dict[str, AllowedProject] = {}
     for project in scan.projects:
@@ -252,7 +267,7 @@ def _sso_hint(exc: Exception, profile: str) -> str:
 def run_once(
     config: WatcherConfig,
     *,
-    s3=None,
+    s3: Any | None = None,
     state_path: Path | None = None,
     lock_path: Path | None = None,
 ) -> dict:
@@ -298,13 +313,13 @@ def run_once(
                  item.get("session"))
                 for item in uploads
             }
-            uploaded_candidates = [
-                item for item in candidates
+            uploaded_artifacts = [
+                item for item in artifacts
                 if (item.get("source"), item.get("project"),
                     item.get("parent") or "", item.get("session")) in successful
             ]
-            if uploaded_candidates:
-                record_uploaded(uploaded_candidates, config.contributor)
+            if uploaded_artifacts:
+                record_uploaded(uploaded_artifacts, config.contributor)
             result["sessions_uploaded"] = sum(
                 item["transcript_count"] for item in uploads
             )

@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import TypedDict, cast
 
-from .paths import pipeline_cache_path, prepared_artifacts_dir
+from .paths import pipeline_cache_path
 from .prepare_archive import TRANSCRIPT_FORMAT_VERSION
 from .redactor import REDACTION_VERSION
 from .sources.base import Session
@@ -65,8 +65,8 @@ def get_cache(path: Path | None = None) -> CacheFile:
         value = None
     if not isinstance(value, dict):
         return empty_cache()
-    if path is None and "cache_version" in value:
-        _cleanup_legacy_archives()
+    if "cache_version" in value:
+        return empty_cache()
     records = value.get("records")
     if not isinstance(records, dict):
         return empty_cache()
@@ -176,19 +176,3 @@ def save_cache(cache: CacheFile, path: Path | None = None) -> None:
             os.unlink(temporary)
         except FileNotFoundError:
             pass
-
-
-def _cleanup_legacy_archives() -> None:
-    """Remove private ZIPs left by the former prepared-artifact cache."""
-    root = prepared_artifacts_dir()
-    try:
-        resolved_root = root.resolve()
-        archives = list(root.rglob("transcript-*.zip"))
-    except OSError:
-        return
-    for archive in archives:
-        try:
-            if archive.resolve().is_relative_to(resolved_root):
-                archive.unlink(missing_ok=True)
-        except (OSError, RuntimeError):
-            continue

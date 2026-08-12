@@ -11,6 +11,7 @@ transcript, which keeps only a pointer to them; see `sidecars` below.
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -125,7 +126,9 @@ class ClaudeCodeSource:
         for project_dir in sorted(projects_dir.iterdir()):
             if not project_dir.is_dir():
                 continue
-            files = [(f, None) for f in sorted(project_dir.glob("*.jsonl"))]
+            files: list[tuple[Path, str | None]] = [
+                (f, None) for f in sorted(project_dir.glob("*.jsonl"))
+            ]
             files.extend(
                 (f, f.parent.parent.name)
                 for f in sorted(project_dir.glob("*/subagents/*.jsonl"))
@@ -202,7 +205,6 @@ class ClaudeCodeSource:
             if not line:
                 continue
             try:
-                import json
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue

@@ -218,7 +218,7 @@ helpers. A record is approximately:
       "source_hash": "hash of the original transcript and sidecars",
       "key": "S3 object key",
       "redaction_version": 1,
-      "format_version": 4,
+      "format_version": 5,
       "state": "not_uploaded, changed, current, or error"
     }
   }
@@ -297,12 +297,12 @@ redaction result:
 
 ```json
 {
-  "transcript_format_version": 4,
+  "transcript_format_version": 5,
   "source": "claude_code",
   "source_format": "claude-jsonl",
   "contributor": "example-contributor",
   "project": {
-    "key": "example-project",
+    "key": "project-a1b2c3d4e5f6",
     "name": "example-project"
   },
   "session": {

@@ -24,7 +24,6 @@ from typing import Protocol, runtime_checkable
 from ..paths import project_identity_cache_path
 from ..sidecars import SidecarSet
 
-
 _CODEX_WORKTREE_RE = re.compile(
     r"(?P<root>.*?/\.?codex/worktrees/[^/]+/(?P<name>[^/]+))(?:/|$)"
 )
@@ -74,6 +73,7 @@ def _remember_project_identity(worktree: str, identity: str, name: str) -> None:
             return
         _identity_cache[worktree] = value
         target = project_identity_cache_path()
+        temporary: str | None = None
         try:
             target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
@@ -83,10 +83,11 @@ def _remember_project_identity(worktree: str, identity: str, name: str) -> None:
             os.chmod(temporary, 0o600)
             os.replace(temporary, target)
         except OSError:
-            try:
-                os.unlink(temporary)
-            except (FileNotFoundError, UnboundLocalError):
-                pass
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except FileNotFoundError:
+                    pass
 
 
 def human_size(nbytes: float) -> str:

@@ -43,10 +43,7 @@ def source_hash(raw_bytes: bytes, sidecars: SidecarSet) -> str:
     transcript_digest = digest.hexdigest()
     digest = hashlib.sha256(f"sidecars-v1\0{transcript_digest}".encode())
     for sidecar in sidecars.files:
-        try:
-            raw = sidecar.path.read_bytes()
-        except OSError:
-            raw = b""
+        raw = sidecar.path.read_bytes()
         digest.update(sidecar.arcname.encode() + b"\0")
         digest.update(hashlib.sha256(raw).digest())
         digest.update(b"\0")
@@ -75,8 +72,10 @@ def filesystem_snapshot(snapshot: TranscriptSnapshot) -> list[FilesystemSnapshot
 
 
 def filesystem_snapshot_is_current(snapshot: object) -> bool:
-    return isinstance(snapshot, list) and all(
+    return isinstance(snapshot, list) and bool(snapshot) and all(
         isinstance(item, dict)
+        and isinstance(item.get("path"), str)
+        and bool(item["path"])
         and item == _path_signature(str(item.get("path", "")))
         for item in snapshot
     )
@@ -99,15 +98,22 @@ def snapshot_transcript(
             key=key,
             sidecars=inputs.sidecars,
         )
-        snapshot = filesystem_snapshot(probe)
+        snapshot_before_hash = filesystem_snapshot(probe)
+        try:
+            hashed = source_hash(inputs.raw_bytes, inputs.sidecars)
+        except OSError:
+            continue
+        snapshot_after_hash = filesystem_snapshot(probe)
+        if snapshot_before_hash != snapshot_after_hash:
+            continue
         snapshot_data = TranscriptSnapshot(
             session=session,
             raw_bytes=inputs.raw_bytes,
-            source_hash=source_hash(inputs.raw_bytes, inputs.sidecars),
+            source_hash=hashed,
             key=key,
             sidecars=inputs.sidecars,
-            filesystem_snapshot=snapshot,
+            filesystem_snapshot=snapshot_after_hash,
         )
-        if snapshot == filesystem_snapshot(snapshot_data):
+        if snapshot_after_hash == filesystem_snapshot(snapshot_data):
             return snapshot_data
     raise RuntimeError("Transcript changed while it was being hashed")

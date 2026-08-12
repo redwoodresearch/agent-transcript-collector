@@ -253,7 +253,7 @@ def preview_session(source: str, project: str, session: str, parent: str = "",
 # --- one background scan → hash changed → check changed pipeline ---
 PIPELINE_RUNS: dict[str, dict] = {}
 PIPELINE_LOCK = threading.Lock()
-_active_pipeline = {"id": None}
+_active_pipeline: dict[str, str | None] = {"id": None}
 
 
 def _pipeline_worker(serialized_selections, contributor, events):
@@ -280,12 +280,11 @@ def _pipeline_worker(serialized_selections, contributor, events):
             "total": sum(len(sessions) for _, sessions in selections),
             "changed": 0, "checked": 0, "cached": 0,
         }
+    try:
+        events.put({"type": "finished", **result})
     finally:
-        try:
-            events.put({"type": "finished", **result})
-        finally:
-            events.close()
-            events.join_thread()
+        events.close()
+        events.join_thread()
 
 
 def _monitor_pipeline(run_id, process, events):
@@ -408,7 +407,7 @@ def pipeline_status(run_id: str):
 # --- background upload jobs (so closing the tab can't abort an upload) ---
 JOBS: dict[str, dict] = {}
 JOBS_LOCK = threading.Lock()
-_active_job = {"id": None}
+_active_job: dict[str, str | None] = {"id": None}
 
 
 def _resolve_selection(selected):
@@ -467,13 +466,13 @@ def _upload_worker(serialized_selections, candidates, contributor, events):
                  item.get("session"))
                 for item in uploads
             }
-            uploaded_candidates = [
-                item for item in candidates
+            uploaded_artifacts = [
+                item for item in artifacts
                 if (item.get("source"), item.get("project"),
                     item.get("parent") or "", item.get("session")) in successful
             ]
-            if uploaded_candidates:
-                record_uploaded(uploaded_candidates, contributor)
+            if uploaded_artifacts:
+                record_uploaded(uploaded_artifacts, contributor)
             status = "completed" if not errors else "partial" if uploads else "failed"
     except UploadBusy as e:
         errors.append({"error": str(e)})

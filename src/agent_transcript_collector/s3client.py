@@ -5,6 +5,7 @@ credential handling is defined once.
 """
 
 import os
+from typing import Any
 
 import boto3
 from botocore.config import Config
@@ -24,7 +25,7 @@ def selected_profile() -> str:
     )
 
 
-def make_s3_client():
+def make_s3_client() -> Any:
     """Build an S3 client.
 
     Use AWS SSO through a local profile. Redwood's standard profile name is

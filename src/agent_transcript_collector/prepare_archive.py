@@ -16,7 +16,6 @@ from .redactor import (
     REDACTION_VERSION,
     redact_identity,
     redact_jsonl_content,
-    redact_path_token,
 )
 from .sources.base import Session, Source
 from .transcript_snapshot import (
@@ -27,7 +26,7 @@ from .transcript_snapshot import (
     snapshot_transcript,
 )
 
-TRANSCRIPT_FORMAT_VERSION = 4
+TRANSCRIPT_FORMAT_VERSION = 5
 
 
 class ArchiveArtifact(TypedDict):
@@ -60,11 +59,7 @@ def _redacted_sidecars(
     missing = list(snapshot.sidecars.missing)
     redaction_count = 0
     for sidecar in snapshot.sidecars.files:
-        try:
-            text = sidecar.path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            missing.append(sidecar.reference)
-            continue
+        text = sidecar.path.read_text(encoding="utf-8", errors="replace")
         text, count = _redact(text)
         redaction_count += count
         contents.append((sidecar.arcname, text))
@@ -93,10 +88,9 @@ def _archive_bytes(
     )
     sidecar_contents, sidecars, count = _redacted_sidecars(snapshot)
     redaction_count += count
-    project_id, count = redact_path_token(session.project_id)
-    redaction_count += count
     project_label, count = redact_identity(session.project_label)
     redaction_count += count
+    project_digest = hashlib.sha256(session.project_id.encode()).hexdigest()[:12]
     suffix = Path(session.path).suffix.lower()
     if suffix not in {".jsonl", ".txt"}:
         suffix = ".txt"
@@ -105,7 +99,7 @@ def _archive_bytes(
         "source": source.id,
         "source_format": source.source_format,
         "contributor": contributor,
-        "project": {"key": project_id, "name": project_label},
+        "project": {"key": f"project-{project_digest}", "name": project_label},
         "session": {
             "id": session.id,
             "is_subagent": session.is_subagent,
