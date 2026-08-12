@@ -139,13 +139,10 @@ def _atomic_write(path: Path, data: bytes, mode: int = 0o600) -> None:
             pass
 
 
-def _config_payload(config: WatcherConfig) -> bytes:
-    return json.dumps(asdict(config), indent=2, sort_keys=True).encode() + b"\n"
-
-
 def save_config(config: WatcherConfig, path: Path | None = None) -> Path:
     target = path or watcher_config_path()
-    _atomic_write(target, _config_payload(config))
+    payload = json.dumps(asdict(config), indent=2, sort_keys=True).encode() + b"\n"
+    _atomic_write(target, payload)
     return target
 
 
