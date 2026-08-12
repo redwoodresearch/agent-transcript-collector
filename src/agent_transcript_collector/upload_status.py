@@ -1,10 +1,11 @@
-"""Classify S3 upload existence and freshness without redacting transcripts."""
+"""Determine transcript upload states without performing redaction."""
 
 from __future__ import annotations
 
 import os
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from typing import Any, Protocol, TypeAlias
 
 from botocore.exceptions import ClientError
@@ -13,15 +14,12 @@ from .prepare_archive import (
     SOURCE_HASH_VERSION,
     TRANSCRIPT_FORMAT_VERSION,
     TranscriptSnapshot,
+    snapshot_transcript,
 )
 from .redactor import REDACTION_VERSION
 from .s3client import S3_BUCKET
-from .sources.base import Session, Source
-from .storage import transcript_key
+from .transcript import TranscriptRef, TranscriptStatus
 
-MissingUpload: TypeAlias = tuple[Source, Session, str]
-ExistingUpload: TypeAlias = tuple[Source, Session, str, dict[str, str]]
-StatusError: TypeAlias = dict[str, Any]
 StatusCallback: TypeAlias = Callable[[int, int], None]
 
 
@@ -29,6 +27,7 @@ class S3HeadClient(Protocol):
     """Small part of the S3 client needed to classify uploads."""
 
     def head_object(self, **kwargs: Any) -> dict[str, Any]: ...
+
 
 SOURCE_HASH_METADATA = "source-hash"
 SOURCE_HASH_VERSION_METADATA = "source-hash-version"
@@ -44,67 +43,85 @@ def metadata_concurrency() -> int:
     return max(1, int(os.environ.get("CTC_METADATA_CONCURRENCY", "16")))
 
 
-def find_existing_uploads(
+def hashing_concurrency() -> int:
+    return max(1, int(os.environ.get("CTC_REDACTION_CONCURRENCY", "16")))
+
+
+def classify_uploads(
     s3: S3HeadClient,
-    transcripts: Iterable[tuple[Source, Session]],
-    contributor: str,
-    on_status: StatusCallback | None = None,
-) -> tuple[list[MissingUpload], list[ExistingUpload], list[StatusError]]:
-    """HEAD transcript keys, returning (missing, existing, errors).
+    transcripts: Iterable[TranscriptRef],
+    on_check: StatusCallback | None = None,
+    on_hash: StatusCallback | None = None,
+) -> list[TranscriptStatus]:
+    """HEAD every key, then hash only objects which already exist in S3."""
+    refs = list(transcripts)
+    statuses: list[TranscriptStatus] = []
+    existing: list[tuple[TranscriptRef, dict[str, str]]] = []
 
-    `missing` contains `(source, session, key)` tuples. `existing` contains
-    `(source, session, key, metadata)` tuples. No transcript file is read.
-    """
-    transcripts = list(transcripts)
-    missing: list[MissingUpload] = []
-    existing: list[ExistingUpload] = []
-    errors: list[StatusError] = []
-
-    def head_one(
-        source: Source, session: Session
-    ) -> tuple[str, dict[str, str] | None]:
-        key = transcript_key(contributor, source.id, session)
+    def head_one(ref: TranscriptRef) -> dict[str, str] | None:
         try:
-            response = s3.head_object(Bucket=S3_BUCKET, Key=key)
+            response = s3.head_object(Bucket=S3_BUCKET, Key=ref.key)
         except ClientError as exc:
             code = str(exc.response.get("Error", {}).get("Code", ""))
             if code in {"404", "NoSuchKey", "NotFound"}:
-                return key, None
+                return None
             raise
-        return key, response.get("Metadata", {})
+        return response.get("Metadata", {})
 
-    workers = min(metadata_concurrency(), len(transcripts))
-    if not workers:
-        return missing, existing, errors
-    completed = 0
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(head_one, source, session): (source, session)
-            for source, session in transcripts
-        }
-        for future in as_completed(futures):
-            source, session = futures[future]
-            completed += 1
-            try:
-                key, metadata = future.result()
-            except Exception as exc:
-                errors.append({
-                    "source": source.id,
-                    "project": session.project_id,
-                    "parent": session.parent,
-                    "session": session.id,
-                    "error": f"{type(exc).__name__}: {exc}",
-                })
-            else:
-                target = missing if metadata is None else existing
-                target.append(
-                    (source, session, key)
-                    if metadata is None
-                    else (source, session, key, metadata)
-                )
-            if on_status:
-                on_status(completed, len(transcripts))
-    return missing, existing, errors
+    workers = min(metadata_concurrency(), len(refs))
+    if workers:
+        completed = 0
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(head_one, ref): ref for ref in refs}
+            for future in as_completed(futures):
+                ref = futures[future]
+                completed += 1
+                try:
+                    metadata = future.result()
+                except Exception as exc:
+                    statuses.append(_error_status(ref, exc))
+                else:
+                    if metadata is None:
+                        statuses.append(TranscriptStatus(ref, "not_uploaded"))
+                    else:
+                        existing.append((ref, metadata))
+                if on_check:
+                    on_check(completed, len(refs))
+
+    if on_hash:
+        on_hash(0, len(existing))
+    workers = min(hashing_concurrency(), len(existing))
+    if workers:
+        completed = 0
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(_classify_existing, ref, metadata): ref
+                for ref, metadata in existing
+            }
+            for future in as_completed(futures):
+                ref = futures[future]
+                completed += 1
+                try:
+                    statuses.append(future.result())
+                except Exception as exc:
+                    statuses.append(_error_status(ref, exc))
+                if on_hash:
+                    on_hash(completed, len(existing))
+    return statuses
+
+
+def _classify_existing(
+    ref: TranscriptRef, metadata: dict[str, str]
+) -> TranscriptStatus:
+    snapshot = snapshot_transcript(ref.source, ref.session, ref.key)
+    state = "current" if upload_is_current(snapshot, metadata) else "changed"
+    # Status checks need the hash and filesystem snapshot, not transcript contents.
+    snapshot = replace(snapshot, raw_bytes=b"")
+    return TranscriptStatus(ref, state, snapshot)
+
+
+def _error_status(ref: TranscriptRef, exc: Exception) -> TranscriptStatus:
+    return TranscriptStatus(ref, "error", error=f"{type(exc).__name__}: {exc}")
 
 
 def upload_is_current(

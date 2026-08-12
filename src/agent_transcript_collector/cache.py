@@ -10,17 +10,18 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import Literal, TypedDict, cast
 
 from .paths import pipeline_cache_path, prepared_artifacts_dir
+from .prepare_archive import (
+    SOURCE_HASH_VERSION,
+    TRANSCRIPT_FORMAT_VERSION,
+    FilesystemSnapshotEntry,
+    filesystem_snapshot_is_current,
+)
+from .redactor import REDACTION_VERSION
 from .sources.base import Session
-
-
-class FilesystemSnapshotEntry(TypedDict, total=False):
-    path: str
-    exists: bool
-    size: int
-    mtime_ns: int
+from .transcript import TranscriptRef, TranscriptStatus, UploadState
 
 
 class CacheRecord(TypedDict, total=False):
@@ -41,6 +42,9 @@ class CacheRecord(TypedDict, total=False):
 
 class CacheFile(TypedDict):
     records: dict[str, CacheRecord]
+
+
+UploadDecision = Literal["skip", "upload", "stale"]
 
 
 def empty_cache() -> CacheFile:
@@ -83,6 +87,100 @@ def get_cache_for_transcript(
     """Return one transcript record from an already-loaded cache."""
     record = cache["records"].get(cache_record_key(contributor, source_id, session))
     return record if isinstance(record, dict) else None
+
+
+def reusable_status(
+    cache: CacheFile, contributor: str, ref: TranscriptRef
+) -> TranscriptStatus | None:
+    """Return a status that can be reused without S3 or file reads."""
+    record = get_cache_for_transcript(
+        cache, contributor, ref.source.id, ref.session
+    )
+    state = record.get("state") if record else None
+    if record is None or state not in {"changed", "current"}:
+        return None
+    if not _record_matches(record, ref):
+        return None
+    return TranscriptStatus(ref, cast(UploadState, state))
+
+
+def upload_decision(
+    cache: CacheFile, contributor: str, ref: TranscriptRef
+) -> tuple[UploadDecision, CacheRecord | None]:
+    """Decide whether a cached transcript is ready to upload."""
+    record = get_cache_for_transcript(
+        cache, contributor, ref.source.id, ref.session
+    )
+    if record is None:
+        return "stale", None
+    if record.get("state") == "not_uploaded":
+        return "upload", record
+    status = reusable_status(cache, contributor, ref)
+    if status is None:
+        return "stale", None
+    if status.state == "current":
+        return "skip", None
+    return "upload", record
+
+
+def store_status(
+    cache: CacheFile, contributor: str, status: TranscriptStatus
+) -> None:
+    """Replace one cache record with the result of a status check."""
+    ref = status.transcript
+    record: CacheRecord = {
+        "source": ref.source.id,
+        "contributor": contributor,
+        "project": ref.session.project_id,
+        "parent": ref.session.parent,
+        "session": ref.session.id,
+        "key": ref.key,
+        "state": status.state,
+    }
+    if status.snapshot is not None:
+        record.update(
+            source_hash_version=SOURCE_HASH_VERSION,
+            redaction_version=REDACTION_VERSION,
+            format_version=TRANSCRIPT_FORMAT_VERSION,
+            filesystem_snapshot=status.snapshot.filesystem_snapshot or [],
+            source_hash=status.snapshot.source_hash,
+        )
+    if status.error:
+        record["error"] = status.error
+    set_cache_for_transcript(
+        cache, contributor, ref.source.id, ref.session, record
+    )
+
+
+def mark_records_uploaded(
+    cache: CacheFile, contributor: str, identities: set[tuple[object, ...]]
+) -> None:
+    """Mark matching contributor records current after successful S3 writes."""
+    for record in cache["records"].values():
+        identity = (
+            record.get("source"),
+            record.get("project"),
+            record.get("parent") or "",
+            record.get("session"),
+        )
+        if record.get("contributor") == contributor and identity in identities:
+            record["state"] = "current"
+            record.pop("error", None)
+
+
+def _record_matches(record: CacheRecord, ref: TranscriptRef) -> bool:
+    return (
+        record.get("source") == ref.source.id
+        and record.get("project") == ref.session.project_id
+        and record.get("parent") == ref.session.parent
+        and record.get("session") == ref.session.id
+        and record.get("key") == ref.key
+        and record.get("source_hash_version") == SOURCE_HASH_VERSION
+        and record.get("redaction_version") == REDACTION_VERSION
+        and record.get("format_version") == TRANSCRIPT_FORMAT_VERSION
+        and isinstance(record.get("source_hash"), str)
+        and filesystem_snapshot_is_current(record.get("filesystem_snapshot"))
+    )
 
 
 def set_cache_for_transcript(

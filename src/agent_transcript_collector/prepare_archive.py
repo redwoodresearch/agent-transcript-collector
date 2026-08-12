@@ -41,7 +41,14 @@ class ArchiveArtifact(TypedDict):
     sidecar_count: int
     redactions: int
     zip_size_bytes: int
-    filesystem_snapshot: list[dict[str, Any]]
+    filesystem_snapshot: list[FilesystemSnapshotEntry]
+
+
+class FilesystemSnapshotEntry(TypedDict, total=False):
+    path: str
+    exists: bool
+    size: int
+    mtime_ns: int
 
 
 @dataclass(frozen=True)
@@ -53,7 +60,7 @@ class TranscriptSnapshot:
     source_hash: str
     key: str
     sidecars: SidecarSet = NO_SIDECARS
-    filesystem_snapshot: list[dict[str, Any]] | None = None
+    filesystem_snapshot: list[FilesystemSnapshotEntry] | None = None
 
 
 def source_hash(raw_bytes: bytes, sidecars: SidecarSet) -> str:
@@ -75,8 +82,8 @@ def source_hash(raw_bytes: bytes, sidecars: SidecarSet) -> str:
     return digest.hexdigest()
 
 
-def _path_signature(path: str | Path) -> dict[str, Any]:
-    value = {"path": str(path)}
+def _path_signature(path: str | Path) -> FilesystemSnapshotEntry:
+    value: FilesystemSnapshotEntry = {"path": str(path)}
     try:
         stat = Path(path).stat()
     except OSError:
@@ -86,7 +93,7 @@ def _path_signature(path: str | Path) -> dict[str, Any]:
     return value
 
 
-def filesystem_snapshot(snapshot: TranscriptSnapshot) -> list[dict[str, Any]]:
+def filesystem_snapshot(snapshot: TranscriptSnapshot) -> list[FilesystemSnapshotEntry]:
     """Capture every local path which can affect the archive."""
     paths: list[str | Path] = [snapshot.session.path]
     paths.extend(sidecar.path for sidecar in snapshot.sidecars.files)
@@ -222,11 +229,22 @@ def _archive_bytes(
 
 def prepare_archive(
     source: Source,
-    snapshot: TranscriptSnapshot,
+    session: Session,
+    key: str,
     contributor: str,
     directory: str | Path,
+    *,
+    expected_hash: str | None = None,
+    expected_filesystem_snapshot: list[FilesystemSnapshotEntry] | None = None,
 ) -> ArchiveArtifact:
-    """Redact and write one transcript ZIP, returning its upload description."""
+    """Read, validate, redact, and ZIP one stable transcript."""
+    snapshot = snapshot_transcript(source, session, key)
+    if expected_hash is not None and (
+        snapshot.source_hash != expected_hash
+        or snapshot.filesystem_snapshot != expected_filesystem_snapshot
+    ):
+        raise RuntimeError("Transcript changed after Refresh; refresh and try again")
+
     archive, manifest = _archive_bytes(source, snapshot, contributor)
     target_dir = Path(directory)
     target_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -241,7 +259,10 @@ def prepare_archive(
         except OSError:
             pass
         raise
-    session = snapshot.session
+    if filesystem_snapshot(snapshot) != snapshot.filesystem_snapshot:
+        Path(temporary).unlink(missing_ok=True)
+        raise RuntimeError("Transcript changed while its archive was prepared")
+
     return {
         "source": source.id,
         "project": session.project_id,

@@ -180,14 +180,17 @@ turn a cheap discovery scan into a full read of every transcript.
 [`prepare_archive.py`](src/agent_transcript_collector/prepare_archive.py) owns
 the complete local transcript-to-ZIP path: stable input reads, the source hash,
 filesystem snapshots, redaction, sidecar collection, manifest construction, and
-ZIP writing. The pipeline calls it only for hashing and selected archive work;
-the remaining modules handle storage identity, status checks, and transfer.
+ZIP writing. It also owns the final stability checks that prevent a transcript
+from changing between Refresh and archive creation.
 
 [`upload_status.py`](src/agent_transcript_collector/upload_status.py) checks S3
 object existence before local content is read. Missing objects are immediately
 classified as `not_uploaded`. Only transcripts with an existing object are read
-and hashed to distinguish `changed` from `current`. `uploader.py` is limited to
-the upload lock and S3 transfer; S3 key construction lives in `storage.py`.
+and hashed to distinguish `changed` from `current`. It returns typed
+`TranscriptStatus` values built around the shared `TranscriptRef` defined in
+`transcript.py`. `pipeline.py` only sequences status checks, cache updates, and
+archive preparation. `uploader.py` is limited to the upload lock and S3
+transfer; S3 key construction lives in `storage.py`.
 
 ### Local cache
 
@@ -215,7 +218,7 @@ helpers. A record is approximately:
       "key": "S3 object key",
       "redaction_version": 1,
       "format_version": 4,
-      "state": "checking, not_uploaded, changed, current, or error"
+      "state": "not_uploaded, changed, current, or error"
     }
   }
 }
