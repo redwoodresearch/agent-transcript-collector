@@ -11,9 +11,8 @@ to `s3://rr-agent-transcripts` in `us-east-1`.
 - [Review and upload transcripts](#review-and-upload-transcripts)
 - [Automatic uploads](#automatic-uploads)
 - [Browse uploaded transcripts](#browse-uploaded-transcripts)
-- [What gets collected](#what-gets-collected)
+- [Transcript data and storage](#transcript-data-and-storage)
 - [Privacy and redaction](#privacy-and-redaction)
-- [Storage layout](#storage-layout)
 - [Configuration](#configuration)
 
 ## Prerequisites
@@ -129,108 +128,66 @@ Use Enter to expand folders and `q` to quit. It opens at `mts-trans/` by default
 pass `--prefix mts-trans/<contributor>/` to start at a narrower S3 prefix. The
 browser only lists object names and sizes. It does not download or extract data.
 
-## What gets collected
+## Transcript data and storage
 
-Detection runs locally on your machine, and only sources actually present appear
-in the UI:
+The collector discovers native transcript files on your machine. Only sources
+that are present appear in the review UI.
 
-| Source | Default location | Override | Layout |
+| Source | Search path | Transcript layout | External content |
 |---|---|---|---|
-| Claude Code | `~/.claude/projects/` | `CLAUDE_CONFIG_DIR` | `<encoded-cwd>/<uuid>.jsonl` |
-| Codex | `~/.codex/sessions/` | `CODEX_HOME` | `YYYY/MM/DD/rollout-*.jsonl` |
-| Cursor | `~/.cursor/projects/` | `CURSOR_HOME` | `<encoded-project>/agent-transcripts/<id>/<id>.jsonl` |
-| Pi | `~/.pi/agent/sessions/` | `PI_CODING_AGENT_SESSION_DIR`, `PI_CODING_AGENT_DIR` | `--<encoded-cwd>--/<ts>_<id>.jsonl` |
+| Claude Code | `~/.claude/projects/` (`CLAUDE_CONFIG_DIR`) | `<encoded-cwd>/<uuid>.jsonl` | `tool-results/` and temporary `tasks/` output |
+| Codex | `~/.codex/sessions/` (`CODEX_HOME`) | `YYYY/MM/DD/rollout-*.jsonl` | Kept inline |
+| Cursor | `~/.cursor/projects/` (`CURSOR_HOME`) | `<encoded-project>/agent-transcripts/<id>/<id>.jsonl` | `agent-tools/` and `terminals/` output |
+| Pi | `~/.pi/agent/sessions/` (`PI_CODING_AGENT_SESSION_DIR` or `PI_CODING_AGENT_DIR`) | `--<encoded-cwd>--/<ts>_<id>.jsonl` | Kept inline |
 
-The uploaded artifact is the raw transcript in its native format after
-redaction. Preview rendering is best-effort, so schema drift between harness
-versions never changes what is uploaded.
+Each session goes through the same pipeline:
 
-Cursor Agent JSONL transcripts include user messages, assistant text, and
-tool-call inputs; Cursor does not record tool outputs in these native files.
+1. **Discover:** find the native transcript and group it by project and source.
+   Monitor or scaffolding sessions are excluded when the source identifies them.
+2. **Assemble:** keep the transcript in its native JSONL or text format, identify
+   subagent sessions, and resolve any external files it references.
+3. **Redact:** replace detected credentials and local identity data on the local
+   machine, in both the transcript and its external files.
+4. **Store:** package one redacted session per ZIP and upload it to a stable S3
+   key. A changed session replaces its previous ZIP; unchanged content is skipped.
 
-Subagents are collected and marked in the manifest. Monitor and scaffolding
-sessions are excluded where the source schema makes that distinction possible.
+The uploaded transcript contains whatever its native source recorded, without
+schema conversion. Cursor transcripts contain user messages, assistant text,
+and tool-call inputs, but do not contain tool output unless Cursor wrote that
+output to a referenced external file.
 
-### Tool output stored outside the transcript
+### Subagents and sidecars
 
-Harnesses move oversized tool output into separate files and leave only a
-pointer in the transcript, so a transcript on its own records that the agent
-saw something without recording what. Those files are collected alongside the
-transcript that points at them:
+A subagent transcript is a separate session, not a file inside its parent's ZIP.
+Its manifest sets `session.is_subagent` to `true` and records the parent session
+ID. Its ZIP is stored below the parent under `subagents/`.
 
-| Source | Folder | Holds |
-|---|---|---|
-| Claude Code | `<project>/<session>/tool-results/` | Tool results too large to inline |
-| Claude Code | `<tmp>/claude-<uid>/<project>/<session>/tasks/` | Background command output |
-| Cursor | `<project>/agent-tools/` | Oversized tool results the agent reads back |
-| Cursor | `<project>/terminals/` | Shell output the agent reads back |
+A **sidecar** is agent-visible content that a transcript points to instead of
+embedding, such as an oversized tool result or background-task output. The
+collector follows only explicit pointers from Claude Code and Cursor transcripts
+and only within folders owned by that source. It does not treat a referenced
+subagent transcript as a sidecar.
 
-Only files a transcript actually names are collected, resolved from the
-pointer rather than by listing a folder, because a resumed session keeps
-pointing at the folder it inherited from the session before it. A pointer is
-followed only when it stays inside the folder its harness owns, so a symlink
-leading elsewhere is ignored. Claude Code additionally points a finished task
-at the subagent transcript, which is collected as a session in its own right.
+Sidecars are redacted and stored in the referring session's ZIP. The manifest
+lists included files, pointers whose files have disappeared, and files skipped
+for exceeding the per-session size budget. Codex and Pi keep tool output inline
+and do not produce sidecars.
 
-Harnesses delete these files on their own schedule, so some pointers are
-already dead by the time a transcript is uploaded. Those are listed in the
-manifest instead, and an upload that has lost side files never overwrites an
-earlier upload that still had them.
+### Folder structure
 
-Codex and Pi keep tool output inline, so they have no such files.
-
-## Privacy and redaction
-
-Redaction happens on your machine before anything is written to a ZIP, and the
-count of replacements is recorded in its manifest.
-
-Two kinds of content are rewritten:
-
-- **Credentials** matched by a set of high-precision patterns: AWS keys, `sk-`
-  and `sk-ant-` API keys, GitHub, GitLab, Slack, Stripe, HuggingFace, and Google
-  keys, JWTs, PEM private keys, database and messaging connection URIs, and
-  explicit `password`/`token`/`api_key` assignments.
-- **Identity**: usernames in `/home/<user>/` and `/Users/<user>/` paths and in
-  dash-encoded project keys, your local username as a bare token, and email
-  addresses. Paths become `/home/[USER]/` and addresses become `[EMAIL]`.
-  Shared system logins such as `ubuntu` or `root` are left alone; extend that
-  stoplist with `CTC_USERNAME_STOPLIST`.
-
-Credentials are replaced with type-preserving **mocks** rather than a blanket
-`[REDACTED]`, so a reader can still tell which kind of credential appeared and
-trace one secret through a transcript (env var to tool argument to file write to
-echoed output). The same real secret maps to the same mock everywhere within a
-single run, but the salt is random per process and discarded on exit, so nothing
-reverses a mock back to the original and a guessed secret cannot be confirmed.
-Every mock embeds the marker `4d4f434b` (hex for `MOCK`), which you can grep for
-to enumerate synthetic values.
-
-The patterns favor precision over recall: they only match values that are almost
-certainly secrets, so unusual or unformatted credentials can survive. Review
-what you select before uploading rather than treating redaction as a guarantee.
-
-## Storage layout
-
-Each transcript is stored in one ZIP at a stable key:
+Each session has one stable S3 object. Subagents are nested under their parent:
 
 ```text
-s3://rr-agent-transcripts/mts-trans/<contributor>/<project-name>/<source>/<session>/transcript.zip
-s3://rr-agent-transcripts/mts-trans/<contributor>/<project-name>/<source>/<parent>/subagents/<session>/transcript.zip
+s3://rr-agent-transcripts/mts-trans/<contributor>/<project>/<source>/<session>/transcript.zip
+s3://rr-agent-transcripts/mts-trans/<contributor>/<project>/<source>/<parent>/subagents/<session>/transcript.zip
 ```
 
-Transcripts with the same project name share one project directory. Each ZIP
-contains one redacted transcript and a `manifest.json` with project, source,
-contributor, session, content-fingerprint, and redaction metadata. Resuming a
-session overwrites the same object only when the privacy-safe fingerprint
-changes.
-
-The ZIP has this folder structure. `transcript.<ext>` and `manifest.json` are
-always present; the side-file folders are included only when the source
-transcript refers to files of that kind:
+Each ZIP contains the redacted native transcript, its manifest, and any sidecars
+referenced by that transcript:
 
 ```text
 transcript.zip
-├── transcript.<ext>             # .jsonl or .txt, matching the source format
+├── transcript.<ext>             # .jsonl or .txt
 ├── manifest.json
 ├── tool-results/                # Claude Code oversized tool results
 │   └── <name>.txt
@@ -242,9 +199,13 @@ transcript.zip
     └── <name>.txt
 ```
 
+The transcript and manifest are always present. Sidecar folders appear only
+when the session includes files of that kind.
+
 ### `manifest.json`
 
-Each archive's manifest has this structure:
+The manifest identifies the source, project, session, stored content, and
+redaction result:
 
 ```json
 {
@@ -280,31 +241,47 @@ Each archive's manifest has this structure:
         "sha256": "SHA-256 of the redacted sidecar"
       }
     ],
-    "missing": [
-      "/redacted/path/to/missing.output"
-    ],
-    "skipped_too_large": [
-      "/redacted/path/to/oversized.txt"
-    ]
+    "missing": ["/redacted/path/to/missing.output"],
+    "skipped_too_large": ["/redacted/path/to/oversized.txt"]
   }
 }
 ```
 
-`project` identifies the local project grouping, while `session` identifies the
-transcript and its parent relationship. A subagent has `is_subagent` set to
-`true` and its parent session ID in `parent`. `version` records the fingerprints
-used to detect changes, the hash of the redacted transcript, the identity
-redaction policy, and the archive timestamp. `size_bytes` is the redacted
-transcript size, and `redactions` counts replacements across the transcript,
-sidecars, and project identity fields.
+`version` holds the fingerprints used for change detection, the redacted
+transcript hash, and the upload time. `size_bytes` is the redacted transcript
+size, and `redactions` is the total number of replacements. Each sidecar entry
+records its ZIP path, type, redacted original reference, redacted size, and hash.
+The three sidecar arrays are present even when empty.
 
-Every included sidecar is listed under `sidecars.files`, with its ZIP path,
-kind, redacted path as referenced by the transcript, redacted size, and hash.
-Pointers whose target was already gone are listed under `sidecars.missing`;
-files rejected by the size budget are listed under `sidecars.skipped_too_large`.
-All three fields are present even when their arrays are empty. A session with no
-side files keeps the fingerprint it always had, so this does not rewrite earlier
-uploads.
+## Privacy and redaction
+
+Redaction happens on your machine before anything is written to a ZIP, and the
+count of replacements is recorded in its manifest.
+
+Two kinds of content are rewritten:
+
+- **Credentials** matched by a set of high-precision patterns: AWS keys, `sk-`
+  and `sk-ant-` API keys, GitHub, GitLab, Slack, Stripe, HuggingFace, and Google
+  keys, JWTs, PEM private keys, database and messaging connection URIs, and
+  explicit `password`/`token`/`api_key` assignments.
+- **Identity**: usernames in `/home/<user>/` and `/Users/<user>/` paths and in
+  dash-encoded project keys, your local username as a bare token, and email
+  addresses. Paths become `/home/[USER]/` and addresses become `[EMAIL]`.
+  Shared system logins such as `ubuntu` or `root` are left alone; extend that
+  stoplist with `CTC_USERNAME_STOPLIST`.
+
+Credentials are replaced with type-preserving **mocks** rather than a blanket
+`[REDACTED]`, so a reader can still tell which kind of credential appeared and
+trace one secret through a transcript (env var to tool argument to file write to
+echoed output). The same real secret maps to the same mock everywhere within a
+single run, but the salt is random per process and discarded on exit, so nothing
+reverses a mock back to the original and a guessed secret cannot be confirmed.
+Every mock embeds the marker `4d4f434b` (hex for `MOCK`), which you can grep for
+to enumerate synthetic values.
+
+The patterns favor precision over recall: they only match values that are almost
+certainly secrets, so unusual or unformatted credentials can survive. Review
+what you select before uploading rather than treating redaction as a guarantee.
 
 ## Configuration
 
