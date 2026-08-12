@@ -241,7 +241,6 @@ class Session:
     modified: datetime | None = None
     is_subagent: bool = False      # spawned task subagent, not a top-level session
     parent: str | None = None      # parent session id, when is_subagent
-    legacy_watcher_project_id: str | None = None
 
     @property
     def size_human(self) -> str:

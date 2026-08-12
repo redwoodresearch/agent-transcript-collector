@@ -204,7 +204,7 @@ class CursorSource:
                 else None
             )
             cwd = exact_cwd or recovered or _fallback_project_path(project_dir.name)
-            key, label = project_identity(cwd)
+            _key, label = project_identity(cwd)
             directory = (
                 canonical_project_directory(cwd)
                 if exact_cwd is not None or recovered is not None
@@ -226,7 +226,6 @@ class CursorSource:
                     modified=mtime(f),
                     is_subagent=parent is not None,
                     parent=parent,
-                    legacy_watcher_project_id=key,
                 ))
         return sessions
 

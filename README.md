@@ -167,8 +167,8 @@ The adapters retain only their harness-specific file and parent-link rules.
 there is no separate source-level group model.
 
 Watcher configuration stores only each selected project's identity and label.
-For compatibility, old `members` entries are understood when read, but they are
-omitted the next time the configuration is saved.
+Older source/group configurations are converted once when loaded and then
+atomically rewritten in this current format.
 
 Sidecars are resolved by `load_transcript_inputs()` when an individual session
 is previewed, hashed, or uploaded. They are not read eagerly during the initial

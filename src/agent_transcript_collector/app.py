@@ -47,7 +47,6 @@ from .watcher import (
     AllowedProject,
     WatcherConfig,
     capture_source_env,
-    project_is_selected,
     selected_project_identities,
 )
 from .watcher import (
@@ -659,10 +658,6 @@ def get_watcher_status():
         {"identity": saved.identity, "label": saved.label}
         for saved in saved_config.projects
         if saved.identity not in visible_projects
-        and not any(
-            project_is_selected(project, saved)
-            for project in (scan.projects if scan else ())
-        )
     )
     config["projects"] = list({
         item.get("identity", ""): item for item in selected
@@ -708,10 +703,6 @@ def _put_watcher(body: dict):
                 for project in existing.projects
                 if project.identity not in discovered_projects
                 and project.identity not in removed_ids
-                and not any(
-                    project_is_selected(discovered, project)
-                    for discovered in (scan.projects if scan else ())
-                )
             )
         config = WatcherConfig(
             auto_uploader_version=(

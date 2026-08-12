@@ -155,7 +155,7 @@ class CodexSource:
             if kind == "drop":
                 continue  # review/compact/memory_consolidation/internal scaffolding
             cwd, first, count = self._summary(f)
-            key, label = project_identity(cwd) if cwd else ("_ungrouped", "(unknown project)")
+            _key, label = project_identity(cwd) if cwd else ("_ungrouped", "(unknown project)")
             directory = canonical_project_directory(cwd) if cwd else None
             sessions.append(Session(
                 source=self.id,
@@ -170,7 +170,6 @@ class CodexSource:
                 first_message=first,
                 message_count=count,
                 modified=mtime(f),
-                legacy_watcher_project_id=key,
             ))
         return sessions
 

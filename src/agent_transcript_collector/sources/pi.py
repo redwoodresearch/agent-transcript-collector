@@ -139,7 +139,7 @@ class PiSource:
                 continue
             header = objs[0]
             cwd = header.get("cwd") or ""
-            key, label = project_identity(cwd) if cwd else ("_ungrouped", "(unknown project)")
+            _key, label = project_identity(cwd) if cwd else ("_ungrouped", "(unknown project)")
             directory = canonical_project_directory(cwd) if cwd else None
             first, count = self._summary(objs)
 
@@ -173,7 +173,6 @@ class PiSource:
                 modified=mtime(f),
                 is_subagent=is_subagent,
                 parent=parent,
-                legacy_watcher_project_id=key,
             ))
         return sessions
 

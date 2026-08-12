@@ -29,6 +29,7 @@ from .pipeline import (
 )
 from .s3client import make_s3_client
 from .scan import ScanResult, scan_transcripts
+from .sources.base import project_identity
 from .uploader import (
     UploadBusy,
     UploadLock,
@@ -55,18 +56,9 @@ SOURCE_ENV_VARS = (
 
 
 @dataclass(frozen=True)
-class ProjectMember:
-    source: str
-    group: str
-
-
-@dataclass(frozen=True)
 class AllowedProject:
     identity: str
     label: str = ""
-    # Read-only compatibility for watcher configs written before projects were
-    # flattened. save_config deliberately never persists these members again.
-    members: tuple[ProjectMember, ...] = ()
 
 
 @dataclass
@@ -82,9 +74,19 @@ class WatcherConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> WatcherConfig:
-        if data.get("schema_version") not in {1, 2}:
+        if data.get("schema_version") != 2:
             raise ValueError("unsupported watcher configuration version")
-        projects = _projects_from_config(data)
+        projects = sorted(
+            {
+                AllowedProject(
+                    identity=str(item["identity"]),
+                    label=str(item.get("label", "")),
+                )
+                for item in data.get("projects", [])
+                if item.get("identity")
+            },
+            key=lambda item: (item.identity, item.label),
+        )
         return cls(
             schema_version=2,
             auto_uploader_version=int(data.get("auto_uploader_version", 0)),
@@ -103,67 +105,58 @@ class WatcherConfig:
 
 # =========== MIGRATIONS ============
 
-def _projects_from_config(data: dict) -> list[AllowedProject]:
-    """Read current projects or the original source/group watcher format."""
-    if data.get("schema_version") == 1:
-        return [
-            AllowedProject(
-                identity=f"legacy:{index}",
-                label=str(item.get("label", "")),
-                members=(ProjectMember(
-                    source=str(item["source"]),
-                    group=str(item["group"]),
-                ),),
-            )
-            for index, item in enumerate(data.get("groups", []))
-            if item.get("source") and item.get("group")
-        ]
+def _migrate_config(data: dict) -> tuple[dict, bool]:
+    """Convert old source/group selections to current project identities once."""
+    version = data.get("schema_version")
+    if version == 2 and not any(
+        item.get("members") for item in data.get("projects", [])
+    ):
+        return data, False
+    if version not in {1, 2}:
+        raise ValueError("unsupported watcher configuration version")
 
-    projects = {
-        AllowedProject(
-            identity=str(item["identity"]),
-            label=str(item.get("label", "")),
-            members=tuple(sorted(
-                (
-                    ProjectMember(
-                        source=str(member.get("source", "")),
-                        group=str(member.get("group", "")),
-                    )
-                    for member in item.get("members", [])
-                    if member.get("source") and member.get("group")
-                ),
-                key=lambda member: (member.source, member.group),
-            )),
-        )
-        for item in data.get("projects", [])
-        if item.get("identity")
-    }
-    return sorted(projects, key=lambda item: (item.identity, item.label))
-
-
-def _projects_for_save(config: WatcherConfig) -> list[AllowedProject]:
-    """Resolve legacy members once before writing the minimal current format."""
-    legacy = [project for project in config.projects if project.members]
-    if not legacy:
-        return config.projects
-    scan = scan_transcripts()
-    unresolved = [
-        saved for saved in legacy
-        if not any(project_is_selected(project, saved) for project in scan.projects)
+    members = [
+        (str(item.get("source", "")), str(item.get("group", "")))
+        for item in data.get("groups", [])
+    ] if version == 1 else [
+        (str(member.get("source", "")), str(member.get("group", "")))
+        for project in data.get("projects", [])
+        for member in project.get("members", [])
     ]
-    if unresolved:
+    wanted = {(source, group) for source, group in members if source and group}
+    scan = scan_transcripts()
+    matched: set[tuple[str, str]] = set()
+    migrated: dict[str, AllowedProject] = {}
+    for project in scan.projects:
+        if project.directory is None:
+            continue
+        old_group, _label = project_identity(project.directory)
+        project_members = {
+            (transcript.source, old_group) for transcript in project.transcripts
+        }
+        if project_members & wanted:
+            matched.update(project_members & wanted)
+            migrated[project.identity] = AllowedProject(project.identity, project.label)
+    if matched != wanted:
         raise ValueError(
-            "an old watcher selection no longer matches a local project; "
+            "an old watcher selection cannot be mapped to a current project; "
             "open the UI and select its project again"
         )
-    selected = selected_project_identities(scan, config)
-    current = {
-        AllowedProject(project.identity, project.label)
-        for project in scan.projects
-        if project.identity in selected
-    }
-    current.update(project for project in config.projects if not project.members)
-    return sorted(current, key=lambda project: (project.identity, project.label))
+    if version == 2:
+        for item in data.get("projects", []):
+            if item.get("identity") and not item.get("members"):
+                identity = str(item["identity"])
+                migrated[identity] = AllowedProject(
+                    identity, str(item.get("label", ""))
+                )
+    result = dict(data)
+    result["schema_version"] = 2
+    result.pop("groups", None)
+    result["projects"] = [
+        {"identity": project.identity, "label": project.label}
+        for project in sorted(migrated.values(), key=lambda item: item.identity)
+    ]
+    return result, True
 
 
 def _ensure_private_dir(path: Path) -> None:
@@ -193,7 +186,6 @@ def _atomic_write(path: Path, data: bytes, mode: int = 0o600) -> None:
 
 def save_config(config: WatcherConfig, path: Path | None = None) -> Path:
     target = path or watcher_config_path()
-    projects = _projects_for_save(config)
     data = {
         "schema_version": config.schema_version,
         "auto_uploader_version": config.auto_uploader_version,
@@ -201,7 +193,7 @@ def save_config(config: WatcherConfig, path: Path | None = None) -> Path:
         "aws_profile": config.aws_profile,
         "projects": [
             {"identity": project.identity, "label": project.label}
-            for project in projects
+            for project in config.projects
         ],
         "source_env": config.source_env,
         "package_spec": config.package_spec,
@@ -214,7 +206,11 @@ def save_config(config: WatcherConfig, path: Path | None = None) -> Path:
 
 def load_config(path: Path | None = None) -> WatcherConfig:
     target = path or watcher_config_path()
-    return WatcherConfig.from_dict(json.loads(target.read_text()))
+    data, migrated = _migrate_config(json.loads(target.read_text()))
+    config = WatcherConfig.from_dict(data)
+    if migrated:
+        save_config(config, target)
+    return config
 
 
 def save_state(state: dict, path: Path | None = None) -> None:
@@ -237,27 +233,12 @@ def capture_source_env() -> dict[str, str]:
     return {name: os.environ[name] for name in SOURCE_ENV_VARS if os.environ.get(name)}
 
 
-def project_is_selected(project, saved: AllowedProject) -> bool:
-    """Match a project directly, or through members from an old config."""
-    if saved.identity == project.identity:
-        return True
-    legacy_members = {(member.source, member.group) for member in saved.members}
-    return bool(legacy_members & {
-        (transcript.source, transcript.legacy_watcher_project_id)
-        for transcript in project.transcripts
-        if transcript.legacy_watcher_project_id
-    })
-
-
 def selected_project_identities(
     scan: ScanResult, config: WatcherConfig
 ) -> set[str]:
     """Resolve project consent from one discovery snapshot."""
-    return {
-        project.identity
-        for project in scan.projects
-        if any(project_is_selected(project, saved) for saved in config.projects)
-    }
+    available = {project.identity for project in scan.projects}
+    return {project.identity for project in config.projects} & available
 
 
 def discover_allowed(config: WatcherConfig):

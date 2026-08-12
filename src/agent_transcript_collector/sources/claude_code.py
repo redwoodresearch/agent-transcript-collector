@@ -143,7 +143,7 @@ class ClaudeCodeSource:
                     else None
                 )
                 observed_cwd = cwd or container_cwd or recovered or fallback
-                key, label = project_identity(observed_cwd)
+                _key, label = project_identity(observed_cwd)
                 directory = (
                     canonical_project_directory(observed_cwd)
                     if cwd is not None or container_cwd is not None or recovered is not None
@@ -156,7 +156,6 @@ class ClaudeCodeSource:
                     path=f, size_bytes=f.stat().st_size,
                     first_message=first, message_count=count, modified=mtime(f),
                     is_subagent=parent is not None, parent=parent,
-                    legacy_watcher_project_id=key,
                 ))
         return sessions
 
