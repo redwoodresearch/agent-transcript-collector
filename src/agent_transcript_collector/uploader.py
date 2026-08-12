@@ -342,7 +342,6 @@ def _build_transcript_zip(source, prepared: PreparedTranscript, contributor: str
             "source_hash_version": SOURCE_HASH_VERSION,
             "redaction_version": REDACTION_VERSION,
             "content_sha256": hashlib.sha256(raw.encode()).hexdigest(),
-            "redact_identity": True,
             "uploaded_at": datetime.now(timezone.utc).isoformat(),
         },
         "size_bytes": len(raw.encode("utf-8")),

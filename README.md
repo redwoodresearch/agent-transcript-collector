@@ -294,7 +294,6 @@ redaction result:
     "source_hash_version": 3,
     "redaction_version": 1,
     "content_sha256": "SHA-256 of the redacted transcript",
-    "redact_identity": true,
     "uploaded_at": "2026-01-01T00:00:00+00:00"
   },
   "size_bytes": 12345,
