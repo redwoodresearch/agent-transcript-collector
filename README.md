@@ -177,11 +177,12 @@ turn a cheap discovery scan into a full read of every transcript.
 
 ### Archive preparation
 
-[`prepare_archive.py`](src/agent_transcript_collector/prepare_archive.py) owns
-the complete local transcript-to-ZIP path: stable input reads, the source hash,
-filesystem snapshots, redaction, sidecar collection, manifest construction, and
-ZIP writing. It also owns the final stability checks that prevent a transcript
-from changing between Refresh and archive creation.
+[`transcript_snapshot.py`](src/agent_transcript_collector/transcript_snapshot.py)
+owns stable unredacted input reads, source hashing, and lightweight filesystem
+snapshots. [`prepare_archive.py`](src/agent_transcript_collector/prepare_archive.py)
+uses that snapshot to redact content, collect sidecars, construct the manifest,
+and write the ZIP. It also performs the final stability check that prevents a
+transcript from changing between Refresh and archive creation.
 
 [`upload_status.py`](src/agent_transcript_collector/upload_status.py) checks S3
 object existence before local content is read. Missing objects are immediately

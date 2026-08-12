@@ -13,15 +13,15 @@ from pathlib import Path
 from typing import Literal, TypedDict, cast
 
 from .paths import pipeline_cache_path, prepared_artifacts_dir
-from .prepare_archive import (
-    SOURCE_HASH_VERSION,
-    TRANSCRIPT_FORMAT_VERSION,
-    FilesystemSnapshotEntry,
-    filesystem_snapshot_is_current,
-)
+from .prepare_archive import TRANSCRIPT_FORMAT_VERSION
 from .redactor import REDACTION_VERSION
 from .sources.base import Session
 from .transcript import TranscriptRef, TranscriptStatus, UploadState
+from .transcript_snapshot import (
+    SOURCE_HASH_VERSION,
+    FilesystemSnapshotEntry,
+    filesystem_snapshot_is_current,
+)
 
 
 class CacheRecord(TypedDict, total=False):

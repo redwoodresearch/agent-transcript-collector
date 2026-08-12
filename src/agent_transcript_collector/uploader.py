@@ -11,10 +11,10 @@ from typing import IO, Any, Protocol, TypeAlias
 
 from .paths import upload_lock_path
 from .prepare_archive import (
-    SOURCE_HASH_VERSION,
     TRANSCRIPT_FORMAT_VERSION,
     ArchiveArtifact,
 )
+from .transcript_snapshot import SOURCE_HASH_VERSION
 
 UploadResult: TypeAlias = dict[str, Any]
 UploadError: TypeAlias = dict[str, str]

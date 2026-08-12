@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
-from .prepare_archive import TranscriptSnapshot
 from .sources.base import Session, Source
+from .transcript_snapshot import TranscriptSnapshot
 
 TranscriptIdentity: TypeAlias = tuple[str, str, str, str]
 UploadState: TypeAlias = Literal[

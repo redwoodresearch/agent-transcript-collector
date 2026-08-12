@@ -10,15 +10,15 @@ from typing import Any, Protocol, TypeAlias
 
 from botocore.exceptions import ClientError
 
-from .prepare_archive import (
-    SOURCE_HASH_VERSION,
-    TRANSCRIPT_FORMAT_VERSION,
-    TranscriptSnapshot,
-    snapshot_transcript,
-)
+from .prepare_archive import TRANSCRIPT_FORMAT_VERSION
 from .redactor import REDACTION_VERSION
 from .s3client import S3_BUCKET
 from .transcript import TranscriptRef, TranscriptStatus
+from .transcript_snapshot import (
+    SOURCE_HASH_VERSION,
+    TranscriptSnapshot,
+    snapshot_transcript,
+)
 
 StatusCallback: TypeAlias = Callable[[int, int], None]
 
