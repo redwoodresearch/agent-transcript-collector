@@ -166,7 +166,6 @@ helpers. A record is approximately:
 
 ```json
 {
-  "schema_version": 1,
   "records": {
     "<contributor and local session identity>": {
       "source": "codex",
@@ -197,8 +196,9 @@ reuse the cached source hash. Without it, every refresh would have to reread and
 hash every transcript and sidecar to determine whether the cached hash is still
 valid. Uploads still reread and revalidate selected files before redaction.
 
-The cache is not authoritative and has no migrations. If it is absent, corrupt,
-or has an unknown `schema_version`, the collector discards it and rebuilds it.
+The cache is not authoritative and has no migrations or schema version. If it
+is absent or malformed, the collector starts with an empty cache. Records
+missing required current fields are rehashed and replaced when encountered.
 Deleting the file is always safe. Because it contains local paths and hashes of
 original content, it is written with user-only permissions.
 

@@ -14,8 +14,6 @@ from typing import TypedDict, cast
 
 from .paths import pipeline_cache_path, prepared_artifacts_dir
 
-CACHE_SCHEMA_VERSION = 1
-
 
 class FilesystemSnapshotEntry(TypedDict, total=False):
     path: str
@@ -43,12 +41,11 @@ class CacheRecord(TypedDict, total=False):
 
 
 class CacheFile(TypedDict):
-    schema_version: int
     records: dict[str, CacheRecord]
 
 
 def empty_cache() -> CacheFile:
-    return {"schema_version": CACHE_SCHEMA_VERSION, "records": {}}
+    return {"records": {}}
 
 
 def cache_record_key(contributor: str, source_id: str, session) -> str:
@@ -68,10 +65,8 @@ def get_cache(path: Path | None = None) -> CacheFile:
         value = None
     if not isinstance(value, dict):
         return empty_cache()
-    if value.get("schema_version") != CACHE_SCHEMA_VERSION:
-        if path is None:
-            _cleanup_legacy_archives()
-        return empty_cache()
+    if path is None and "cache_version" in value:
+        _cleanup_legacy_archives()
     records = value.get("records")
     if not isinstance(records, dict):
         return empty_cache()
@@ -79,7 +74,6 @@ def get_cache(path: Path | None = None) -> CacheFile:
                for key, record in records.items()):
         return empty_cache()
     return {
-        "schema_version": CACHE_SCHEMA_VERSION,
         "records": cast(dict[str, CacheRecord], records),
     }
 
