@@ -189,9 +189,9 @@ object existence before local content is read. Missing objects are immediately
 classified as `not_uploaded`. Only transcripts with an existing object are read
 and hashed to distinguish `changed` from `current`. It returns typed
 `TranscriptStatus` values built around the shared `TranscriptRef` defined in
-`transcript.py`. `pipeline.py` only sequences status checks, cache updates, and
-archive preparation. `uploader.py` is limited to the upload lock and S3
-transfer; S3 key construction lives in `storage.py`.
+`transcript.py`. `upload_workflow.py` selects pending transcripts, prepares
+their archives, and records successful uploads. `uploader.py` is limited to the
+upload lock and S3 transfer; S3 key construction lives in `storage.py`.
 
 ### Local cache
 

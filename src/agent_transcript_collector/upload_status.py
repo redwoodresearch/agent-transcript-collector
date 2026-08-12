@@ -6,14 +6,21 @@ import os
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
-from typing import Any, Protocol, TypeAlias
+from pathlib import Path
+from typing import Any, Protocol, TypeAlias, cast
 
 from botocore.exceptions import ClientError
 
+from .cache import get_cache, reusable_status, save_cache, store_status
 from .prepare_archive import TRANSCRIPT_FORMAT_VERSION
 from .redactor import REDACTION_VERSION
-from .s3client import S3_BUCKET
-from .transcript import TranscriptRef, TranscriptStatus
+from .s3client import S3_BUCKET, make_s3_client
+from .transcript import (
+    TranscriptRef,
+    TranscriptSelections,
+    TranscriptStatus,
+    transcript_refs,
+)
 from .transcript_snapshot import (
     SOURCE_HASH_VERSION,
     TranscriptSnapshot,
@@ -21,6 +28,7 @@ from .transcript_snapshot import (
 )
 
 StatusCallback: TypeAlias = Callable[[int, int], None]
+ProgressCallback: TypeAlias = Callable[[str, int, int], None]
 
 
 class S3HeadClient(Protocol):
@@ -45,6 +53,65 @@ def metadata_concurrency() -> int:
 
 def hashing_concurrency() -> int:
     return max(1, int(os.environ.get("CTC_REDACTION_CONCURRENCY", "16")))
+
+
+def refresh_upload_status(
+    selections: TranscriptSelections,
+    contributor: str,
+    *,
+    s3: S3HeadClient | None = None,
+    on_progress: ProgressCallback | None = None,
+    cache_path: Path | None = None,
+) -> dict[str, Any]:
+    """Reuse valid cache entries and classify everything else against S3."""
+    refs = transcript_refs(selections, contributor)
+    cache = get_cache(cache_path)
+    cached: list[TranscriptStatus] = []
+    unresolved: list[TranscriptRef] = []
+    for ref in refs:
+        status = reusable_status(cache, contributor, ref)
+        if status is None:
+            unresolved.append(ref)
+        else:
+            cached.append(status)
+
+    if on_progress:
+        on_progress("checking", 0, len(unresolved))
+
+    def progress(stage: str) -> StatusCallback:
+        return lambda done, total: on_progress(stage, done, total) if on_progress else None
+
+    if unresolved:
+        client = cast(S3HeadClient, s3 or make_s3_client())
+        checked = classify_uploads(
+            client,
+            unresolved,
+            on_check=progress("checking"),
+            on_hash=progress("hashing"),
+        )
+    else:
+        checked = []
+
+    for status in checked:
+        store_status(cache, contributor, status)
+    save_cache(cache, cache_path)
+
+    statuses = {status.transcript.identity: status for status in cached + checked}
+    ordered = [statuses[ref.identity] for ref in refs if ref.identity in statuses]
+    errors = [_status_error(status) for status in ordered if status.error]
+    usable = any(
+        status.state in {"not_uploaded", "changed", "current"}
+        for status in ordered
+    )
+    return {
+        "status": "partial" if errors and usable else "failed" if errors else "ready",
+        "items": [status.as_item() for status in ordered],
+        "errors": errors,
+        "total": len(refs),
+        "changed": sum(status.snapshot is not None for status in checked),
+        "checked": len(unresolved),
+        "cached": len(cached),
+    }
 
 
 def classify_uploads(
@@ -122,6 +189,16 @@ def _classify_existing(
 
 def _error_status(ref: TranscriptRef, exc: Exception) -> TranscriptStatus:
     return TranscriptStatus(ref, "error", error=f"{type(exc).__name__}: {exc}")
+
+
+def _status_error(status: TranscriptStatus) -> dict[str, str]:
+    return {
+        "source": status.transcript.source.id,
+        "project": status.transcript.session.project_id,
+        "parent": status.transcript.session.parent or "",
+        "session": status.transcript.session.id,
+        "error": status.error or "Upload status unavailable",
+    }
 
 
 def upload_is_current(

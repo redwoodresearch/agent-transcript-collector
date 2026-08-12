@@ -24,20 +24,14 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Environment, PackageLoader
 
-from .pipeline import (
-    artifacts_for,
-    mark_uploaded,
-    prepare_upload_artifacts,
-)
-from .pipeline import (
-    refresh as refresh_pipeline,
-)
 from .redactor import redact_identity, redact_jsonl_content
 from .s3client import make_s3_client as _make_s3_client
 from .s3client import selected_profile
 from .scan import ScanResult, load_transcript_inputs, scan_transcripts
 from .sources import SOURCES, get_source
 from .sources.base import human_size
+from .upload_status import refresh_upload_status
+from .upload_workflow import prepare_uploads, record_uploaded, upload_candidates
 from .uploader import (
     UploadBusy,
     UploadLock,
@@ -276,7 +270,7 @@ def _pipeline_worker(serialized_selections, contributor, events):
                     "done": done, "total": total,
                 })
 
-            result = refresh_pipeline(
+            result = refresh_upload_status(
                 selections, contributor, on_progress=progress
             )
     except Exception as exc:
@@ -446,7 +440,7 @@ def _upload_worker(serialized_selections, candidates, contributor, events):
 
             with tempfile.TemporaryDirectory(prefix="ctc-upload-") as directory:
                 progress("redacting", 0, len(candidates))
-                artifacts, preparation_errors = prepare_upload_artifacts(
+                artifacts, preparation_errors = prepare_uploads(
                     selections,
                     candidates,
                     contributor,
@@ -479,7 +473,7 @@ def _upload_worker(serialized_selections, candidates, contributor, events):
                     item.get("parent") or "", item.get("session")) in successful
             ]
             if uploaded_candidates:
-                mark_uploaded(uploaded_candidates, contributor)
+                record_uploaded(uploaded_candidates, contributor)
             status = "completed" if not errors else "partial" if uploads else "failed"
     except UploadBusy as e:
         errors.append({"error": str(e)})
@@ -577,7 +571,7 @@ async def upload(request: Request):
             {"error": "Selected transcripts are no longer available"},
             status_code=400,
         )
-    candidates, stale = artifacts_for(selections, contributor)
+    candidates, stale = upload_candidates(selections, contributor)
     if stale:
         return JSONResponse(
             {"error": "Upload status is stale. Refresh before uploading."},

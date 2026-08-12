@@ -19,17 +19,11 @@ from .paths import (
     watcher_config_path,
     watcher_state_path,
 )
-from .pipeline import (
-    artifacts_for,
-    mark_uploaded,
-    prepare_upload_artifacts,
-)
-from .pipeline import (
-    refresh as refresh_pipeline,
-)
 from .s3client import make_s3_client
 from .scan import ScanResult, scan_transcripts
 from .sources.base import project_identity
+from .upload_status import refresh_upload_status
+from .upload_workflow import prepare_uploads, record_uploaded, upload_candidates
 from .uploader import (
     UploadBusy,
     UploadLock,
@@ -279,19 +273,19 @@ def run_once(
         with UploadLock(lock_path):
             client = s3 or make_s3_client()
             selections = discover_allowed(config)
-            pipeline = refresh_pipeline(
+            pipeline = refresh_upload_status(
                 selections, config.contributor, s3=client
             )
             result["errors"].extend(
                 item.get("error", str(item)) for item in pipeline["errors"]
             )
-            candidates, stale = artifacts_for(selections, config.contributor)
+            candidates, stale = upload_candidates(selections, config.contributor)
             if stale:
                 result["errors"].append(
                     f"{len(stale)} transcript(s) require another refresh"
                 )
             with tempfile.TemporaryDirectory(prefix="ctc-upload-") as directory:
-                artifacts, preparation_errors = prepare_upload_artifacts(
+                artifacts, preparation_errors = prepare_uploads(
                     selections, candidates, config.contributor, directory
                 )
                 result["errors"].extend(
@@ -309,7 +303,7 @@ def run_once(
                     item.get("parent") or "", item.get("session")) in successful
             ]
             if uploaded_candidates:
-                mark_uploaded(uploaded_candidates, config.contributor)
+                record_uploaded(uploaded_candidates, config.contributor)
             result["sessions_uploaded"] = sum(
                 item["transcript_count"] for item in uploads
             )
