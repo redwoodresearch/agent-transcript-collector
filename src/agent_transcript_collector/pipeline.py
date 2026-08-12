@@ -21,17 +21,20 @@ from .cache import (
     save_cache,
     set_cache_for_transcript,
 )
-from .s3client import make_s3_client
-from .uploader import (
+from .prepare_archive import (
     REDACTION_VERSION,
     SOURCE_HASH_VERSION,
     TRANSCRIPT_FORMAT_VERSION,
     PreparedTranscript,
-    build_upload_artifact,
-    classify_prepared,
     filesystem_snapshot,
     filesystem_snapshot_is_current,
+    prepare_archive,
     prepare_transcript,
+)
+from .s3client import make_s3_client
+from .uploader import (
+    classify_prepared,
+    transcript_key,
 )
 
 
@@ -65,7 +68,8 @@ def _record_is_current(record: CacheRecord, source_id: str, session) -> bool:
 
 def _prepare_changed(source, session, contributor: str) -> tuple:
     """Hash one changed transcript without touching shared state."""
-    prepared = prepare_transcript(source, session, contributor)
+    key = transcript_key(contributor, source.id, session)
+    prepared = prepare_transcript(source, session, key)
     record = {
         "source": source.id,
         "contributor": contributor,
@@ -77,7 +81,7 @@ def _prepare_changed(source, session, contributor: str) -> tuple:
         "format_version": TRANSCRIPT_FORMAT_VERSION,
         "filesystem_snapshot": prepared.filesystem_snapshot,
         "source_hash": prepared.source_hash,
-        "key": prepared.key,
+        "key": key,
         "state": "checking",
     }
     # Remote comparison only needs the input hash and identity.
@@ -303,13 +307,14 @@ def prepare_upload_artifacts(
     ]
 
     def prepare_one(source, session, candidate):
-        prepared = prepare_transcript(source, session, contributor)
+        key = transcript_key(contributor, source.id, session)
+        prepared = prepare_transcript(source, session, key)
         if (
             prepared.source_hash != candidate.get("source_hash")
             or prepared.filesystem_snapshot != candidate.get("filesystem_snapshot")
         ):
             raise RuntimeError("Transcript changed after Refresh; refresh and try again")
-        artifact = build_upload_artifact(
+        artifact = prepare_archive(
             source, prepared, contributor, directory
         )
         if filesystem_snapshot(prepared) != candidate.get("filesystem_snapshot"):

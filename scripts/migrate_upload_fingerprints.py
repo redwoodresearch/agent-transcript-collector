@@ -17,21 +17,24 @@ from pathlib import Path
 from botocore.exceptions import ClientError
 
 from agent_transcript_collector.paths import pipeline_cache_path, watcher_config_path
+from agent_transcript_collector.prepare_archive import (
+    REDACTION_VERSION,
+    SOURCE_HASH_VERSION,
+    TRANSCRIPT_FORMAT_VERSION,
+    prepare_transcript,
+)
 from agent_transcript_collector.redactor import canonicalize_secrets, redact_identity
 from agent_transcript_collector.s3client import S3_BUCKET, make_s3_client
 from agent_transcript_collector.uploader import (
     FORMAT_VERSION_METADATA,
     LEGACY_SOURCE_HASH_METADATA,
     LEGACY_SOURCE_HASH_VERSION_METADATA,
-    REDACTION_VERSION,
     REDACTION_VERSION_METADATA,
     SOURCE_HASH_METADATA,
-    SOURCE_HASH_VERSION,
     SOURCE_HASH_VERSION_METADATA,
-    TRANSCRIPT_FORMAT_VERSION,
     UploadLock,
     metadata_concurrency,
-    prepare_transcript,
+    transcript_key,
 )
 from agent_transcript_collector.watcher import discover_allowed, load_config
 
@@ -169,7 +172,8 @@ def migrate_uploads(
     }
 
     def migrate_one(source, session):
-        prepared = prepare_transcript(source, session, contributor)
+        key = transcript_key(contributor, source.id, session)
+        prepared = prepare_transcript(source, session, key)
         head = _head(s3, prepared.key)
         if head is None:
             return "missing"

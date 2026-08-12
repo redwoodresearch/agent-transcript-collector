@@ -175,6 +175,14 @@ is previewed, hashed, or uploaded. They are not read eagerly during the initial
 scan, because their paths are embedded in transcript contents and doing so would
 turn a cheap discovery scan into a full read of every transcript.
 
+### Archive preparation
+
+[`prepare_archive.py`](src/agent_transcript_collector/prepare_archive.py) owns
+the complete local transcript-to-ZIP path: stable input reads, the source hash,
+filesystem snapshots, redaction, sidecar collection, manifest construction, and
+ZIP writing. The pipeline calls it only for hashing and selected archive work;
+`uploader.py` handles S3 keys, status checks, and network transfer.
+
 ### Local cache
 
 The collector keeps a disposable `pipeline-cache.json` in its private state

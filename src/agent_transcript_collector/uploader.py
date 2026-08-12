@@ -3,36 +3,23 @@
 from __future__ import annotations
 
 import hashlib
-import io
-import json
 import os
 import re
-import tempfile
-import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 
 from botocore.exceptions import ClientError
 
 from .paths import upload_lock_path
-from .redactor import (
-    redact_identity,
-    redact_jsonl_content,
-    redact_path_token,
+from .prepare_archive import (
+    REDACTION_VERSION,
+    SOURCE_HASH_VERSION,
+    TRANSCRIPT_FORMAT_VERSION,
+    PreparedTranscript,
 )
 from .s3client import S3_BUCKET
-from .scan import load_transcript_inputs
-from .sidecars import EMPTY as NO_SIDECARS
-from .sidecars import SidecarSet
 from .storage import STORAGE_PREFIX
 
-TRANSCRIPT_FORMAT_VERSION = 4
-SOURCE_HASH_VERSION = 3
-# Increment this whenever redaction behavior or policy changes so unchanged
-# source content is redacted and uploaded again under the new policy.
-REDACTION_VERSION = 1
 SOURCE_HASH_METADATA = "source-hash"
 SOURCE_HASH_VERSION_METADATA = "source-hash-version"
 REDACTION_VERSION_METADATA = "redaction-version"
@@ -99,35 +86,6 @@ class UploadLock:
                 fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
             self._file.close()
             self._file = None
-
-
-@dataclass(frozen=True)
-class PreparedTranscript:
-    session: object
-    raw_bytes: bytes
-    source_hash: str
-    key: str
-    sidecars: SidecarSet = NO_SIDECARS
-    filesystem_snapshot: list[dict] | None = None
-
-
-def source_hash(raw_bytes: bytes, sidecars: SidecarSet) -> str:
-    """Identify the original transcript and all available sidecar content."""
-    digest = hashlib.sha256(f"source-v{SOURCE_HASH_VERSION}\0".encode())
-    digest.update(raw_bytes)
-    if not sidecars.files:
-        return digest.hexdigest()
-    transcript_digest = digest.hexdigest()
-    digest = hashlib.sha256(f"sidecars-v1\0{transcript_digest}".encode())
-    for sidecar in sidecars.files:
-        try:
-            raw_bytes = sidecar.path.read_bytes()
-        except OSError:
-            raw_bytes = b""
-        digest.update(sidecar.arcname.encode() + b"\0")
-        digest.update(hashlib.sha256(raw_bytes).digest())
-        digest.update(b"\0")
-    return digest.hexdigest()
 
 
 def _safe_segment(value: str) -> str:
@@ -198,38 +156,6 @@ def _already_uploaded(prepared: PreparedTranscript, remote: dict) -> bool:
     ) == prepared.source_hash
 
 
-def prepare_transcript(source, session, contributor: str) -> PreparedTranscript:
-    """Read and hash one stable transcript/sidecar snapshot."""
-    path = Path(session.path)
-    key = transcript_key(contributor, source.id, session)
-    for _attempt in range(2):
-        transcript_before = _path_signature(path)
-        inputs = load_transcript_inputs(source, session)
-        raw_bytes = inputs.raw_bytes
-        if transcript_before != _path_signature(path):
-            continue
-        sidecars = inputs.sidecars
-        probe = PreparedTranscript(
-            session=session,
-            raw_bytes=raw_bytes,
-            source_hash="",
-            key=key,
-            sidecars=sidecars,
-        )
-        snapshot = filesystem_snapshot(probe)
-        prepared = PreparedTranscript(
-            session=session,
-            raw_bytes=raw_bytes,
-            source_hash=source_hash(raw_bytes, sidecars),
-            key=key,
-            sidecars=sidecars,
-            filesystem_snapshot=snapshot,
-        )
-        if snapshot == filesystem_snapshot(prepared):
-            return prepared
-    raise RuntimeError("Transcript changed while it was being hashed")
-
-
 def classify_prepared(
     s3,
     prepared_items: list[PreparedTranscript],
@@ -277,160 +203,6 @@ def classify_prepared(
             if on_status:
                 on_status(completed, len(prepared_items))
     return not_uploaded, changed, current, errors
-
-
-def _redact(text: str) -> tuple[str, int]:
-    text, redaction_count = redact_jsonl_content(text)
-    text, count = redact_identity(text)
-    return text, redaction_count + count
-
-
-def _redacted_sidecars(
-    prepared: PreparedTranscript,
-) -> tuple[list[tuple[str, str]], dict, int]:
-    """Return (arcname, text) pairs to archive plus the manifest section."""
-    contents: list[tuple[str, str]] = []
-    entries = []
-    missing = list(prepared.sidecars.missing)
-    redaction_count = 0
-    for sidecar in prepared.sidecars.files:
-        try:
-            text = sidecar.path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            missing.append(sidecar.reference)
-            continue
-        text, count = _redact(text)
-        redaction_count += count
-        contents.append((sidecar.arcname, text))
-        entries.append({
-            "path": sidecar.arcname,
-            "kind": sidecar.kind,
-            # The transcript names side files by absolute path, so the redacted
-            # form of that path is what joins a pointer to its archived file.
-            "referenced_as": redact_identity(sidecar.reference)[0],
-            "size_bytes": len(text.encode("utf-8")),
-            "sha256": hashlib.sha256(text.encode()).hexdigest(),
-        })
-    section = {
-        "files": entries,
-        "missing": [redact_identity(path)[0] for path in sorted(missing)],
-        "skipped_too_large": [
-            redact_identity(path)[0] for path in prepared.sidecars.skipped
-        ],
-    }
-    return contents, section, redaction_count
-
-
-def _build_transcript_zip(source, prepared: PreparedTranscript, contributor: str):
-    session = prepared.session
-    raw, redaction_count = _redact(prepared.raw_bytes.decode("utf-8", errors="replace"))
-    project_id, project_label = session.project_id, session.project_label
-    sidecar_contents, sidecar_section, count = _redacted_sidecars(prepared)
-    redaction_count += count
-    project_id, count = redact_path_token(project_id)
-    redaction_count += count
-    project_label, count = redact_identity(project_label)
-    redaction_count += count
-
-    suffix = Path(session.path).suffix.lower()
-    if suffix not in {".jsonl", ".txt"}:
-        suffix = ".txt"
-    manifest = {
-        "transcript_format_version": TRANSCRIPT_FORMAT_VERSION,
-        "source": source.id,
-        "source_format": source.source_format,
-        "contributor": contributor,
-        "project": {"key": project_id, "name": project_label},
-        "session": {
-            "id": session.id,
-            "is_subagent": session.is_subagent,
-            "parent": session.parent,
-        },
-        "version": {
-            "source_hash": prepared.source_hash,
-            "source_hash_version": SOURCE_HASH_VERSION,
-            "redaction_version": REDACTION_VERSION,
-            "content_sha256": hashlib.sha256(raw.encode()).hexdigest(),
-            "uploaded_at": datetime.now(timezone.utc).isoformat(),
-        },
-        "size_bytes": len(raw.encode("utf-8")),
-        "redactions": redaction_count,
-        "sidecars": sidecar_section,
-    }
-    buffer = io.BytesIO()
-    # These archives are transient upload payloads. Fast compression keeps one
-    # large transcript from making readiness appear stalled for minutes.
-    with zipfile.ZipFile(
-        buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=1
-    ) as archive:
-        archive.writestr(f"transcript{suffix}", raw)
-        archive.writestr("manifest.json", json.dumps(manifest, indent=2))
-        for arcname, text in sidecar_contents:
-            archive.writestr(arcname, text)
-    return buffer.getvalue(), manifest
-
-
-def _path_signature(path: str | Path) -> dict:
-    value = {"path": str(path)}
-    try:
-        stat = Path(path).stat()
-    except OSError:
-        value["exists"] = False
-    else:
-        value.update(exists=True, size=stat.st_size, mtime_ns=stat.st_mtime_ns)
-    return value
-
-
-def filesystem_snapshot(prepared: PreparedTranscript) -> list[dict]:
-    """Capture every local path which can affect a prepared archive."""
-    paths: list[str | Path] = [prepared.session.path]
-    paths.extend(sidecar.path for sidecar in prepared.sidecars.files)
-    paths.extend(prepared.sidecars.missing)
-    paths.extend(prepared.sidecars.skipped)
-    paths.extend(prepared.sidecars.directories)
-    return [_path_signature(path) for path in dict.fromkeys(paths)]
-
-
-def filesystem_snapshot_is_current(snapshot: object) -> bool:
-    return isinstance(snapshot, list) and all(
-        isinstance(item, dict)
-        and item == _path_signature(str(item.get("path", "")))
-        for item in snapshot
-    )
-
-
-def build_upload_artifact(
-    source, prepared: PreparedTranscript, contributor: str, directory: str | Path
-) -> dict:
-    """Build a temporary redacted archive for a confirmed pending item."""
-    archive, manifest = _build_transcript_zip(source, prepared, contributor)
-    target_dir = Path(directory)
-    target_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd, temporary = tempfile.mkstemp(prefix="transcript-", suffix=".zip", dir=target_dir)
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(archive)
-        os.chmod(temporary, 0o600)
-    except Exception:
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
-        raise
-    session = prepared.session
-    return {
-        "source": source.id,
-        "project": session.project_id,
-        "session": session.id,
-        "parent": session.parent,
-        "path": temporary,
-        "key": prepared.key,
-        "source_hash": prepared.source_hash,
-        "sidecar_count": len(manifest["sidecars"]["files"]),
-        "redactions": manifest["redactions"],
-        "zip_size_bytes": len(archive),
-        "filesystem_snapshot": filesystem_snapshot(prepared),
-    }
 
 
 def upload_artifacts(s3, artifacts: list[dict], on_progress=None):
