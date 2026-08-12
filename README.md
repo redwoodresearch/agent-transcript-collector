@@ -235,16 +235,22 @@ contributor, session, content-fingerprint, and redaction metadata. Resuming a
 session overwrites the same object only when the privacy-safe fingerprint
 changes.
 
-Side files sit beside the transcript in the same ZIP, under the folder they
-came from:
+The ZIP has this folder structure. `transcript.<ext>` and `manifest.json` are
+always present; the side-file folders are included only when the source
+transcript refers to files of that kind:
 
 ```text
-transcript.jsonl
-manifest.json
-tool-results/<name>.txt
-task-outputs/<name>.output
-agent-tools/<name>.txt
-terminals/<name>.txt
+transcript.zip
+├── transcript.<ext>             # .jsonl or .txt, matching the source format
+├── manifest.json
+├── tool-results/                # Claude Code oversized tool results
+│   └── <name>.txt
+├── task-outputs/                # Claude Code background-task output
+│   └── <name>.output
+├── agent-tools/                 # Cursor oversized tool results
+│   └── <name>.txt
+└── terminals/                   # Cursor terminal output
+    └── <name>.txt
 ```
 
 `manifest.json` records each one under `sidecars`, with the redacted path the
