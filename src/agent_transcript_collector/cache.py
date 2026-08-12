@@ -30,10 +30,8 @@ class CacheRecord(TypedDict, total=False):
     session: str
     filesystem_snapshot: list[FilesystemSnapshotEntry]
     source_hash_version: int
-    transcript_hash: str
     source_hash: str
     key: str
-    sidecar_count: int
     redaction_version: int
     format_version: int
     state: str

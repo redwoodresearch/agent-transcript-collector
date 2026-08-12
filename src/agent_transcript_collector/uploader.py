@@ -34,8 +34,6 @@ SOURCE_HASH_VERSION = 3
 # source content is redacted and uploaded again under the new policy.
 REDACTION_VERSION = 1
 SOURCE_HASH_METADATA = "source-hash"
-TRANSCRIPT_HASH_METADATA = "transcript-hash"
-SIDECAR_COUNT_METADATA = "sidecar-count"
 SOURCE_HASH_VERSION_METADATA = "source-hash-version"
 REDACTION_VERSION_METADATA = "redaction-version"
 FORMAT_VERSION_METADATA = "transcript-format-version"
@@ -43,7 +41,6 @@ FORMAT_VERSION_METADATA = "transcript-format-version"
 # Read-only compatibility with uploads written before the terminology was
 # clarified. New uploads use the *_HASH_* names above.
 LEGACY_SOURCE_HASH_METADATA = "content-fingerprint"
-LEGACY_TRANSCRIPT_HASH_METADATA = "body-fingerprint"
 LEGACY_SOURCE_HASH_VERSION_METADATA = "fingerprint-version"
 
 
@@ -108,30 +105,20 @@ class UploadLock:
 class PreparedTranscript:
     session: object
     raw_bytes: bytes
-    transcript_hash: str
     source_hash: str
     key: str
     sidecars: SidecarSet = NO_SIDECARS
     filesystem_snapshot: list[dict] | None = None
-    sidecar_count: int | None = None
 
 
-def transcript_hash(raw_bytes: bytes) -> str:
-    """Identify the exact original content without running redaction."""
+def source_hash(raw_bytes: bytes, sidecars: SidecarSet) -> str:
+    """Identify the original transcript and all available sidecar content."""
     digest = hashlib.sha256(f"source-v{SOURCE_HASH_VERSION}\0".encode())
     digest.update(raw_bytes)
-    return digest.hexdigest()
-
-
-def source_hash(transcript_hash_value: str, sidecars: SidecarSet) -> str:
-    """Extend a transcript hash to cover its side files.
-
-    A session without side files keeps the transcript hash, so
-    collecting side files does not force every earlier upload to be rewritten.
-    """
     if not sidecars.files:
-        return transcript_hash_value
-    digest = hashlib.sha256(f"sidecars-v1\0{transcript_hash_value}".encode())
+        return digest.hexdigest()
+    transcript_digest = digest.hexdigest()
+    digest = hashlib.sha256(f"sidecars-v1\0{transcript_digest}".encode())
     for sidecar in sidecars.files:
         try:
             raw_bytes = sidecar.path.read_bytes()
@@ -204,29 +191,9 @@ def _already_uploaded(prepared: PreparedTranscript, remote: dict) -> bool:
         or remote.get(FORMAT_VERSION_METADATA) != str(TRANSCRIPT_FORMAT_VERSION)
     ):
         return False
-    remote_source_hash = remote.get(
+    return remote.get(
         SOURCE_HASH_METADATA, remote.get(LEGACY_SOURCE_HASH_METADATA)
-    )
-    if remote_source_hash == prepared.source_hash:
-        return True
-    # Harnesses delete their own side files on their own schedule, so a session
-    # can lose them while its transcript stays put. Leave the fuller upload
-    # alone rather than overwriting it with one that has less in it.
-    try:
-        uploaded_count = int(remote.get(SIDECAR_COUNT_METADATA, "0"))
-    except ValueError:
-        return False
-    return (
-        remote.get(
-            TRANSCRIPT_HASH_METADATA,
-            remote.get(LEGACY_TRANSCRIPT_HASH_METADATA),
-        ) == prepared.transcript_hash
-        and (
-            prepared.sidecar_count
-            if prepared.sidecar_count is not None
-            else len(prepared.sidecars.files)
-        ) < uploaded_count
-    )
+    ) == prepared.source_hash
 
 
 def prepare_transcript(source, session, contributor: str) -> PreparedTranscript:
@@ -239,12 +206,10 @@ def prepare_transcript(source, session, contributor: str) -> PreparedTranscript:
         raw_bytes = inputs.raw_bytes
         if transcript_before != _path_signature(path):
             continue
-        transcript_hash_value = transcript_hash(raw_bytes)
         sidecars = inputs.sidecars
         probe = PreparedTranscript(
             session=session,
             raw_bytes=raw_bytes,
-            transcript_hash=transcript_hash_value,
             source_hash="",
             key=key,
             sidecars=sidecars,
@@ -253,12 +218,10 @@ def prepare_transcript(source, session, contributor: str) -> PreparedTranscript:
         prepared = PreparedTranscript(
             session=session,
             raw_bytes=raw_bytes,
-            transcript_hash=transcript_hash_value,
-            source_hash=source_hash(transcript_hash_value, sidecars),
+            source_hash=source_hash(raw_bytes, sidecars),
             key=key,
             sidecars=sidecars,
             filesystem_snapshot=snapshot,
-            sidecar_count=len(sidecars.files),
         )
         if snapshot == filesystem_snapshot(prepared):
             return prepared
@@ -376,7 +339,6 @@ def _build_transcript_zip(source, prepared: PreparedTranscript, contributor: str
         },
         "version": {
             "source_hash": prepared.source_hash,
-            "transcript_hash": prepared.transcript_hash,
             "source_hash_version": SOURCE_HASH_VERSION,
             "redaction_version": REDACTION_VERSION,
             "content_sha256": hashlib.sha256(raw.encode()).hexdigest(),
@@ -456,7 +418,6 @@ def build_upload_artifact(
         "path": temporary,
         "key": prepared.key,
         "source_hash": prepared.source_hash,
-        "transcript_hash": prepared.transcript_hash,
         "sidecar_count": len(manifest["sidecars"]["files"]),
         "redactions": manifest["redactions"],
         "zip_size_bytes": len(archive),
@@ -477,8 +438,6 @@ def upload_artifacts(s3, artifacts: list[dict], on_progress=None):
             ContentType="application/zip",
             Metadata={
                 SOURCE_HASH_METADATA: artifact["source_hash"],
-                TRANSCRIPT_HASH_METADATA: artifact["transcript_hash"],
-                SIDECAR_COUNT_METADATA: str(artifact["sidecar_count"]),
                 SOURCE_HASH_VERSION_METADATA: str(SOURCE_HASH_VERSION),
                 REDACTION_VERSION_METADATA: str(REDACTION_VERSION),
                 FORMAT_VERSION_METADATA: str(TRANSCRIPT_FORMAT_VERSION),

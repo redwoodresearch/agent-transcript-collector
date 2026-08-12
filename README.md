@@ -197,10 +197,8 @@ helpers. A record is approximately:
         {"path": "/local/transcript.jsonl", "exists": true, "size": 1234, "mtime_ns": 123456789}
       ],
       "source_hash_version": 3,
-      "transcript_hash": "hash of the original transcript",
       "source_hash": "hash of the original transcript and sidecars",
       "key": "S3 object key",
-      "sidecar_count": 0,
       "redaction_version": 1,
       "format_version": 4,
       "state": "checking, current, ready, or error"
@@ -293,7 +291,6 @@ redaction result:
   },
   "version": {
     "source_hash": "SHA-256 hash of original transcript and sidecars",
-    "transcript_hash": "SHA-256 hash of original transcript",
     "source_hash_version": 3,
     "redaction_version": 1,
     "content_sha256": "SHA-256 of the redacted transcript",
@@ -318,7 +315,7 @@ redaction result:
 }
 ```
 
-`version` holds the original-content hashes and their algorithm versions,
+`version` holds the original-content hash and its algorithm version,
 the redacted transcript hash, and the upload time. `size_bytes` is the redacted
 transcript size, and `redactions` is the total number of replacements. Each
 sidecar entry records its ZIP path, type, redacted original reference, redacted

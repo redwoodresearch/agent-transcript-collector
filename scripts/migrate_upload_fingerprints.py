@@ -24,15 +24,12 @@ from agent_transcript_collector.uploader import (
     FORMAT_VERSION_METADATA,
     LEGACY_SOURCE_HASH_METADATA,
     LEGACY_SOURCE_HASH_VERSION_METADATA,
-    LEGACY_TRANSCRIPT_HASH_METADATA,
     REDACTION_VERSION,
     REDACTION_VERSION_METADATA,
-    SIDECAR_COUNT_METADATA,
     SOURCE_HASH_METADATA,
     SOURCE_HASH_VERSION,
     SOURCE_HASH_VERSION_METADATA,
     TRANSCRIPT_FORMAT_VERSION,
-    TRANSCRIPT_HASH_METADATA,
     UploadLock,
     metadata_concurrency,
     prepare_transcript,
@@ -40,6 +37,7 @@ from agent_transcript_collector.uploader import (
 from agent_transcript_collector.watcher import discover_allowed
 
 LEGACY_HASH_VERSION = 2
+LEGACY_TRANSCRIPT_HASH_METADATA = "body-fingerprint"
 
 
 def _legacy_privacy_safe_digest(text: str) -> str:
@@ -90,22 +88,9 @@ def _remote_is_current(prepared, metadata: dict) -> bool:
         or metadata.get(FORMAT_VERSION_METADATA) != str(TRANSCRIPT_FORMAT_VERSION)
     ):
         return False
-    remote_source_hash = metadata.get(
+    return metadata.get(
         SOURCE_HASH_METADATA, metadata.get(LEGACY_SOURCE_HASH_METADATA)
-    )
-    if remote_source_hash == prepared.source_hash:
-        return True
-    try:
-        remote_sidecars = int(metadata.get(SIDECAR_COUNT_METADATA, "0"))
-    except ValueError:
-        return False
-    return (
-        metadata.get(
-            TRANSCRIPT_HASH_METADATA,
-            metadata.get(LEGACY_TRANSCRIPT_HASH_METADATA),
-        ) == prepared.transcript_hash
-        and len(prepared.sidecars.files) < remote_sidecars
-    )
+    ) == prepared.source_hash
 
 
 def _replacement_metadata(prepared, metadata: dict) -> dict | None:
@@ -122,27 +107,14 @@ def _replacement_metadata(prepared, metadata: dict) -> dict | None:
     legacy_transcript = _legacy_transcript_hash(prepared.raw_bytes)
     if metadata.get(LEGACY_TRANSCRIPT_HASH_METADATA) != legacy_transcript:
         return None
-    try:
-        remote_sidecars = int(metadata.get(SIDECAR_COUNT_METADATA, "0"))
-    except ValueError:
-        return None
-
     legacy_source = _legacy_source_hash(legacy_transcript, prepared.sidecars)
     if metadata.get(LEGACY_SOURCE_HASH_METADATA) == legacy_source:
         migrated_source_hash = prepared.source_hash
-    elif (
-        metadata.get(LEGACY_SOURCE_HASH_METADATA)
-        and len(prepared.sidecars.files) < remote_sidecars
-    ):
-        migrated_source_hash = (
-            f"legacy-fuller:{metadata[LEGACY_SOURCE_HASH_METADATA]}"
-        )
     else:
         return None
 
     return metadata | {
         SOURCE_HASH_METADATA: migrated_source_hash,
-        TRANSCRIPT_HASH_METADATA: prepared.transcript_hash,
         SOURCE_HASH_VERSION_METADATA: str(SOURCE_HASH_VERSION),
         REDACTION_VERSION_METADATA: str(REDACTION_VERSION),
         FORMAT_VERSION_METADATA: str(TRANSCRIPT_FORMAT_VERSION),

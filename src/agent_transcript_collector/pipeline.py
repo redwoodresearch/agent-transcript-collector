@@ -77,12 +77,10 @@ def _prepare_changed(source, session, contributor: str) -> tuple:
         "format_version": TRANSCRIPT_FORMAT_VERSION,
         "filesystem_snapshot": prepared.filesystem_snapshot,
         "source_hash": prepared.source_hash,
-        "transcript_hash": prepared.transcript_hash,
         "key": prepared.key,
-        "sidecar_count": prepared.sidecar_count,
         "state": "checking",
     }
-    # Remote comparison only needs hashes, sidecar count, and identity.
+    # Remote comparison only needs the input hash and identity.
     # Release transcript bodies as each worker finishes instead of retaining a
     # cold cache's entire corpus until every S3 metadata check completes.
     return replace(prepared, raw_bytes=b""), record
@@ -93,11 +91,9 @@ def _prepared_from_record(record: CacheRecord, session) -> PreparedTranscript | 
         return PreparedTranscript(
             session=session,
             raw_bytes=b"",
-            transcript_hash=str(record["transcript_hash"]),
             source_hash=str(record["source_hash"]),
             key=str(record["key"]),
             filesystem_snapshot=record["filesystem_snapshot"],
-            sidecar_count=int(record.get("sidecar_count", 0)),
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -304,7 +300,6 @@ def prepare_upload_artifacts(
         prepared = prepare_transcript(source, session, contributor)
         if (
             prepared.source_hash != candidate.get("source_hash")
-            or prepared.transcript_hash != candidate.get("transcript_hash")
             or prepared.filesystem_snapshot != candidate.get("filesystem_snapshot")
         ):
             raise RuntimeError("Transcript changed after Refresh; refresh and try again")
