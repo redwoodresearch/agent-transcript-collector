@@ -1,4 +1,4 @@
-"""One-off migration from legacy upload hashes to original-content hashes.
+"""One-off migration from legacy redacted hashes to original-content hashes.
 
 This script is intentionally not installed with the collector. Delete it after
 the production migration has been run and verified.
@@ -21,22 +21,25 @@ from agent_transcript_collector.paths import pipeline_cache_path, watcher_config
 from agent_transcript_collector.redactor import canonicalize_secrets, redact_identity
 from agent_transcript_collector.s3client import S3_BUCKET, make_s3_client
 from agent_transcript_collector.uploader import (
-    BODY_FINGERPRINT_METADATA,
-    FINGERPRINT_METADATA,
-    FINGERPRINT_VERSION,
-    FINGERPRINT_VERSION_METADATA,
     FORMAT_VERSION_METADATA,
+    LEGACY_SOURCE_HASH_METADATA,
+    LEGACY_SOURCE_HASH_VERSION_METADATA,
+    LEGACY_TRANSCRIPT_HASH_METADATA,
     REDACTION_VERSION,
     REDACTION_VERSION_METADATA,
     SIDECAR_COUNT_METADATA,
+    SOURCE_HASH_METADATA,
+    SOURCE_HASH_VERSION,
+    SOURCE_HASH_VERSION_METADATA,
     TRANSCRIPT_FORMAT_VERSION,
+    TRANSCRIPT_HASH_METADATA,
     UploadLock,
     metadata_concurrency,
     prepare_transcript,
 )
 from agent_transcript_collector.watcher import discover_allowed
 
-LEGACY_FINGERPRINT_VERSION = 2
+LEGACY_HASH_VERSION = 2
 
 
 def _legacy_privacy_safe_digest(text: str) -> str:
@@ -44,17 +47,17 @@ def _legacy_privacy_safe_digest(text: str) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def _legacy_body_fingerprint(raw_bytes: bytes) -> str:
-    policy = f"archive-v{LEGACY_FINGERPRINT_VERSION}:redact-id=1\0"
+def _legacy_transcript_hash(raw_bytes: bytes) -> str:
+    policy = f"archive-v{LEGACY_HASH_VERSION}:redact-id=1\0"
     canonical = canonicalize_secrets(raw_bytes.decode("utf-8", errors="replace"))
     canonical, _ = redact_identity(canonical)
     return hashlib.sha256(policy.encode() + canonical.encode()).hexdigest()
 
 
-def _legacy_content_fingerprint(body_fingerprint: str, sidecars) -> str:
+def _legacy_source_hash(transcript_hash: str, sidecars) -> str:
     if not sidecars.files:
-        return body_fingerprint
-    digest = hashlib.sha256(f"sidecars-v1\0{body_fingerprint}".encode())
+        return transcript_hash
+    digest = hashlib.sha256(f"sidecars-v1\0{transcript_hash}".encode())
     for sidecar in sidecars.files:
         try:
             text = sidecar.path.read_text(encoding="utf-8", errors="replace")
@@ -77,21 +80,30 @@ def _head(s3, key: str) -> dict | None:
 
 
 def _remote_is_current(prepared, metadata: dict) -> bool:
-    versions = {
-        FINGERPRINT_VERSION_METADATA: str(FINGERPRINT_VERSION),
-        REDACTION_VERSION_METADATA: str(REDACTION_VERSION),
-        FORMAT_VERSION_METADATA: str(TRANSCRIPT_FORMAT_VERSION),
-    }
-    if any(metadata.get(key) != value for key, value in versions.items()):
+    hash_version = metadata.get(
+        SOURCE_HASH_VERSION_METADATA,
+        metadata.get(LEGACY_SOURCE_HASH_VERSION_METADATA),
+    )
+    if (
+        hash_version != str(SOURCE_HASH_VERSION)
+        or metadata.get(REDACTION_VERSION_METADATA) != str(REDACTION_VERSION)
+        or metadata.get(FORMAT_VERSION_METADATA) != str(TRANSCRIPT_FORMAT_VERSION)
+    ):
         return False
-    if metadata.get(FINGERPRINT_METADATA) == prepared.fingerprint:
+    remote_source_hash = metadata.get(
+        SOURCE_HASH_METADATA, metadata.get(LEGACY_SOURCE_HASH_METADATA)
+    )
+    if remote_source_hash == prepared.source_hash:
         return True
     try:
         remote_sidecars = int(metadata.get(SIDECAR_COUNT_METADATA, "0"))
     except ValueError:
         return False
     return (
-        metadata.get(BODY_FINGERPRINT_METADATA) == prepared.body_fingerprint
+        metadata.get(
+            TRANSCRIPT_HASH_METADATA,
+            metadata.get(LEGACY_TRANSCRIPT_HASH_METADATA),
+        ) == prepared.transcript_hash
         and len(prepared.sidecars.files) < remote_sidecars
     )
 
@@ -99,36 +111,39 @@ def _remote_is_current(prepared, metadata: dict) -> bool:
 def _replacement_metadata(prepared, metadata: dict) -> dict | None:
     """Return migrated metadata only when legacy hashes prove the body matches."""
     version_keys = {
-        FINGERPRINT_VERSION_METADATA,
+        SOURCE_HASH_VERSION_METADATA,
+        LEGACY_SOURCE_HASH_VERSION_METADATA,
         REDACTION_VERSION_METADATA,
         FORMAT_VERSION_METADATA,
     }
     if version_keys & metadata.keys():
         return None
 
-    legacy_body = _legacy_body_fingerprint(prepared.raw_bytes)
-    if metadata.get(BODY_FINGERPRINT_METADATA) != legacy_body:
+    legacy_transcript = _legacy_transcript_hash(prepared.raw_bytes)
+    if metadata.get(LEGACY_TRANSCRIPT_HASH_METADATA) != legacy_transcript:
         return None
     try:
         remote_sidecars = int(metadata.get(SIDECAR_COUNT_METADATA, "0"))
     except ValueError:
         return None
 
-    legacy_content = _legacy_content_fingerprint(legacy_body, prepared.sidecars)
-    if metadata.get(FINGERPRINT_METADATA) == legacy_content:
-        source_fingerprint = prepared.fingerprint
+    legacy_source = _legacy_source_hash(legacy_transcript, prepared.sidecars)
+    if metadata.get(LEGACY_SOURCE_HASH_METADATA) == legacy_source:
+        migrated_source_hash = prepared.source_hash
     elif (
-        metadata.get(FINGERPRINT_METADATA)
+        metadata.get(LEGACY_SOURCE_HASH_METADATA)
         and len(prepared.sidecars.files) < remote_sidecars
     ):
-        source_fingerprint = f"legacy-fuller:{metadata[FINGERPRINT_METADATA]}"
+        migrated_source_hash = (
+            f"legacy-fuller:{metadata[LEGACY_SOURCE_HASH_METADATA]}"
+        )
     else:
         return None
 
     return metadata | {
-        FINGERPRINT_METADATA: source_fingerprint,
-        BODY_FINGERPRINT_METADATA: prepared.body_fingerprint,
-        FINGERPRINT_VERSION_METADATA: str(FINGERPRINT_VERSION),
+        SOURCE_HASH_METADATA: migrated_source_hash,
+        TRANSCRIPT_HASH_METADATA: prepared.transcript_hash,
+        SOURCE_HASH_VERSION_METADATA: str(SOURCE_HASH_VERSION),
         REDACTION_VERSION_METADATA: str(REDACTION_VERSION),
         FORMAT_VERSION_METADATA: str(TRANSCRIPT_FORMAT_VERSION),
     }

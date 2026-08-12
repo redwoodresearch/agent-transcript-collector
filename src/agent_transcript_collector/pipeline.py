@@ -1,8 +1,8 @@
 """Persistent scan-to-upload state shared by the Web UI and hourly watcher.
 
 The pipeline has one durable record per local transcript and contributor. A
-cheap filesystem signature decides whether fingerprinting is necessary. New or
-changed records are read, fingerprinted, and reconciled with S3 without running
+cheap filesystem snapshot decides whether hashing is necessary. New or
+changed records are read, hashed, and reconciled with S3 without running
 redaction. Uploads redact and package only the confirmed pending records.
 """
 
@@ -18,18 +18,35 @@ from pathlib import Path
 from .paths import pipeline_cache_path, prepared_artifacts_dir
 from .s3client import make_s3_client
 from .uploader import (
-    FINGERPRINT_VERSION,
     REDACTION_VERSION,
+    SOURCE_HASH_VERSION,
     TRANSCRIPT_FORMAT_VERSION,
     PreparedTranscript,
     build_upload_artifact,
     classify_prepared,
+    filesystem_snapshot,
+    filesystem_snapshot_is_current,
     prepare_transcript,
-    prepared_signature,
-    signature_is_current,
 )
 
 CACHE_VERSION = 3
+
+
+def _normalize_record(record: object) -> object:
+    """Translate pre-rename cache fields without forcing files to be rehashed."""
+    if not isinstance(record, dict):
+        return record
+    aliases = {
+        "fingerprint_version": "source_hash_version",
+        "fingerprint": "source_hash",
+        "body_fingerprint": "transcript_hash",
+        "signature": "filesystem_snapshot",
+    }
+    for old, new in aliases.items():
+        if new not in record and old in record:
+            record[new] = record[old]
+        record.pop(old, None)
+    return record
 
 
 def _cleanup_legacy_artifacts() -> None:
@@ -80,6 +97,9 @@ def _load(path: Path | None = None) -> dict:
     records = value.get("records")
     if not isinstance(records, dict):
         value["records"] = {}
+    else:
+        for key, record in records.items():
+            records[key] = _normalize_record(record)
     return value
 
 
@@ -116,17 +136,17 @@ def _record_is_current(record: object) -> bool:
     if not isinstance(record, dict):
         return False
     if (
-        record.get("fingerprint_version") != FINGERPRINT_VERSION
+        record.get("source_hash_version") != SOURCE_HASH_VERSION
         or record.get("redaction_version") != REDACTION_VERSION
         or record.get("format_version") != TRANSCRIPT_FORMAT_VERSION
-        or not signature_is_current(record.get("signature"))
+        or not filesystem_snapshot_is_current(record.get("filesystem_snapshot"))
     ):
         return False
     return True
 
 
 def _prepare_changed(source, session, contributor: str) -> tuple:
-    """Fingerprint one changed transcript without touching shared state."""
+    """Hash one changed transcript without touching shared state."""
     prepared = prepare_transcript(source, session, contributor)
     record = {
         "source": source.id,
@@ -135,17 +155,17 @@ def _prepare_changed(source, session, contributor: str) -> tuple:
         "parent": session.parent,
         "session": session.id,
         "path": str(session.path),
-        "fingerprint_version": FINGERPRINT_VERSION,
+        "source_hash_version": SOURCE_HASH_VERSION,
         "redaction_version": REDACTION_VERSION,
         "format_version": TRANSCRIPT_FORMAT_VERSION,
-        "signature": prepared.signature,
-        "fingerprint": prepared.fingerprint,
-        "body_fingerprint": prepared.body_fingerprint,
+        "filesystem_snapshot": prepared.filesystem_snapshot,
+        "source_hash": prepared.source_hash,
+        "transcript_hash": prepared.transcript_hash,
         "key": prepared.key,
         "sidecar_count": prepared.sidecar_count,
         "state": "checking",
     }
-    # Remote comparison only needs fingerprints, sidecar count, and identity.
+    # Remote comparison only needs hashes, sidecar count, and identity.
     # Release transcript bodies as each worker finishes instead of retaining a
     # cold cache's entire corpus until every S3 metadata check completes.
     return replace(prepared, raw_bytes=b""), record
@@ -156,10 +176,10 @@ def _prepared_from_record(record: dict, session) -> PreparedTranscript | None:
         return PreparedTranscript(
             session=session,
             raw_bytes=b"",
-            body_fingerprint=str(record["body_fingerprint"]),
-            fingerprint=str(record["fingerprint"]),
+            transcript_hash=str(record["transcript_hash"]),
+            source_hash=str(record["source_hash"]),
             key=str(record["key"]),
-            signature=record["signature"],
+            filesystem_snapshot=record["filesystem_snapshot"],
             sidecar_count=int(record.get("sidecar_count", 0)),
         )
     except (KeyError, TypeError, ValueError):
@@ -175,7 +195,7 @@ def refresh(
     cache_path: Path | None = None,
     artifact_root: Path | None = None,
 ) -> dict:
-    """Fingerprint changed transcripts and reconcile only those with S3."""
+    """Hash changed transcripts and reconcile only those with S3."""
     selections = [(source, list(sessions)) for source, sessions in selections]
     all_sessions = [
         (source, session)
@@ -208,7 +228,7 @@ def refresh(
 
     total_changed = len(changed)
     if on_progress:
-        on_progress("fingerprinting", 0, total_changed)
+        on_progress("hashing", 0, total_changed)
     errors = []
     workers = max(1, min(redaction_concurrency(), total_changed))
     completed = 0
@@ -242,7 +262,7 @@ def refresh(
                 records[key] = record
                 prepared_by_key[key] = prepared
             if on_progress:
-                on_progress("fingerprinting", completed, total_changed)
+                on_progress("hashing", completed, total_changed)
     _save(state, cache_path)
 
     prepared_items = list(prepared_by_key.values())
@@ -360,15 +380,15 @@ def prepare_upload_artifacts(
     def prepare_one(source, session, candidate):
         prepared = prepare_transcript(source, session, contributor)
         if (
-            prepared.fingerprint != candidate.get("fingerprint")
-            or prepared.body_fingerprint != candidate.get("body_fingerprint")
-            or prepared.signature != candidate.get("signature")
+            prepared.source_hash != candidate.get("source_hash")
+            or prepared.transcript_hash != candidate.get("transcript_hash")
+            or prepared.filesystem_snapshot != candidate.get("filesystem_snapshot")
         ):
             raise RuntimeError("Transcript changed after Refresh; refresh and try again")
         artifact = build_upload_artifact(
             source, prepared, contributor, directory
         )
-        if prepared_signature(prepared) != candidate.get("signature"):
+        if filesystem_snapshot(prepared) != candidate.get("filesystem_snapshot"):
             Path(artifact["path"]).unlink(missing_ok=True)
             raise RuntimeError("Transcript changed during redaction; refresh and try again")
         return artifact

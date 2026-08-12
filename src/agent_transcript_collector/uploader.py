@@ -29,16 +29,22 @@ from .sources.base import session_sidecars
 from .storage import STORAGE_PREFIX
 
 TRANSCRIPT_FORMAT_VERSION = 4
-FINGERPRINT_VERSION = 3
+SOURCE_HASH_VERSION = 3
 # Increment this whenever redaction behavior or policy changes so unchanged
 # source content is redacted and uploaded again under the new policy.
 REDACTION_VERSION = 1
-FINGERPRINT_METADATA = "content-fingerprint"
-BODY_FINGERPRINT_METADATA = "body-fingerprint"
+SOURCE_HASH_METADATA = "source-hash"
+TRANSCRIPT_HASH_METADATA = "transcript-hash"
 SIDECAR_COUNT_METADATA = "sidecar-count"
-FINGERPRINT_VERSION_METADATA = "fingerprint-version"
+SOURCE_HASH_VERSION_METADATA = "source-hash-version"
 REDACTION_VERSION_METADATA = "redaction-version"
 FORMAT_VERSION_METADATA = "transcript-format-version"
+
+# Read-only compatibility with uploads written before the terminology was
+# clarified. New uploads use the *_HASH_* names above.
+LEGACY_SOURCE_HASH_METADATA = "content-fingerprint"
+LEGACY_TRANSCRIPT_HASH_METADATA = "body-fingerprint"
+LEGACY_SOURCE_HASH_VERSION_METADATA = "fingerprint-version"
 
 
 def upload_concurrency() -> int:
@@ -102,30 +108,30 @@ class UploadLock:
 class PreparedTranscript:
     session: object
     raw_bytes: bytes
-    body_fingerprint: str
-    fingerprint: str
+    transcript_hash: str
+    source_hash: str
     key: str
     sidecars: SidecarSet = NO_SIDECARS
-    signature: list[dict] | None = None
+    filesystem_snapshot: list[dict] | None = None
     sidecar_count: int | None = None
 
 
-def transcript_fingerprint(raw_bytes: bytes) -> str:
+def transcript_hash(raw_bytes: bytes) -> str:
     """Identify the exact original content without running redaction."""
-    digest = hashlib.sha256(f"source-v{FINGERPRINT_VERSION}\0".encode())
+    digest = hashlib.sha256(f"source-v{SOURCE_HASH_VERSION}\0".encode())
     digest.update(raw_bytes)
     return digest.hexdigest()
 
 
-def content_fingerprint(body_fingerprint: str, sidecars: SidecarSet) -> str:
-    """Extend a transcript fingerprint to cover its side files.
+def source_hash(transcript_hash_value: str, sidecars: SidecarSet) -> str:
+    """Extend a transcript hash to cover its side files.
 
-    A session without side files keeps the fingerprint it always had, so
+    A session without side files keeps the transcript hash, so
     collecting side files does not force every earlier upload to be rewritten.
     """
     if not sidecars.files:
-        return body_fingerprint
-    digest = hashlib.sha256(f"sidecars-v1\0{body_fingerprint}".encode())
+        return transcript_hash_value
+    digest = hashlib.sha256(f"sidecars-v1\0{transcript_hash_value}".encode())
     for sidecar in sidecars.files:
         try:
             raw_bytes = sidecar.path.read_bytes()
@@ -188,14 +194,20 @@ def _uploaded_metadata(s3, key: str, cache: dict[str, dict]) -> dict:
 
 def _already_uploaded(prepared: PreparedTranscript, remote: dict) -> bool:
     """Decide whether the stored object already holds this session's content."""
-    expected_versions = {
-        FINGERPRINT_VERSION_METADATA: str(FINGERPRINT_VERSION),
-        REDACTION_VERSION_METADATA: str(REDACTION_VERSION),
-        FORMAT_VERSION_METADATA: str(TRANSCRIPT_FORMAT_VERSION),
-    }
-    if any(remote.get(key) != value for key, value in expected_versions.items()):
+    source_hash_version = remote.get(
+        SOURCE_HASH_VERSION_METADATA,
+        remote.get(LEGACY_SOURCE_HASH_VERSION_METADATA),
+    )
+    if (
+        source_hash_version != str(SOURCE_HASH_VERSION)
+        or remote.get(REDACTION_VERSION_METADATA) != str(REDACTION_VERSION)
+        or remote.get(FORMAT_VERSION_METADATA) != str(TRANSCRIPT_FORMAT_VERSION)
+    ):
         return False
-    if remote.get(FINGERPRINT_METADATA) == prepared.fingerprint:
+    remote_source_hash = remote.get(
+        SOURCE_HASH_METADATA, remote.get(LEGACY_SOURCE_HASH_METADATA)
+    )
+    if remote_source_hash == prepared.source_hash:
         return True
     # Harnesses delete their own side files on their own schedule, so a session
     # can lose them while its transcript stays put. Leave the fuller upload
@@ -205,7 +217,10 @@ def _already_uploaded(prepared: PreparedTranscript, remote: dict) -> bool:
     except ValueError:
         return False
     return (
-        remote.get(BODY_FINGERPRINT_METADATA) == prepared.body_fingerprint
+        remote.get(
+            TRANSCRIPT_HASH_METADATA,
+            remote.get(LEGACY_TRANSCRIPT_HASH_METADATA),
+        ) == prepared.transcript_hash
         and (
             prepared.sidecar_count
             if prepared.sidecar_count is not None
@@ -215,7 +230,7 @@ def _already_uploaded(prepared: PreparedTranscript, remote: dict) -> bool:
 
 
 def prepare_transcript(source, session, contributor: str) -> PreparedTranscript:
-    """Read and fingerprint one stable transcript/sidecar snapshot."""
+    """Read and hash one stable transcript/sidecar snapshot."""
     path = Path(session.path)
     key = transcript_key(contributor, source.id, session)
     for _attempt in range(2):
@@ -223,32 +238,32 @@ def prepare_transcript(source, session, contributor: str) -> PreparedTranscript:
         raw_bytes = path.read_bytes()
         if transcript_before != _path_signature(path):
             continue
-        body_fingerprint = transcript_fingerprint(raw_bytes)
+        transcript_hash_value = transcript_hash(raw_bytes)
         sidecars = session_sidecars(
             source, session, raw_bytes.decode("utf-8", errors="replace")
         )
         probe = PreparedTranscript(
             session=session,
             raw_bytes=raw_bytes,
-            body_fingerprint=body_fingerprint,
-            fingerprint="",
+            transcript_hash=transcript_hash_value,
+            source_hash="",
             key=key,
             sidecars=sidecars,
         )
-        signature = prepared_signature(probe)
+        snapshot = filesystem_snapshot(probe)
         prepared = PreparedTranscript(
             session=session,
             raw_bytes=raw_bytes,
-            body_fingerprint=body_fingerprint,
-            fingerprint=content_fingerprint(body_fingerprint, sidecars),
+            transcript_hash=transcript_hash_value,
+            source_hash=source_hash(transcript_hash_value, sidecars),
             key=key,
             sidecars=sidecars,
-            signature=signature,
+            filesystem_snapshot=snapshot,
             sidecar_count=len(sidecars.files),
         )
-        if signature == prepared_signature(prepared):
+        if snapshot == filesystem_snapshot(prepared):
             return prepared
-    raise RuntimeError("Transcript changed while it was being fingerprinted")
+    raise RuntimeError("Transcript changed while it was being hashed")
 
 
 def classify_prepared(
@@ -257,7 +272,7 @@ def classify_prepared(
     uploaded_metadata: dict[str, dict] | None = None,
     on_status=None,
 ):
-    """Split fingerprinted transcripts by their remote source fingerprint."""
+    """Split hashed transcripts by their remote source hash."""
     existing = uploaded_metadata if uploaded_metadata is not None else {}
     pending = []
     current = []
@@ -361,9 +376,9 @@ def _build_transcript_zip(source, prepared: PreparedTranscript, contributor: str
             "parent": session.parent,
         },
         "version": {
-            "fingerprint": prepared.fingerprint,
-            "body_fingerprint": prepared.body_fingerprint,
-            "fingerprint_version": FINGERPRINT_VERSION,
+            "source_hash": prepared.source_hash,
+            "transcript_hash": prepared.transcript_hash,
+            "source_hash_version": SOURCE_HASH_VERSION,
             "redaction_version": REDACTION_VERSION,
             "content_sha256": hashlib.sha256(raw.encode()).hexdigest(),
             "redact_identity": True,
@@ -397,7 +412,7 @@ def _path_signature(path: str | Path) -> dict:
     return value
 
 
-def prepared_signature(prepared: PreparedTranscript) -> list[dict]:
+def filesystem_snapshot(prepared: PreparedTranscript) -> list[dict]:
     """Capture every local path which can affect a prepared archive."""
     paths: list[str | Path] = [prepared.session.path]
     paths.extend(sidecar.path for sidecar in prepared.sidecars.files)
@@ -407,11 +422,11 @@ def prepared_signature(prepared: PreparedTranscript) -> list[dict]:
     return [_path_signature(path) for path in dict.fromkeys(paths)]
 
 
-def signature_is_current(signature: object) -> bool:
-    return isinstance(signature, list) and all(
+def filesystem_snapshot_is_current(snapshot: object) -> bool:
+    return isinstance(snapshot, list) and all(
         isinstance(item, dict)
         and item == _path_signature(str(item.get("path", "")))
-        for item in signature
+        for item in snapshot
     )
 
 
@@ -429,8 +444,8 @@ def artifact_is_available(artifact: dict) -> bool:
 
 def artifact_is_current(artifact: dict) -> bool:
     """Return whether an archive still represents the latest local content."""
-    return artifact_is_available(artifact) and signature_is_current(
-        artifact.get("signature")
+    return artifact_is_available(artifact) and filesystem_snapshot_is_current(
+        artifact.get("filesystem_snapshot")
     )
 
 
@@ -460,12 +475,12 @@ def build_upload_artifact(
         "parent": session.parent,
         "path": temporary,
         "key": prepared.key,
-        "fingerprint": prepared.fingerprint,
-        "body_fingerprint": prepared.body_fingerprint,
+        "source_hash": prepared.source_hash,
+        "transcript_hash": prepared.transcript_hash,
         "sidecar_count": len(manifest["sidecars"]["files"]),
         "redactions": manifest["redactions"],
         "zip_size_bytes": len(archive),
-        "signature": prepared_signature(prepared),
+        "filesystem_snapshot": filesystem_snapshot(prepared),
     }
 
 
@@ -481,10 +496,10 @@ def upload_artifacts(s3, artifacts: list[dict], on_progress=None):
             Body=Path(artifact["path"]).read_bytes(),
             ContentType="application/zip",
             Metadata={
-                FINGERPRINT_METADATA: artifact["fingerprint"],
-                BODY_FINGERPRINT_METADATA: artifact["body_fingerprint"],
+                SOURCE_HASH_METADATA: artifact["source_hash"],
+                TRANSCRIPT_HASH_METADATA: artifact["transcript_hash"],
                 SIDECAR_COUNT_METADATA: str(artifact["sidecar_count"]),
-                FINGERPRINT_VERSION_METADATA: str(FINGERPRINT_VERSION),
+                SOURCE_HASH_VERSION_METADATA: str(SOURCE_HASH_VERSION),
                 REDACTION_VERSION_METADATA: str(REDACTION_VERSION),
                 FORMAT_VERSION_METADATA: str(TRANSCRIPT_FORMAT_VERSION),
             },

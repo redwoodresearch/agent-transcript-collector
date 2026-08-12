@@ -145,8 +145,8 @@ Each session goes through the same pipeline:
 1. **Discover:** find native transcripts and group them by project and source.
 2. **Assemble:** keep each transcript in its native JSONL or text format, link
    subagent sessions to their parents, and resolve referenced external files.
-3. **Compare:** fingerprint the original transcript and external files, then
-   compare that fingerprint and the redaction policy version with S3 metadata.
+3. **Compare:** hash the original transcript and external files, then compare
+   that source hash and the redaction policy version with S3 metadata.
 4. **Redact and store:** when an upload starts, replace detected credentials and
    local identity data on the local machine, package one redacted session per
    ZIP, and upload it to a stable S3 key. A changed session replaces its previous
@@ -225,9 +225,9 @@ redaction result:
     "parent": null
   },
   "version": {
-    "fingerprint": "SHA-256 fingerprint of original transcript and sidecars",
-    "body_fingerprint": "SHA-256 fingerprint of original transcript",
-    "fingerprint_version": 3,
+    "source_hash": "SHA-256 hash of original transcript and sidecars",
+    "transcript_hash": "SHA-256 hash of original transcript",
+    "source_hash_version": 3,
     "redaction_version": 1,
     "content_sha256": "SHA-256 of the redacted transcript",
     "redact_identity": true,
@@ -251,7 +251,7 @@ redaction result:
 }
 ```
 
-`version` holds the original-content fingerprints and their policy versions,
+`version` holds the original-content hashes and their algorithm versions,
 the redacted transcript hash, and the upload time. `size_bytes` is the redacted
 transcript size, and `redactions` is the total number of replacements. Each
 sidecar entry records its ZIP path, type, redacted original reference, redacted
@@ -261,13 +261,13 @@ size, and hash. The three sidecar arrays are present even when empty.
 
 Redaction happens on your machine after you start an upload and before anything
 is written to its temporary ZIP. The count of replacements is recorded in the
-manifest. Background UI refreshes fingerprint original content to determine
-whether an upload is needed, but do not redact or package transcripts.
+manifest. Background UI refreshes calculate hashes of the original content to
+determine whether an upload is needed, but do not redact or package transcripts.
 
-The original-content SHA-256 fingerprint is stored in private S3 object metadata
+The original-content SHA-256 hash is stored in private S3 object metadata
 so future runs can skip unchanged content. It is a one-way digest, but it can
 confirm guesses about exact original content and reveal when content is equal.
-Uploaded metadata also records the fingerprint, redaction-policy, and
+Uploaded metadata also records the hash-algorithm, redaction-policy, and
 archive-format versions; changing a policy version causes the transcript to be
 redacted and uploaded again.
 
@@ -308,7 +308,7 @@ These knobs exist for overriding defaults:
 | `CTC_AWS_PROFILE` | _(unset)_ | Collector-specific profile override. |
 | `CTC_REDACTION_CONCURRENCY` | `16` | Changed transcripts redacted and packaged in parallel. |
 | `CTC_UPLOAD_CONCURRENCY` | `4` | Transcripts uploaded in parallel. |
-| `CTC_METADATA_CONCURRENCY` | `16` | S3 fingerprint checks performed in parallel. |
+| `CTC_METADATA_CONCURRENCY` | `16` | S3 hash checks performed in parallel. |
 | `CTC_SIDECAR_MAX_BYTES` | `104857600` | Side-file bytes collected per session. |
 | `CTC_USERNAME_STOPLIST` | _(unset)_ | Comma-separated logins to never redact. |
 | `PORT` | `8899` | Local review UI port. |

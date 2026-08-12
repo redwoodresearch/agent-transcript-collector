@@ -26,14 +26,16 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Environment, PackageLoader
 
-from .redactor import redact_identity, redact_jsonl_content
+from .paths import watcher_config_path
 from .pipeline import (
     artifacts_for,
     mark_uploaded,
     prepare_upload_artifacts,
+)
+from .pipeline import (
     refresh as refresh_pipeline,
 )
-from .paths import watcher_config_path
+from .redactor import redact_identity, redact_jsonl_content
 from .s3client import make_s3_client as _make_s3_client
 from .s3client import selected_profile
 from .sources import SOURCES, get_source, projects_from_groups
@@ -262,7 +264,7 @@ def preview_session(source: str, group: str, session: str, parent: str = "",
     }
 
 
-# --- one background scan → fingerprint changed → check changed pipeline ---
+# --- one background scan → hash changed → check changed pipeline ---
 PIPELINE_RUNS: dict[str, dict] = {}
 PIPELINE_LOCK = threading.Lock()
 _active_pipeline = {"id": None}
@@ -370,7 +372,7 @@ def _start_pipeline(body: dict):
         run_id = uuid.uuid4().hex[:12]
         total = sum(len(sessions) for _, sessions in selections)
         PIPELINE_RUNS[run_id] = {
-            "status": "running", "stage": "fingerprinting", "done": 0,
+            "status": "running", "stage": "hashing", "done": 0,
             "work_total": 0, "total": total, "changed": 0, "checked": 0,
             "cached": 0, "items": [], "errors": [],
             "contributor": contributor,

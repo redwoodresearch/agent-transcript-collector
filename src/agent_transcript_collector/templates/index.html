@@ -867,9 +867,9 @@ async function startPipeline() {
 function pipelineMessage(data) {
   const count = Number(data.work_total || 0);
   const done = Number(data.done || 0);
-  if (data.stage === 'fingerprinting') {
-    return count ? `Fingerprinting ${count} new or changed transcript${count === 1 ? '' : 's'} · ${done}/${count}`
-      : 'Using cached fingerprints';
+  if (data.stage === 'hashing') {
+    return count ? `Hashing ${count} new or changed transcript${count === 1 ? '' : 's'} · ${done}/${count}`
+      : 'Using cached hashes';
   }
   if (data.stage === 'checking') {
     return `Checking ${count} transcript${count === 1 ? '' : 's'}\u2019 upload status · ${done}/${count}`;

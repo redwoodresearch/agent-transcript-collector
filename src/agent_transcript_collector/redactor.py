@@ -313,7 +313,7 @@ def redact(text: str) -> tuple[str, list[dict]]:
 
 
 def canonicalize_secrets(text: str) -> str:
-    """Replace secrets with stable type markers for privacy-safe fingerprints.
+    """Replace secrets with stable type markers for legacy privacy-safe hashes.
 
     The result intentionally discards secret values. It is stable across
     processes, unlike the randomized mocks used in uploaded transcript bodies.
