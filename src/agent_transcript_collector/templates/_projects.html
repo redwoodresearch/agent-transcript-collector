@@ -6,7 +6,7 @@
 <div class="project-list">
 {% for project in projects %}
 <div class="project" data-project="{{ project.key }}"
-     data-label="{{ project.label }}" data-directory="{{ project.directory or '' }}">
+     data-identity="{{ project.identity }}" data-label="{{ project.label }}">
   <div class="project-header" onclick="toggleProject(this)" title="Expand or collapse this project">
     <span class="arrow project-arrow">&#9654;</span>
     <div class="project-title">

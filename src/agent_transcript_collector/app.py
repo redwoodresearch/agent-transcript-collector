@@ -48,6 +48,7 @@ from .watcher import (
 from .watcher import (
     load_config as load_watcher_config,
 )
+from .watcher import migrate_config as migrate_watcher_config
 from .watcher import (
     save_config as save_watcher_config,
 )
@@ -644,22 +645,47 @@ async def upload(request: Request):
 
 @app.get("/api/watcher")
 def get_watcher_status():
-    return watcher_status()
+    result = watcher_status()
+    config = result.get("config")
+    if not config:
+        return result
+    legacy = {
+        (item.get("source", ""), item.get("group", ""))
+        for item in config.pop("legacy_groups", [])
+    }
+    if not legacy:
+        return result
+    with SCAN_LOCK:
+        projects = list(SCAN_CACHE["projects"] or [])
+    selected = list(config.get("projects", []))
+    for project in projects:
+        groups = {
+            (harness["source"], group)
+            for harness in project["harnesses"]
+            for group in harness["groups"]
+        }
+        if legacy & groups:
+            selected.append({
+                "identity": project.get("identity", ""),
+                "label": project.get("label", ""),
+            })
+    config["projects"] = selected
+    return result
 
 
 def _put_watcher(body: dict):
     requested = {
-        (str(item.get("directory") or ""), str(item.get("label", "")))
+        (str(item.get("identity", "")), str(item.get("label", "")))
         for item in body.get("projects", [])
     }
     removed = {
-        (str(item.get("directory") or ""), str(item.get("label", "")))
+        (str(item.get("identity", "")), str(item.get("label", "")))
         for item in body.get("removed_projects", [])
     }
     requested -= removed
     with SCAN_LOCK:
         discovered = {
-            (str(project.get("directory") or ""), str(project.get("label", "")))
+            (str(project.get("identity", "")), str(project.get("label", "")))
             for project in (SCAN_CACHE["projects"] or [])
         }
     invalid = sorted(requested - discovered)
@@ -672,22 +698,15 @@ def _put_watcher(body: dict):
         watcher = watcher_status()
         existing = load_watcher_config() if watcher.get("config") else None
         projects = [
-            AllowedProject(directory=directory or None, label=label)
-            for directory, label in sorted(requested)
+            AllowedProject(identity=identity, label=label)
+            for identity, label in sorted(requested)
         ]
         if existing:
-            discovered_labels = {label for _, label in discovered}
             projects.extend(
                 project
                 for project in existing.projects
-                if (
-                    (project.directory or "", project.label) not in discovered
-                    and not (
-                        project.directory is None
-                        and project.label in discovered_labels
-                    )
-                )
-                and (project.directory or "", project.label) not in removed
+                if (project.identity, project.label) not in discovered
+                and (project.identity, project.label) not in removed
             )
         config = WatcherConfig(
             auto_uploader_version=(
@@ -736,7 +755,7 @@ def reinstall_watcher():
                 {"error": "Configure auto upload before reinstalling it"},
                 status_code=400,
             )
-        config = load_watcher_config()
+        config = migrate_watcher_config()
         config.source_env = capture_source_env()
         return install_watcher(config)
     except Exception as e:
