@@ -613,20 +613,14 @@ async function loadWatcher(refreshPipeline = true) {
     const configuredGroups = new Set(
       ((data.config && data.config.groups) || []).map(item => `${item.source}|${item.group}`));
     renderUnavailableGroups((data.config && data.config.groups) || []);
-    let selectionExpanded = false;
     document.querySelectorAll('.project').forEach(project => {
       const cb = project.querySelector('.auto-upload-checkbox');
       const groups = projectGroups(project);
-      const enabled = groups.filter(item =>
-        configuredGroups.has(`${item.source}|${item.group}`)).length;
-      cb.checked = enabled > 0;
-      selectionExpanded ||= enabled > 0 && enabled < groups.length;
+      cb.checked = groups.some(item =>
+        configuredGroups.has(`${item.source}|${item.group}`));
     });
     autoUploadEnabled = watcherEnabledOverride ?? Boolean(data.installed);
     watcherRunning = Boolean(data.running);
-    if (selectionExpanded) {
-      await updateAutoUploadConfig(autoUploadEnabled);
-    }
     const installedVersion = (data.config && data.config.auto_uploader_version) || 0;
     const currentVersion = data.current_version;
     version.textContent = data.needs_reinstall

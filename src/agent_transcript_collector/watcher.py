@@ -21,7 +21,7 @@ from .paths import (
 )
 from .pipeline import artifacts_for, mark_uploaded, refresh as refresh_pipeline
 from .s3client import make_s3_client
-from .sources import SOURCES
+from .sources import SOURCES, projects_from_groups
 from .uploader import (
     UploadBusy,
     UploadLock,
@@ -151,12 +151,25 @@ def capture_source_env() -> dict[str, str]:
 
 
 def _resolve_allowed(config: WatcherConfig):
-    """Pair configured consent with exact current source-group keys."""
-    allowed = {(item.source, item.group) for item in config.groups}
-    return [
+    """Resolve project-level consent to every current group in each project."""
+    configured = {(item.source, item.group) for item in config.groups}
+    discovered = [
         (source, group)
         for source in SOURCES
         for group in source.discover()
+    ]
+    allowed = set()
+    for project in projects_from_groups(discovered):
+        project_groups = {
+            (harness["source"], group)
+            for harness in project["harnesses"]
+            for group in harness["groups"]
+        }
+        if configured & project_groups:
+            allowed.update(project_groups)
+    return [
+        (source, group)
+        for source, group in discovered
         if (source.id, group.key) in allowed
     ]
 
