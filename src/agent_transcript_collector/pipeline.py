@@ -29,24 +29,7 @@ from .uploader import (
     prepare_transcript,
 )
 
-CACHE_VERSION = 3
-
-
-def _normalize_record(record: object) -> object:
-    """Translate pre-rename cache fields without forcing files to be rehashed."""
-    if not isinstance(record, dict):
-        return record
-    aliases = {
-        "fingerprint_version": "source_hash_version",
-        "fingerprint": "source_hash",
-        "body_fingerprint": "transcript_hash",
-        "signature": "filesystem_snapshot",
-    }
-    for old, new in aliases.items():
-        if new not in record and old in record:
-            record[new] = record[old]
-        record.pop(old, None)
-    return record
+CACHE_SCHEMA_VERSION = 1
 
 
 def _cleanup_legacy_artifacts() -> None:
@@ -70,16 +53,9 @@ def redaction_concurrency() -> int:
     return max(1, int(os.environ.get("CTC_REDACTION_CONCURRENCY", "16")))
 
 
-def _identity(source_id: str, session) -> str:
-    return json.dumps(
-        [source_id, str(session.path), session.id, session.parent or ""],
-        separators=(",", ":"),
-    )
-
-
 def _record_key(contributor: str, source_id: str, session) -> str:
     return json.dumps(
-        [contributor, _identity(source_id, session)],
+        [contributor, source_id, str(session.path), session.id, session.parent or ""],
         separators=(",", ":"),
     )
 
@@ -90,16 +66,13 @@ def _load(path: Path | None = None) -> dict:
         value = json.loads(target.read_text())
     except (OSError, json.JSONDecodeError):
         value = {}
-    if value.get("cache_version") != CACHE_VERSION:
+    if value.get("schema_version") != CACHE_SCHEMA_VERSION:
         if path is None:
             _cleanup_legacy_artifacts()
-        return {"cache_version": CACHE_VERSION, "records": {}}
+        return {"schema_version": CACHE_SCHEMA_VERSION, "records": {}}
     records = value.get("records")
     if not isinstance(records, dict):
         value["records"] = {}
-    else:
-        for key, record in records.items():
-            records[key] = _normalize_record(record)
     return value
 
 
@@ -154,7 +127,6 @@ def _prepare_changed(source, session, contributor: str) -> tuple:
         "group": session.group_key,
         "parent": session.parent,
         "session": session.id,
-        "path": str(session.path),
         "source_hash_version": SOURCE_HASH_VERSION,
         "redaction_version": REDACTION_VERSION,
         "format_version": TRANSCRIPT_FORMAT_VERSION,
@@ -251,7 +223,6 @@ def refresh(
                     "group": session.group_key,
                     "parent": session.parent,
                     "session": session.id,
-                    "path": str(session.path),
                     "state": "error",
                     "error": f"{type(exc).__name__}: {exc}",
                 }

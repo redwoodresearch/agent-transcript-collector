@@ -155,6 +155,50 @@ Each session goes through the same pipeline:
 The uploaded transcript contains the source's native data without schema
 conversion.
 
+### Local cache
+
+The collector keeps a disposable `pipeline-cache.json` in its private state
+directory. It exists only to avoid rereading unchanged files and repeating S3
+metadata requests. A record is approximately:
+
+```json
+{
+  "schema_version": 1,
+  "records": {
+    "<contributor and local session identity>": {
+      "source": "codex",
+      "contributor": "example-contributor",
+      "group": "project-key",
+      "session": "session-id",
+      "parent": null,
+      "filesystem_snapshot": [
+        {"path": "/local/transcript.jsonl", "exists": true, "size": 1234, "mtime_ns": 123456789}
+      ],
+      "source_hash_version": 3,
+      "transcript_hash": "hash of the original transcript",
+      "source_hash": "hash of the original transcript and sidecars",
+      "key": "S3 object key",
+      "sidecar_count": 0,
+      "redaction_version": 1,
+      "format_version": 4,
+      "state": "current or ready"
+    }
+  }
+}
+```
+
+The filesystem snapshot is inexpensive file metadata, not a copy of the files.
+It covers the transcript, its sidecars, missing or skipped sidecar paths, and
+watched sidecar directories. If that metadata is unchanged, the collector can
+reuse the cached source hash. Without it, every refresh would have to reread and
+hash every transcript and sidecar to determine whether the cached hash is still
+valid. Uploads still reread and revalidate selected files before redaction.
+
+The cache is not authoritative and has no migrations. If it is absent, corrupt,
+or has an unknown `schema_version`, the collector discards it and rebuilds it.
+Deleting the file is always safe. Because it contains local paths and hashes of
+original content, it is written with user-only permissions.
+
 ### What is not collected
 
 - Cursor's native transcripts omit tool output. The collector can include only
