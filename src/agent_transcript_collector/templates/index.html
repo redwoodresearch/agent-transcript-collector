@@ -127,8 +127,19 @@
     white-space: nowrap;
   }
   .project-meta { color: var(--text-muted); font-size: 0.8rem; white-space: nowrap; }
-  .project-pending { color: var(--yellow); }
-  .project-pending.complete { color: var(--green); }
+  .upload-state-legend {
+    display: flex; justify-content: flex-end; gap: 16px; margin: 0 2px 8px;
+    color: var(--text-muted); font-size: 0.75rem;
+  }
+  .legend-item { display: inline-flex; align-items: center; gap: 5px; }
+  .legend-item i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .state-not-uploaded { color: var(--red); }
+  .state-changed { color: var(--yellow); }
+  .state-current { color: var(--green); }
+  .project-state-counts { display: inline-flex; align-items: center; gap: 6px; }
+  .state-count { min-width: 1.2em; text-align: center; font-weight: 700; }
+  .count-divider { color: var(--border); }
+  .state-failed { color: var(--red); margin-left: 3px; }
   .arrow { color: var(--text-muted); transition: transform 0.15s; font-size: 0.7rem; }
   .arrow.open { transform: rotate(90deg); }
 
@@ -254,7 +265,7 @@
 <body>
 
 <h1>Redwood Research Transcript Collector</h1>
-<p class="subtitle">Select the transcripts you'd like to share. Preview any session before deciding. Secrets and credentials are always redacted.</p>
+<p class="subtitle">Select the transcripts you'd like to share. Preview any session before deciding. Secrets and credentials are redacted locally when you upload.</p>
 
 <div class="control-card">
   <div class="readiness-controls" id="readiness-controls" data-status="scanning">
@@ -267,7 +278,7 @@
     </div>
     <div class="readiness-actions">
       <button class="secondary" id="refresh-btn" onclick="startScan(true)"
-              title="Scan transcripts and prepare uploads again" disabled>Refresh</button>
+              title="Scan transcripts and refresh their upload status" disabled>Refresh</button>
     </div>
   </div>
 <div class="auto-upload-controls">
@@ -284,7 +295,7 @@
         <span id="watcher-schedule">Checking last and next upload…</span>
       </div>
       <button id="upload-btn" onclick="uploadNow()"
-              title="Upload prepared transcripts from projects selected for automatic upload" disabled>Upload 0 transcripts now</button>
+              title="Redact and upload transcripts from projects selected for automatic upload" disabled>Upload 0 transcripts now</button>
       <button class="secondary" id="auto-upload-toggle" onclick="toggleAutoUpload()"
               title="Enable or disable automatic uploads every hour" disabled>Enable</button>
       <button class="secondary" id="reinstall-watcher" onclick="reinstallWatcher()"
@@ -296,7 +307,7 @@
 </div>
   <div class="upload-progress-row" id="upload-progress">
     <div class="upload-progress-copy">
-      <strong>Uploading transcripts…</strong>
+      <strong>Redacting and uploading transcripts…</strong>
       <span id="progress-text">Preparing…</span>
     </div>
     <div class="upload-progress-bar">
@@ -321,13 +332,13 @@
 
 <script>
 function sessionKey(row) {
-  return [row.dataset.source, row.dataset.group, row.dataset.parent || '', row.dataset.session].join('|');
+  return [row.dataset.source, row.dataset.project, row.dataset.parent || '', row.dataset.session].join('|');
 }
 
 function sessionDescriptor(row) {
   return {
     source: row.dataset.source,
-    group: row.dataset.group,
+    project: row.dataset.project,
     session: row.dataset.session,
     parent: row.dataset.parent || null,
   };
@@ -455,15 +466,6 @@ function runWatcherMutation(operation) {
   const result = watcherMutation.catch(() => {}).then(operation);
   watcherMutation = result;
   return result;
-}
-
-function harnessGroups(harness) {
-  try { return JSON.parse(harness.dataset.groups || '[]'); } catch (e) { return []; }
-}
-
-function projectGroups(project) {
-  return Array.from(project.querySelectorAll('.harness')).flatMap(harness =>
-    harnessGroups(harness).map(group => ({source: harness.dataset.source, group})));
 }
 
 function consentedRows(project) {
@@ -743,7 +745,8 @@ function onNameInput() {
   document.querySelectorAll('.project').forEach(project =>
     project.classList.remove('pipeline-ready', 'pipeline-running'));
   document.querySelectorAll('.session').forEach(row =>
-    row.classList.remove('uploaded', 'pipeline-prepared', 'pipeline-error'));
+    row.classList.remove('uploaded', 'pipeline-prepared', 'pipeline-not-uploaded',
+      'pipeline-changed', 'pipeline-error'));
   saveName(document.getElementById('contributor-name').value.trim());
   clearTimeout(pipelineTimer);
   pipelineTimer = setTimeout(refreshSettings, 400);
@@ -780,7 +783,7 @@ async function startPipeline() {
     project.classList.add('pipeline-running');
   });
   setPipelineStatus('');
-  renderPipelineProgress('running', 0, 0, 'Preparing pipeline…');
+  renderPipelineProgress('running', 0, 0, 'Checking transcript changes…');
   updatePendingCounts();
   try {
     const resp = await fetch('/api/pipeline', {
@@ -827,26 +830,31 @@ async function startPipeline() {
     }
     const current = new Set((data.items || [])
       .filter(item => item.state === 'current')
-      .map(item => [item.source, item.group, item.parent || '', item.session].join('|')));
-    const ready = new Set((data.items || [])
-      .filter(item => item.state === 'ready')
-      .map(item => [item.source, item.group, item.parent || '', item.session].join('|')));
+      .map(item => [item.source, item.project, item.parent || '', item.session].join('|')));
+    const notUploaded = new Set((data.items || [])
+      .filter(item => item.state === 'not_uploaded')
+      .map(item => [item.source, item.project, item.parent || '', item.session].join('|')));
+    const changed = new Set((data.items || [])
+      .filter(item => item.state === 'changed')
+      .map(item => [item.source, item.project, item.parent || '', item.session].join('|')));
     const failed = new Set((data.items || [])
       .filter(item => item.state === 'error')
-      .map(item => [item.source, item.group, item.parent || '', item.session].join('|')));
+      .map(item => [item.source, item.project, item.parent || '', item.session].join('|')));
     rows.forEach(row => {
       const key = sessionKey(row);
       row.classList.toggle('uploaded', current.has(key));
-      row.classList.toggle('pipeline-prepared', ready.has(key));
+      row.classList.toggle('pipeline-not-uploaded', notUploaded.has(key));
+      row.classList.toggle('pipeline-changed', changed.has(key));
+      row.classList.toggle('pipeline-prepared', notUploaded.has(key) || changed.has(key));
       row.classList.toggle('pipeline-error', failed.has(key));
     });
     projects.forEach(project => {
       project.classList.remove('pipeline-running');
       project.classList.add('pipeline-ready');
     });
-    const readyCount = ready.size;
-    const detail = readyCount
-      ? `${readyCount} transcript${readyCount === 1 ? '' : 's'} ready to upload`
+    const pendingCount = notUploaded.size + changed.size;
+    const detail = pendingCount
+      ? `${pendingCount} transcript${pendingCount === 1 ? '' : 's'} ready to upload`
       : 'Everything is up to date';
     renderPipelineProgress('ready', 0, 0,
       data.status === 'partial' ? `${detail} · some transcripts failed` : detail);
@@ -867,14 +875,14 @@ async function startPipeline() {
 function pipelineMessage(data) {
   const count = Number(data.work_total || 0);
   const done = Number(data.done || 0);
-  if (data.stage === 'redacting') {
-    return count ? `Redacting ${count} new or changed transcript${count === 1 ? '' : 's'} · ${done}/${count}`
-      : 'Using cached redactions';
+  if (data.stage === 'hashing') {
+    return count ? `Hashing ${count} uploaded transcript${count === 1 ? '' : 's'} · ${done}/${count}`
+      : 'Using cached hashes';
   }
   if (data.stage === 'checking') {
     return `Checking ${count} transcript${count === 1 ? '' : 's'}\u2019 upload status · ${done}/${count}`;
   }
-  return 'Preparing pipeline…';
+  return 'Checking transcript changes…';
 }
 
 function renderPipelineProgress(status, done, total, message = '') {
@@ -894,12 +902,12 @@ function renderPipelineProgress(status, done, total, message = '') {
     detail.textContent = message;
   } else if (status === 'ready') {
     title.textContent = 'Uploads ready';
-    detail.textContent = message || `${total} transcript${total === 1 ? '' : 's'} prepared`;
+    detail.textContent = message || `${total} transcript${total === 1 ? '' : 's'} checked`;
   } else if (status === 'paused') {
-    title.textContent = 'Upload preparation paused';
+    title.textContent = 'Upload status refresh paused';
     detail.textContent = message;
   } else {
-    title.textContent = 'Upload preparation unavailable';
+    title.textContent = 'Upload status unavailable';
     detail.textContent = message;
   }
   detail.title = detail.textContent;
@@ -912,7 +920,7 @@ function pausePipelineForUpload() {
   if (controller) controller.abort();
   document.querySelectorAll('.project').forEach(project =>
     project.classList.remove('pipeline-running'));
-  renderPipelineProgress('paused', 0, 0, 'Uploading prepared transcripts');
+  renderPipelineProgress('paused', 0, 0, 'Redacting and uploading transcripts');
   setPipelineStatus('');
 }
 
@@ -944,22 +952,28 @@ function updatePendingCounts() {
   let selectedPipelineUnknown = false;
 
   document.querySelectorAll('.project').forEach(project => {
-    const label = project.querySelector('.project-pending');
+    const notUploadedLabel = project.querySelector('.state-count.state-not-uploaded');
+    const changedLabel = project.querySelector('.state-count.state-changed');
+    const currentLabel = project.querySelector('.state-count.state-current');
+    const failedLabel = project.querySelector('.state-failed');
     const available = project.classList.contains('pipeline-ready');
-    label.classList.remove('complete');
-    if (project.classList.contains('pipeline-running')) {
-      label.textContent = 'refreshing…';
-    } else if (!available) {
-      label.textContent = pipelineRunning ? 'waiting…' : 'not refreshed';
+    if (project.classList.contains('pipeline-running') || !available) {
+      notUploadedLabel.textContent = '–';
+      changedLabel.textContent = '–';
+      currentLabel.textContent = '–';
+      failedLabel.hidden = true;
     } else {
-      const pending = project.querySelectorAll('.session.pipeline-prepared').length;
+      const notUploaded = project.querySelectorAll('.session.pipeline-not-uploaded').length;
+      const changed = project.querySelectorAll('.session.pipeline-changed').length;
+      const current = project.querySelectorAll('.session.uploaded').length;
       const failed = project.querySelectorAll('.session.pipeline-error').length;
-      label.textContent = failed
-        ? `${failed} unavailable`
-        : pending
-        ? `${pending} not uploaded`
-        : 'all uploaded';
-      label.classList.toggle('complete', pending === 0 && failed === 0);
+      notUploadedLabel.textContent = String(notUploaded);
+      changedLabel.textContent = String(changed);
+      currentLabel.textContent = String(current);
+      project.querySelector('.project-state-counts').setAttribute(
+        'aria-label', `${notUploaded} not uploaded, ${changed} uploaded but changed, ${current} current${failed ? `, ${failed} unavailable` : ''}`);
+      failedLabel.textContent = failed ? `+ ${failed} unavailable` : '';
+      failedLabel.hidden = !failed;
     }
     const consented = consentedRows(project);
     if (consented.length) {
@@ -981,17 +995,17 @@ function updatePendingCounts() {
       || !prepared || current;
     upload.textContent = current ? 'Current' : 'Upload';
     upload.title = pipelineRunning
-      ? 'Upload preparation is refreshing'
+      ? 'Upload status is refreshing'
       : watcherRunning
       ? 'Automatic uploader is running. Manual uploads will be available when it finishes.'
-      : !prepared ? 'Waiting for upload preparation to finish'
+      : !prepared ? 'Waiting for upload status refresh to finish'
       : current ? 'This transcript matches the uploaded version'
-      : 'Upload this prepared transcript';
+      : 'Redact and upload this transcript';
   });
 
   button.title = watcherRunning
     ? 'Automatic uploader is running. Manual uploads will be available when it finishes.'
-    : 'Upload prepared transcripts from projects selected for automatic upload';
+    : 'Redact and upload transcripts from projects selected for automatic upload';
   if (uploadBusy) {
     button.textContent = 'Uploading…';
     button.disabled = true;
@@ -1002,7 +1016,7 @@ function updatePendingCounts() {
     button.textContent = 'Upload 0 transcripts now';
     button.disabled = true;
   } else if (selectedPipelineUnknown) {
-    button.textContent = `Preparing ${selectedTranscripts} transcript${selectedTranscripts === 1 ? '' : 's'}…`;
+    button.textContent = `Checking ${selectedTranscripts} transcript${selectedTranscripts === 1 ? '' : 's'}…`;
     button.disabled = true;
   } else {
     button.textContent = `Upload ${selectedPending} transcript${selectedPending === 1 ? '' : 's'} now`;
@@ -1032,7 +1046,7 @@ function showPreviewError(body, footer, message, offset) {
 
 async function previewSession(el, offset = 0) {
   const row = el.closest('.session');
-  const source = row.dataset.source, group = row.dataset.group, session = row.dataset.session;
+  const source = row.dataset.source, project = row.dataset.project, session = row.dataset.session;
   const parent = row.dataset.parent || '';
   const pane = document.getElementById('preview-pane');
   const body = document.getElementById('preview-body');
@@ -1041,7 +1055,7 @@ async function previewSession(el, offset = 0) {
   const redactCount = document.getElementById('preview-redaction-count');
   const request = ++previewRequest;
 
-  currentPreview = {row, source, group, session, parent, offset};
+  currentPreview = {row, source, project, session, parent, offset};
   if (offset === 0) {
     body.innerHTML = '<p style="color: var(--text-muted)">Loading preview…</p>';
     redactCount.textContent = '';
@@ -1052,7 +1066,7 @@ async function previewSession(el, offset = 0) {
   title.textContent = session.substring(0, 8) + '...';
 
   try {
-    const q = new URLSearchParams({ source, group, session, parent, offset, limit: 100 });
+    const q = new URLSearchParams({ source, project, session, parent, offset, limit: 100 });
     const resp = await fetch('/api/preview?' + q.toString());
     const data = await resp.json();
     if (request !== previewRequest) return;
@@ -1147,7 +1161,7 @@ function uploadNow() {
     .flatMap(project => consentedRows(project))
     .filter(row => row.classList.contains('pipeline-prepared'));
   if (!rows.length) {
-    showToast('No prepared transcripts to upload');
+    showToast('No pending transcripts to upload');
     return;
   }
   startUpload(rows);
@@ -1220,6 +1234,13 @@ function trackJob(jobId) {
       markUploaded(j.uploads || []);
       finishToast(j);
       resetUploadBtn();
+      if ((j.errors || []).length) {
+        // A transcript may have changed between Refresh and Upload, or an S3
+        // operation may have failed. Reconcile instead of leaving a stale row
+        // enabled for a retry that is guaranteed to fail the same way.
+        startPipeline();
+        return;
+      }
       const needsPipeline = Array.from(document.querySelectorAll('.project'))
         .some(project => !project.classList.contains('pipeline-ready'));
       if (needsPipeline) {
@@ -1240,6 +1261,7 @@ function renderProgress(j) {
   const fill = document.getElementById('bar-fill');
   const text = document.getElementById('progress-text');
   const labels = {
+    redacting: 'Redacting',
     uploading: 'Uploading',
   };
   if (j.stage_total) {
@@ -1251,16 +1273,18 @@ function renderProgress(j) {
     fill.style.width = '0';
     text.textContent = `${labels[j.stage] || 'Preparing'}…`;
   }
-  document.getElementById('upload-btn').textContent = 'Uploading…';
+  document.getElementById('upload-btn').textContent =
+    j.stage === 'redacting' ? 'Redacting…' : 'Uploading…';
 }
 
 function markUploaded(uploads) {
   const uploaded = new Set(uploads.map(item =>
-    [item.source, item.group, item.parent || '', item.session].join('|')));
+    [item.source, item.project, item.parent || '', item.session].join('|')));
   document.querySelectorAll('.session').forEach(row => {
     if (uploaded.has(sessionKey(row))) {
       row.classList.add('uploaded');
-      row.classList.remove('pipeline-prepared', 'pipeline-error');
+      row.classList.remove('pipeline-prepared', 'pipeline-not-uploaded',
+        'pipeline-changed', 'pipeline-error');
     }
   });
   if (uploaded.size) {

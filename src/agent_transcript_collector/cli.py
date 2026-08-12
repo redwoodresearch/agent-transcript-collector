@@ -86,7 +86,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.watcher_command == "uninstall" and args.purge:
             watcher_args.append("--purge")
         return run_watcher(watcher_args)
-
     from .tui import main as run_tui
 
     return run_tui(args.prefix)

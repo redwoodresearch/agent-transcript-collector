@@ -10,18 +10,21 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from .paths import (
     log_path,
     watcher_config_path,
     watcher_state_path,
 )
-from .pipeline import artifacts_for, mark_uploaded, refresh as refresh_pipeline
 from .s3client import make_s3_client
-from .sources import SOURCES, projects_from_groups
+from .scan import ScanResult, scan_transcripts
+from .sources.base import project_identity
+from .upload_status import refresh_upload_status
+from .upload_workflow import prepare_uploads, record_uploaded, upload_candidates
 from .uploader import (
     UploadBusy,
     UploadLock,
@@ -32,7 +35,7 @@ PACKAGE_SPEC = "git+https://github.com/redwoodresearch/agent-transcript-collecto
 LAUNCHD_LABEL = "com.redwoodresearch.agent-transcript-collector"
 SYSTEMD_NAME = "agent-transcript-collector"
 WATCH_INTERVAL_SECONDS = 60 * 60
-AUTO_UPLOADER_VERSION = 7
+AUTO_UPLOADER_VERSION = 9
 SOURCE_ENV_VARS = (
     "CLAUDE_CONFIG_DIR",
     "CODEX_HOME",
@@ -40,7 +43,8 @@ SOURCE_ENV_VARS = (
     "CURSOR_USER_DATA_DIR",
     "PI_CODING_AGENT_SESSION_DIR",
     "PI_CODING_AGENT_DIR",
-    "CTC_REDACTION_CONCURRENCY",
+    "CTC_HASH_CONCURRENCY",
+    "CTC_ARCHIVE_CONCURRENCY",
     "CTC_UPLOAD_CONCURRENCY",
     "CTC_METADATA_CONCURRENCY",
     "CTC_USERNAME_STOPLIST",
@@ -48,16 +52,9 @@ SOURCE_ENV_VARS = (
 
 
 @dataclass(frozen=True)
-class ProjectMember:
-    source: str
-    group: str
-
-
-@dataclass(frozen=True)
 class AllowedProject:
     identity: str
     label: str = ""
-    members: tuple[ProjectMember, ...] = ()
 
 
 @dataclass
@@ -72,30 +69,18 @@ class WatcherConfig:
     uv_path: str = ""
 
     @classmethod
-    def from_dict(cls, data: dict) -> "WatcherConfig":
+    def from_dict(cls, data: dict) -> WatcherConfig:
         if data.get("schema_version") != 2:
             raise ValueError("unsupported watcher configuration version")
-        projects = {
-            AllowedProject(
-                identity=str(item["identity"]),
-                label=str(item.get("label", "")),
-                members=tuple(sorted(
-                    (
-                        ProjectMember(
-                            source=str(member.get("source", "")),
-                            group=str(member.get("group", "")),
-                        )
-                        for member in item.get("members", [])
-                        if member.get("source") and member.get("group")
-                    ),
-                    key=lambda member: (member.source, member.group),
-                )),
-            )
-            for item in data.get("projects", [])
-            if item.get("identity")
-        }
         projects = sorted(
-            projects,
+            {
+                AllowedProject(
+                    identity=str(item["identity"]),
+                    label=str(item.get("label", "")),
+                )
+                for item in data.get("projects", [])
+                if item.get("identity")
+            },
             key=lambda item: (item.identity, item.label),
         )
         return cls(
@@ -112,6 +97,76 @@ class WatcherConfig:
             package_spec=str(data.get("package_spec", PACKAGE_SPEC)),
             uv_path=str(data.get("uv_path", "")),
         )
+
+
+# =========== MIGRATIONS ============
+
+def _migrate_config(data: dict) -> tuple[dict, bool]:
+    """Convert old source/group selections to current project identities once."""
+    version = data.get("schema_version")
+    if version == 2 and not any(
+        item.get("members") for item in data.get("projects", [])
+    ):
+        return data, False
+    if version not in {1, 2}:
+        raise ValueError("unsupported watcher configuration version")
+
+    members = [
+        (str(item.get("source", "")), str(item.get("group", "")))
+        for item in data.get("groups", [])
+    ] if version == 1 else [
+        (str(member.get("source", "")), str(member.get("group", "")))
+        for project in data.get("projects", [])
+        for member in project.get("members", [])
+    ]
+    wanted = {(source, group) for source, group in members if source and group}
+    source_env = {
+        str(key): str(value)
+        for key, value in data.get("source_env", {}).items()
+        if key in SOURCE_ENV_VARS
+    }
+    old_source_env = {name: os.environ.get(name) for name in source_env}
+    os.environ.update(source_env)
+    try:
+        scan = scan_transcripts()
+    finally:
+        for name, value in old_source_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+    matched: set[tuple[str, str]] = set()
+    migrated: dict[str, AllowedProject] = {}
+    for project in scan.projects:
+        if project.directory is None:
+            continue
+        old_group, _label = project_identity(project.directory)
+        project_members = {
+            (transcript.source, old_group) for transcript in project.transcripts
+        }
+        if project_members & wanted:
+            matched.update(project_members & wanted)
+            migrated[project.identity] = AllowedProject(project.identity, project.label)
+    if matched != wanted:
+        raise ValueError(
+            "an old watcher selection cannot be mapped to a current project; "
+            "open the UI and select its project again"
+        )
+    if version == 2:
+        for item in data.get("projects", []):
+            if item.get("identity") and not item.get("members"):
+                identity = str(item["identity"])
+                migrated[identity] = AllowedProject(
+                    identity, str(item.get("label", ""))
+                )
+    result = dict(data)
+    result["schema_version"] = 2
+    result.pop("groups", None)
+    result["projects"] = [
+        {"identity": project.identity, "label": project.label}
+        for project in sorted(migrated.values(), key=lambda item: item.identity)
+    ]
+    return result, True
 
 
 def _ensure_private_dir(path: Path) -> None:
@@ -141,14 +196,31 @@ def _atomic_write(path: Path, data: bytes, mode: int = 0o600) -> None:
 
 def save_config(config: WatcherConfig, path: Path | None = None) -> Path:
     target = path or watcher_config_path()
-    payload = json.dumps(asdict(config), indent=2, sort_keys=True).encode() + b"\n"
+    data = {
+        "schema_version": config.schema_version,
+        "auto_uploader_version": config.auto_uploader_version,
+        "contributor": config.contributor,
+        "aws_profile": config.aws_profile,
+        "projects": [
+            {"identity": project.identity, "label": project.label}
+            for project in config.projects
+        ],
+        "source_env": config.source_env,
+        "package_spec": config.package_spec,
+        "uv_path": config.uv_path,
+    }
+    payload = json.dumps(data, indent=2, sort_keys=True).encode() + b"\n"
     _atomic_write(target, payload)
     return target
 
 
 def load_config(path: Path | None = None) -> WatcherConfig:
     target = path or watcher_config_path()
-    return WatcherConfig.from_dict(json.loads(target.read_text()))
+    data, migrated = _migrate_config(json.loads(target.read_text()))
+    config = WatcherConfig.from_dict(data)
+    if migrated:
+        save_config(config, target)
+    return config
 
 
 def save_state(state: dict, path: Path | None = None) -> None:
@@ -171,42 +243,17 @@ def capture_source_env() -> dict[str, str]:
     return {name: os.environ[name] for name in SOURCE_ENV_VARS if os.environ.get(name)}
 
 
-def _resolve_allowed(config: WatcherConfig):
-    """Resolve project-level consent to every current group in each project."""
-    discovered = [
-        (source, group)
-        for source in SOURCES
-        for group in source.discover()
-    ]
-    allowed = set()
-    for project in projects_from_groups(discovered):
-        project_groups = {
-            (harness["source"], group)
-            for harness in project["harnesses"]
-            for group in harness["groups"]
-        }
-        selected = any(
-            item.identity == project["identity"]
-            or bool({(member.source, member.group) for member in item.members}
-                    & project_groups)
-            for item in config.projects
-        )
-        if not selected:
-            continue
-        allowed.update(project_groups)
-    return [
-        (source, group)
-        for source, group in discovered
-        if (source.id, group.key) in allowed
-    ]
+def selected_project_identities(
+    scan: ScanResult, config: WatcherConfig
+) -> set[str]:
+    """Resolve project consent from one discovery snapshot."""
+    available = {project.identity for project in scan.projects}
+    return {project.identity for project in config.projects} & available
 
 
 def discover_allowed(config: WatcherConfig):
-    sessions_by_source = {}
-    for source, group in _resolve_allowed(config):
-        entry = sessions_by_source.setdefault(source.id, (source, []))
-        entry[1].extend(group.sessions)
-    return list(sessions_by_source.values())
+    scan = scan_transcripts()
+    return scan.sessions_for_projects(selected_project_identities(scan, config))
 
 
 def _sso_hint(exc: Exception, profile: str) -> str:
@@ -220,7 +267,7 @@ def _sso_hint(exc: Exception, profile: str) -> str:
 def run_once(
     config: WatcherConfig,
     *,
-    s3=None,
+    s3: Any | None = None,
     state_path: Path | None = None,
     lock_path: Path | None = None,
 ) -> dict:
@@ -242,30 +289,37 @@ def run_once(
         with UploadLock(lock_path):
             client = s3 or make_s3_client()
             selections = discover_allowed(config)
-            pipeline = refresh_pipeline(
+            pipeline = refresh_upload_status(
                 selections, config.contributor, s3=client
             )
             result["errors"].extend(
                 item.get("error", str(item)) for item in pipeline["errors"]
             )
-            artifacts, stale = artifacts_for(selections, config.contributor)
+            candidates, stale = upload_candidates(selections, config.contributor)
             if stale:
                 result["errors"].append(
                     f"{len(stale)} transcript(s) require another refresh"
                 )
-            uploads, upload_errors = upload_artifacts(client, artifacts)
+            with tempfile.TemporaryDirectory(prefix="ctc-upload-") as directory:
+                artifacts, preparation_errors = prepare_uploads(
+                    selections, candidates, config.contributor, directory
+                )
+                result["errors"].extend(
+                    item.get("error", str(item)) for item in preparation_errors
+                )
+                uploads, upload_errors = upload_artifacts(client, artifacts)
             successful = {
-                (item.get("source"), item.get("group"), item.get("parent") or "",
+                (item.get("source"), item.get("project"), item.get("parent") or "",
                  item.get("session"))
                 for item in uploads
             }
             uploaded_artifacts = [
                 item for item in artifacts
-                if (item.get("source"), item.get("group"),
+                if (item.get("source"), item.get("project"),
                     item.get("parent") or "", item.get("session")) in successful
             ]
             if uploaded_artifacts:
-                mark_uploaded(uploaded_artifacts, config.contributor)
+                record_uploaded(uploaded_artifacts, config.contributor)
             result["sessions_uploaded"] = sum(
                 item["transcript_count"] for item in uploads
             )
@@ -547,7 +601,10 @@ def status(
             result["config"] = {
                 "auto_uploader_version": config.auto_uploader_version,
                 "contributor": config.contributor,
-                "projects": [asdict(project) for project in config.projects],
+                "projects": [
+                    {"identity": project.identity, "label": project.label}
+                    for project in config.projects
+                ],
                 "aws_profile": config.aws_profile,
             }
             result["needs_reinstall"] = (
@@ -568,15 +625,8 @@ def main(argv: list[str] | None = None) -> int:
     uninstall_parser = subparsers.add_parser("uninstall")
     uninstall_parser.add_argument("--purge", action="store_true")
     args = parser.parse_args(argv)
-    config = None
-    if args.command in {"run", "status"}:
-        from .migrate import migrate_config
-
-        config_path = args.config if args.command == "run" else watcher_config_path()
-        if config_path.exists():
-            config = migrate_config(config_path)
     if args.command == "run":
-        result = run_once(config or load_config(args.config))
+        result = run_once(load_config(args.config))
         print(json.dumps(result))
         return 0 if result["status"] in {"completed", "skipped"} else 1
     if args.command == "status":

@@ -11,13 +11,12 @@ import os
 import queue
 import re
 import socket
+import tempfile
 import threading
 import time
 import uuid
 import webbrowser
-from collections import defaultdict
 from functools import lru_cache
-from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -26,23 +25,23 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Environment, PackageLoader
 
 from .redactor import redact_identity, redact_jsonl_content
-from .pipeline import artifacts_for, mark_uploaded, refresh as refresh_pipeline
-from .paths import watcher_config_path
 from .s3client import make_s3_client as _make_s3_client
 from .s3client import selected_profile
-from .sources import SOURCES, get_source, projects_from_groups
-from .sources.base import human_size, session_sidecars
+from .scan import ScanResult, load_transcript_inputs, scan_transcripts
+from .sources import SOURCES, get_source
+from .sources.base import human_size
+from .upload_status import refresh_upload_status
+from .upload_workflow import prepare_uploads, record_uploaded, upload_candidates
 from .uploader import (
     UploadBusy,
     UploadLock,
-    artifact_is_available,
     upload_artifacts,
 )
 from .watcher import (
     AllowedProject,
-    ProjectMember,
     WatcherConfig,
     capture_source_env,
+    selected_project_identities,
 )
 from .watcher import (
     install as install_watcher,
@@ -105,12 +104,12 @@ SCAN_STATE = {
     "started_at": None,
     "finished_at": None,
 }
-SCAN_CACHE = {"projects": None, "groups_by_source": {}, "sessions": {}}
+SCAN_RESULT: ScanResult | None = None
 
 
 def _scan_status_unlocked() -> dict:
     result = dict(SCAN_STATE)
-    result["ready"] = SCAN_CACHE["projects"] is not None
+    result["ready"] = SCAN_RESULT is not None
     return result
 
 
@@ -120,30 +119,21 @@ def _scan_status() -> dict:
 
 
 def _run_scan() -> None:
-    discovered = []
-    groups_by_source = {}
-    sessions = {}
+    global SCAN_RESULT
+
     try:
-        for position, source in enumerate(SOURCES, start=1):
+        def progress(position, total, source, session_count):
             with SCAN_LOCK:
-                SCAN_STATE["source"] = source.label
-            groups = source.discover()
-            groups_by_source[source.id] = groups
-            discovered.extend((source, group) for group in groups)
-            for group in groups:
-                for session in group.sessions:
-                    key = (source.id, group.key, session.parent or None, session.id)
-                    sessions[key] = session
-            with SCAN_LOCK:
-                SCAN_STATE["completed_sources"] = position
-                SCAN_STATE["session_count"] = len(sessions)
-        projects = projects_from_groups(discovered)
+                SCAN_STATE.update({
+                    "source": source.label,
+                    "completed_sources": position,
+                    "total_sources": total,
+                    "session_count": session_count,
+                })
+
+        result = scan_transcripts(on_progress=progress)
         with SCAN_LOCK:
-            SCAN_CACHE.update({
-                "projects": projects,
-                "groups_by_source": groups_by_source,
-                "sessions": sessions,
-            })
+            SCAN_RESULT = result
             SCAN_STATE["status"] = "ready"
             SCAN_STATE["error"] = None
     except Exception as exc:
@@ -161,7 +151,7 @@ def _start_scan(force: bool = False) -> dict:
         if SCAN_STATE["status"] == "scanning":
             return _scan_status_unlocked()
         if (
-            SCAN_CACHE["projects"] is not None
+            SCAN_RESULT is not None
             and SCAN_STATE["status"] == "ready"
             and not force
         ):
@@ -180,9 +170,10 @@ def _start_scan(force: bool = False) -> dict:
     return status
 
 
-def _cached_session(source: str, group: str, session: str, parent: str | None):
+def _cached_session(source: str, project: str, session: str, parent: str | None):
     with SCAN_LOCK:
-        return SCAN_CACHE["sessions"].get((source, group, parent or None, session))
+        result = SCAN_RESULT
+    return result.find_session(source, project, session, parent) if result else None
 
 
 @app.post("/api/scan")
@@ -198,31 +189,33 @@ def scan_status():
 @app.get("/api/projects", response_class=HTMLResponse)
 def project_list():
     with SCAN_LOCK:
-        projects = SCAN_CACHE["projects"]
-    if projects is None:
+        result = SCAN_RESULT
+    if result is None:
         return JSONResponse(_scan_status(), status_code=202)
-    return jinja_env.get_template("_projects.html").render(projects=projects)
+    return jinja_env.get_template("_projects.html").render(
+        projects=result.project_dicts
+    )
 
 
 @app.get("/api/preview")
-def preview_session(source: str, group: str, session: str, parent: str = "",
+def preview_session(source: str, project: str, session: str, parent: str = "",
                     offset: int = 0, limit: int = 100):
     """Preview one bounded page of messages with displayed text redacted."""
-    sess = _cached_session(source, group, session, parent or None)
+    sess = _cached_session(source, project, session, parent or None)
     src = get_source(source)
     if sess is None or src is None:
         return JSONResponse({"error": "Session not found; try Refresh"}, status_code=404)
 
     try:
-        raw = Path(sess.path).read_text(encoding="utf-8", errors="replace")
+        inputs = load_transcript_inputs(src, sess)
     except OSError:
         return JSONResponse(
             {"error": "Session file is no longer available; try Refresh"},
             status_code=404,
         )
     # Resolve side files before redaction rewrites their referenced paths.
-    sidecars = session_sidecars(src, sess, raw)
-    parsed = src.parse_messages(raw)
+    sidecars = inputs.sidecars
+    parsed = src.parse_messages(inputs.text)
     offset = max(0, offset)
     limit = max(1, min(limit, 100))
     messages = []
@@ -257,10 +250,10 @@ def preview_session(source: str, group: str, session: str, parent: str = "",
     }
 
 
-# --- one background scan → redact changed → check changed pipeline ---
+# --- one background scan → hash changed → check changed pipeline ---
 PIPELINE_RUNS: dict[str, dict] = {}
 PIPELINE_LOCK = threading.Lock()
-_active_pipeline = {"id": None}
+_active_pipeline: dict[str, str | None] = {"id": None}
 
 
 def _pipeline_worker(serialized_selections, contributor, events):
@@ -277,7 +270,7 @@ def _pipeline_worker(serialized_selections, contributor, events):
                     "done": done, "total": total,
                 })
 
-            result = refresh_pipeline(
+            result = refresh_upload_status(
                 selections, contributor, on_progress=progress
             )
     except Exception as exc:
@@ -287,12 +280,11 @@ def _pipeline_worker(serialized_selections, contributor, events):
             "total": sum(len(sessions) for _, sessions in selections),
             "changed": 0, "checked": 0, "cached": 0,
         }
+    try:
+        events.put({"type": "finished", **result})
     finally:
-        try:
-            events.put({"type": "finished", **result})
-        finally:
-            events.close()
-            events.join_thread()
+        events.close()
+        events.join_thread()
 
 
 def _monitor_pipeline(run_id, process, events):
@@ -365,7 +357,7 @@ def _start_pipeline(body: dict):
         run_id = uuid.uuid4().hex[:12]
         total = sum(len(sessions) for _, sessions in selections)
         PIPELINE_RUNS[run_id] = {
-            "status": "running", "stage": "redacting", "done": 0,
+            "status": "running", "stage": "checking", "done": 0,
             "work_total": 0, "total": total, "changed": 0, "checked": 0,
             "cached": 0, "items": [], "errors": [],
             "contributor": contributor,
@@ -415,80 +407,72 @@ def pipeline_status(run_id: str):
 # --- background upload jobs (so closing the tab can't abort an upload) ---
 JOBS: dict[str, dict] = {}
 JOBS_LOCK = threading.Lock()
-_active_job = {"id": None}
+_active_job: dict[str, str | None] = {"id": None}
 
 
 def _resolve_selection(selected):
-    """Resolve the UI selection to [(source, [Session])] (no network calls).
-
-    Key on (group, parent, id): subagents share their parent's group, so id
-    alone is not unique, so parent identity is part of the selection key.
-    """
-    picks_by_source: dict[str, set] = defaultdict(set)
-    for item in selected:
-        picks_by_source[item.get("source", "")].add(
-            (item.get("group", ""), item.get("parent") or None, item.get("session", ""))
-        )
-    out = []
-    for source_id, picks in picks_by_source.items():
-        source = get_source(source_id)
-        if source is None:
-            continue
-        with SCAN_LOCK:
-            resolved = {
-                (group, parent, session): value
-                for (sid, group, parent, session), value in
-                SCAN_CACHE["sessions"].items()
-                if sid == source_id
-            }
-        sessions = [resolved[p] for p in picks if p in resolved]
-        if sessions:
-            out.append((source, sessions))
-    return out
+    """Resolve untrusted UI descriptors against the current scan."""
+    with SCAN_LOCK:
+        result = SCAN_RESULT
+    return result.resolve_sessions(selected) if result else []
 
 
-def _upload_worker(artifacts, contributor, events):
-    """Upload exactly the artifacts produced by the persistent pipeline."""
+def _upload_worker(serialized_selections, candidates, contributor, events):
+    """Redact, package, and upload candidates confirmed by Refresh."""
     uploads = []
     errors = []
     status = "failed"
     try:
         with UploadLock():
-            if not all(artifact_is_available(item) for item in artifacts):
-                raise RuntimeError("A prepared upload is no longer available. Refresh and try again.")
-            events.put({
-                "type": "progress", "status": "running", "stage": "uploading",
-                "stage_done": 0, "stage_total": len(artifacts),
-                "stage_item_done": 0, "stage_item_total": len(artifacts),
-            })
-            completed = 0
+            selections = [
+                (source, sessions)
+                for source_id, sessions in serialized_selections
+                if (source := get_source(source_id)) is not None
+            ]
 
-            def advance(count):
-                nonlocal completed
-                completed += count
-                events.put({"type": "advance", "count": count})
+            def progress(stage, done, total):
                 events.put({
-                    "type": "progress", "stage": "uploading",
-                    "stage_done": completed, "stage_total": len(artifacts),
-                    "stage_item_done": completed,
-                    "stage_item_total": len(artifacts),
+                    "type": "progress", "status": "running", "stage": stage,
+                    "stage_done": done, "stage_total": total,
+                    "stage_item_done": done, "stage_item_total": total,
                 })
 
-            uploads, errors = upload_artifacts(
-                _make_s3_client(), artifacts, on_progress=advance
-            )
+            with tempfile.TemporaryDirectory(prefix="ctc-upload-") as directory:
+                progress("redacting", 0, len(candidates))
+                artifacts, preparation_errors = prepare_uploads(
+                    selections,
+                    candidates,
+                    contributor,
+                    directory,
+                    on_progress=lambda done, total:
+                        progress("redacting", done, total),
+                )
+                errors.extend(preparation_errors)
+                completed = 0
+
+                def advance(count):
+                    nonlocal completed
+                    completed += count
+                    events.put({"type": "advance", "count": count})
+                    progress("uploading", completed, len(artifacts))
+
+                progress("uploading", 0, len(artifacts))
+                uploads, upload_errors = upload_artifacts(
+                    _make_s3_client(), artifacts, on_progress=advance
+                )
+                errors.extend(upload_errors)
             successful = {
-                (item.get("source"), item.get("group"), item.get("parent") or "",
+                (item.get("source"), item.get("project"), item.get("parent") or "",
                  item.get("session"))
                 for item in uploads
             }
             uploaded_artifacts = [
                 item for item in artifacts
-                if (item.get("source"), item.get("group"),
+                if (item.get("source"), item.get("project"),
                     item.get("parent") or "", item.get("session")) in successful
             ]
             if uploaded_artifacts:
-                mark_uploaded(uploaded_artifacts, contributor)
+                record_uploaded(uploaded_artifacts, contributor)
             status = "completed" if not errors else "partial" if uploads else "failed"
     except UploadBusy as e:
         errors.append({"error": str(e)})
@@ -586,10 +570,10 @@ async def upload(request: Request):
             {"error": "Selected transcripts are no longer available"},
             status_code=400,
         )
-    artifacts, stale = artifacts_for(selections, contributor)
+    candidates, stale = upload_candidates(selections, contributor)
     if stale:
         return JSONResponse(
-            {"error": "Prepared uploads are stale. Refresh before uploading."},
+            {"error": "Upload status is stale. Refresh before uploading."},
             status_code=409,
         )
 
@@ -607,10 +591,10 @@ async def upload(request: Request):
         _active_job["id"] = job_id
         JOBS[job_id] = {
             "status": "uploading",
-            "stage": "uploading",
+            "stage": "redacting",
             "stage_done": 0,
-            "stage_total": len(artifacts),
-            "total": len(artifacts),
+            "stage_total": len(candidates),
+            "total": len(candidates),
             "done": 0,
             "errors": [],
             "uploads": [],
@@ -623,7 +607,8 @@ async def upload(request: Request):
         events = context.Queue()
         process = context.Process(
             target=_upload_worker,
-            args=(artifacts, contributor, events),
+            args=([(source.id, sessions) for source, sessions in selections],
+                  candidates, contributor, events),
             daemon=True,
         )
         process.start()
@@ -651,34 +636,22 @@ def get_watcher_status():
     if not config:
         return result
     with SCAN_LOCK:
-        projects = list(SCAN_CACHE["projects"] or [])
-    visible_projects = [
-        (
-            project,
-            {
-                (harness["source"], group)
-                for harness in project["harnesses"]
-                for group in harness["groups"]
-            },
-        )
-        for project in projects
+        scan = SCAN_RESULT
+    projects = scan.project_dicts if scan else []
+    visible_projects = {project["identity"]: project for project in projects}
+    saved_config = load_watcher_config()
+    selected_ids = (
+        selected_project_identities(scan, saved_config) if scan else set()
+    )
+    selected = [
+        {"identity": identity, "label": visible_projects[identity]["label"]}
+        for identity in selected_ids
     ]
-    selected = []
-    for saved in config.get("projects", []):
-        members = {
-            (item.get("source", ""), item.get("group", ""))
-            for item in saved.get("members", [])
-        }
-        current = next((
-            project
-            for project, groups in visible_projects
-            if saved.get("identity") == project.get("identity")
-            or bool(members & groups)
-        ), None)
-        selected.append({
-            "identity": current.get("identity", ""),
-            "label": current.get("label", ""),
-        } if current else saved)
+    selected.extend(
+        {"identity": saved.identity, "label": saved.label}
+        for saved in saved_config.projects
+        if saved.identity not in visible_projects
+    )
     config["projects"] = list({
         item.get("identity", ""): item for item in selected
     }.values())
@@ -686,25 +659,22 @@ def get_watcher_status():
 
 
 def _put_watcher(body: dict):
-    requested = {
-        (str(item.get("identity", "")), str(item.get("label", "")))
-        for item in body.get("projects", [])
+    requested_ids = {
+        str(item.get("identity", "")) for item in body.get("projects", [])
+        if item.get("identity")
     }
-    removed = {
-        (str(item.get("identity", "")), str(item.get("label", "")))
-        for item in body.get("removed_projects", [])
+    removed_ids = {
+        str(item.get("identity", "")) for item in body.get("removed_projects", [])
+        if item.get("identity")
     }
-    requested -= removed
+    requested_ids -= removed_ids
     with SCAN_LOCK:
-        discovered_projects = {
-            (str(project.get("identity", "")), str(project.get("label", ""))): {
-                (harness["source"], group)
-                for harness in project["harnesses"]
-                for group in harness["groups"]
-            }
-            for project in (SCAN_CACHE["projects"] or [])
-        }
-    invalid = sorted(requested - discovered_projects.keys())
+        scan = SCAN_RESULT
+    discovered_projects = {
+        str(project.get("identity", "")): str(project.get("label", ""))
+        for project in (scan.project_dicts if scan else [])
+    }
+    invalid = sorted(requested_ids - discovered_projects.keys())
     if invalid:
         return JSONResponse(
             {"error": "One or more selected projects are no longer available"},
@@ -716,32 +686,16 @@ def _put_watcher(body: dict):
         projects = [
             AllowedProject(
                 identity=identity,
-                label=label,
-                members=tuple(sorted(
-                    (
-                        ProjectMember(source, group)
-                        for source, group in discovered_projects[(identity, label)]
-                    ),
-                    key=lambda item: (item.source, item.group),
-                )),
+                label=discovered_projects[identity],
             )
-            for identity, label in sorted(requested)
+            for identity in sorted(requested_ids)
         ]
         if existing:
-            visible_groups = set().union(
-                *discovered_projects.values(),
-            ) if discovered_projects else set()
             projects.extend(
                 project
                 for project in existing.projects
-                if (
-                    (project.identity, project.label) not in discovered_projects
-                    and not (
-                        {(member.source, member.group) for member in project.members}
-                        & visible_groups
-                    )
-                )
-                and (project.identity, project.label) not in removed
+                if project.identity not in discovered_projects
+                and project.identity not in removed_ids
             )
         config = WatcherConfig(
             auto_uploader_version=(
@@ -842,11 +796,6 @@ def main(
     open_browser: bool = True,
     strict_port: bool = False,
 ) -> int:
-    config_path = watcher_config_path()
-    if config_path.exists():
-        from .migrate import migrate_config
-
-        migrate_config(config_path)
     base = port if port is not None else int(os.environ.get("PORT", "8899"))
     port = base if strict_port else _find_free_port(base, host=host)
     if port is None:

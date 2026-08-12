@@ -11,13 +11,13 @@ transcript, which keeps only a pointer to them; see `sidecars` below.
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from pathlib import Path
 
 from ..sidecars import SidecarBuilder, SidecarSet
 from .base import (
-    Group,
     Session,
     canonical_project_directory,
     decode_existing_project_path,
@@ -117,16 +117,18 @@ class ClaudeCodeSource:
     label = "Claude Code"
     source_format = "claude-jsonl"
 
-    def discover(self) -> list[Group]:
+    def discover(self) -> list[Session]:
         projects_dir = _projects_dir()
         if not projects_dir.exists():
             return []
 
-        by_group: dict[str, Group] = {}
+        sessions = []
         for project_dir in sorted(projects_dir.iterdir()):
             if not project_dir.is_dir():
                 continue
-            files = [(f, None) for f in sorted(project_dir.glob("*.jsonl"))]
+            files: list[tuple[Path, str | None]] = [
+                (f, None) for f in sorted(project_dir.glob("*.jsonl"))
+            ]
             files.extend(
                 (f, f.parent.parent.name)
                 for f in sorted(project_dir.glob("*/subagents/*.jsonl"))
@@ -144,30 +146,21 @@ class ClaudeCodeSource:
                     else None
                 )
                 observed_cwd = cwd or container_cwd or recovered or fallback
-                key, label = project_identity(observed_cwd)
+                _key, label = project_identity(observed_cwd)
                 directory = (
                     canonical_project_directory(observed_cwd)
                     if cwd is not None or container_cwd is not None or recovered is not None
                     else None
                 )
-                group = by_group.get(key)
-                if group is None:
-                    group = by_group[key] = Group(
-                        key=key,
-                        label=label,
-                        sessions=[],
-                        directory=directory,
-                    )
-                elif group.directory is None and directory is not None:
-                    group.directory = directory
-                group.sessions.append(Session(
+                sessions.append(Session(
                     source=self.id, id=f.stem,
-                    group_key=key, group_label=label,
+                    project_id="", project_label=label,
+                    project_directory=directory,
                     path=f, size_bytes=f.stat().st_size,
                     first_message=first, message_count=count, modified=mtime(f),
                     is_subagent=parent is not None, parent=parent,
                 ))
-        return list(by_group.values())
+        return sessions
 
     def _summary(self, path: Path) -> tuple[str | None, str, int]:
         cwd = None
@@ -212,7 +205,6 @@ class ClaudeCodeSource:
             if not line:
                 continue
             try:
-                import json
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue

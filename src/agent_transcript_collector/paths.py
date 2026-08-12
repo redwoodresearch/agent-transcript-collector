@@ -6,7 +6,6 @@ import os
 import sys
 from pathlib import Path
 
-
 APP_NAME = "agent-transcript-collector"
 
 
@@ -58,7 +57,3 @@ def project_identity_cache_path() -> Path:
 
 def pipeline_cache_path() -> Path:
     return state_dir() / "pipeline-cache.json"
-
-
-def prepared_artifacts_dir() -> Path:
-    return state_dir() / "prepared"

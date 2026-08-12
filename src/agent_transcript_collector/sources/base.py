@@ -1,8 +1,8 @@
 """Base abstractions shared by all transcript sources.
 
 A "source" is one agent harness (Claude Code, Codex, Pi, ...). Each source
-knows where that harness stores transcripts on disk, how to discover and group
-them, and how to parse a transcript into messages for preview. Everything
+knows where that harness stores transcripts on disk, how to discover them,
+and how to parse a transcript into messages for preview. Everything
 downstream (redaction, zipping, upload, the UI) is source-agnostic and works in
 terms of the normalized types defined here.
 """
@@ -23,7 +23,6 @@ from typing import Protocol, runtime_checkable
 
 from ..paths import project_identity_cache_path
 from ..sidecars import SidecarSet
-
 
 _CODEX_WORKTREE_RE = re.compile(
     r"(?P<root>.*?/\.?codex/worktrees/[^/]+/(?P<name>[^/]+))(?:/|$)"
@@ -74,6 +73,7 @@ def _remember_project_identity(worktree: str, identity: str, name: str) -> None:
             return
         _identity_cache[worktree] = value
         target = project_identity_cache_path()
+        temporary: str | None = None
         try:
             target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
@@ -83,10 +83,11 @@ def _remember_project_identity(worktree: str, identity: str, name: str) -> None:
             os.chmod(temporary, 0o600)
             os.replace(temporary, target)
         except OSError:
-            try:
-                os.unlink(temporary)
-            except (FileNotFoundError, UnboundLocalError):
-                pass
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except FileNotFoundError:
+                    pass
 
 
 def human_size(nbytes: float) -> str:
@@ -230,9 +231,10 @@ def decode_existing_project_path(encoded: str) -> str | None:
 @dataclass
 class Session:
     source: str          # source id, e.g. "claude_code"
-    id: str              # session id, unique within (source, group)
-    group_key: str       # stable project identity used for storage keys
-    group_label: str     # human-readable group label (usually a cwd)
+    id: str              # session id, unique within (source, project)
+    project_id: str      # canonical identity assigned by scan.py
+    project_label: str   # human-readable project label
+    project_directory: str | None
     path: Path           # absolute path to the transcript file on disk
     size_bytes: int
     first_message: str
@@ -248,7 +250,7 @@ class Session:
     def as_dict(self) -> dict:
         return {
             "id": self.id,
-            "group_key": self.group_key,
+            "project_id": self.project_id,
             "first_message": self.first_message,
             "message_count": self.message_count,
             "size_bytes": self.size_bytes,
@@ -259,34 +261,14 @@ class Session:
         }
 
 
-@dataclass
-class Group:
-    key: str
-    label: str
-    sessions: list[Session]
-    directory: str | None = None
-
-    @property
-    def session_count(self) -> int:
-        return len(self.sessions)
-
-    @property
-    def total_size_bytes(self) -> int:
-        return sum(s.size_bytes for s in self.sessions)
-
-    @property
-    def total_size_human(self) -> str:
-        return human_size(self.total_size_bytes)
-
-
 @runtime_checkable
 class Source(Protocol):
     id: str                # stable slug, used in S3 prefixes and URLs
     label: str             # display name
     source_format: str     # format tag recorded in the manifest
 
-    def discover(self) -> list[Group]:
-        """Return groups of sessions found on disk (empty if not installed)."""
+    def discover(self) -> list[Session]:
+        """Return transcripts found on disk (empty if not installed)."""
         ...
 
     def parse_messages(self, raw: str) -> list[dict]:

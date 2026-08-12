@@ -143,16 +143,66 @@ that are present appear in the review UI.
 
 Each session goes through the same pipeline:
 
-1. **Discover:** find native transcripts and group them by project and source.
+1. **Discover:** find native transcripts and assign each one a project and source.
 2. **Assemble:** keep each transcript in its native JSONL or text format, link
    subagent sessions to their parents, and resolve referenced external files.
-3. **Redact:** replace detected credentials and local identity data on the local
-   machine, in both the transcript and its external files.
-4. **Store:** package one redacted session per ZIP and upload it to a stable S3
-   key. A changed session replaces its previous ZIP; unchanged content is skipped.
+3. **Compare:** hash the original transcript and external files, then compare
+   that source hash and the redaction policy version with S3 metadata.
+4. **Redact and store:** when an upload starts, replace detected credentials and
+   local identity data on the local machine, package one redacted session per
+   ZIP, and upload it to a stable S3 key. A changed session replaces its previous
+   ZIP; unchanged content is skipped without first being redacted or compressed.
 
 The uploaded transcript contains the source's native data without schema
 conversion.
+
+### Local cache
+
+The collector keeps a disposable `pipeline-cache.json` in its private state
+directory. It exists only to avoid rereading unchanged files and repeating S3
+metadata requests. Its schema and file operations are defined in
+[`cache.py`](src/agent_transcript_collector/cache.py); the pipeline loads the
+whole file once with `get_cache()` and uses transcript-level lookup and update
+helpers. A record is approximately:
+
+```json
+{
+  "records": {
+    "<contributor and local session identity>": {
+      "source": "codex",
+      "contributor": "example-contributor",
+      "project": "project-key",
+      "session": "session-id",
+      "parent": null,
+      "filesystem_snapshot": [
+        {"path": "/local/transcript.jsonl", "exists": true, "size": 1234, "mtime_ns": 123456789}
+      ],
+      "source_hash_version": 3,
+      "source_hash": "hash of the original transcript and sidecars",
+      "key": "S3 object key",
+      "redaction_version": 1,
+      "format_version": 5,
+      "state": "not_uploaded, changed, current, or error"
+    }
+  }
+}
+```
+
+`not_uploaded` records contain only identity, state, and the intended S3 key;
+they do not need a source hash or filesystem snapshot until upload begins.
+
+The filesystem snapshot is inexpensive file metadata, not a copy of the files.
+It covers the transcript, its sidecars, missing or skipped sidecar paths, and
+watched sidecar directories. If that metadata is unchanged, the collector can
+reuse the cached source hash. Without it, every refresh would have to reread and
+hash every transcript and sidecar to determine whether the cached hash is still
+valid. Uploads still reread and revalidate selected files before redaction.
+
+The cache is not authoritative and has no migrations or schema version. If it
+is absent or malformed, the collector starts with an empty cache. Records
+missing required current fields are rehashed and replaced when encountered.
+Deleting the file is always safe. Because it contains local paths and hashes of
+original content, it is written with user-only permissions.
 
 ### What is not collected
 
@@ -210,12 +260,12 @@ redaction result:
 
 ```json
 {
-  "transcript_format_version": 4,
+  "transcript_format_version": 5,
   "source": "claude_code",
   "source_format": "claude-jsonl",
   "contributor": "example-contributor",
   "project": {
-    "key": "example-project",
+    "key": "project-a1b2c3d4e5f6",
     "name": "example-project"
   },
   "session": {
@@ -224,10 +274,10 @@ redaction result:
     "parent": null
   },
   "version": {
-    "fingerprint": "privacy-safe archive fingerprint",
-    "body_fingerprint": "privacy-safe transcript fingerprint",
+    "source_hash": "SHA-256 hash of original transcript and sidecars",
+    "source_hash_version": 3,
+    "redaction_version": 1,
     "content_sha256": "SHA-256 of the redacted transcript",
-    "redact_identity": true,
     "uploaded_at": "2026-01-01T00:00:00+00:00"
   },
   "size_bytes": 12345,
@@ -248,11 +298,11 @@ redaction result:
 }
 ```
 
-`version` holds the fingerprints used for change detection, the redacted
-transcript hash, and the upload time. `size_bytes` is the redacted transcript
-size, and `redactions` is the total number of replacements. Each sidecar entry
-records its ZIP path, type, redacted original reference, redacted size, and hash.
-The three sidecar arrays are present even when empty.
+`version` holds the original-content hash and its algorithm version,
+the redacted transcript hash, and the upload time. `size_bytes` is the redacted
+transcript size, and `redactions` is the total number of replacements. Each
+sidecar entry records its ZIP path, type, redacted original reference, redacted
+size, and hash. The three sidecar arrays are present even when empty.
 
 ### S3 object properties
 
@@ -270,8 +320,23 @@ overwritten and can be used to find recent uploads.
 
 ## Privacy and redaction
 
-Redaction happens on your machine before anything is written to a ZIP, and the
-count of replacements is recorded in its manifest.
+Redaction happens on your machine after you start an upload and before anything
+is written to its temporary ZIP. The count of replacements is recorded in the
+manifest. Background UI refreshes calculate hashes of the original content to
+determine whether an upload is needed, but do not redact or package transcripts.
+
+The original-content SHA-256 hash is stored in private S3 object metadata
+so future runs can skip unchanged content. It is a one-way digest, but it can
+confirm guesses about exact original content and reveal when content is equal.
+Uploaded metadata also records the hash-algorithm, redaction-policy, and
+archive-format versions; changing a policy version causes the transcript to be
+redacted and uploaded again.
+
+The UI reports three upload states. A missing S3 object is **Not uploaded**. An
+existing object whose source hash or policy versions differ is **Uploaded,
+changed**. An existing object with matching source hash and versions is
+**Current**. Object existence comes from an S3 `HEAD` request; freshness also
+requires hashing the current original transcript and its available sidecars.
 
 Two kinds of content are rewritten:
 
@@ -308,9 +373,10 @@ These knobs exist for overriding defaults:
 |---|---|---|
 | `AWS_PROFILE` | _(unset)_ | Standard AWS profile selector; set it to your General Sandbox profile. |
 | `CTC_AWS_PROFILE` | _(unset)_ | Collector-specific profile override. |
-| `CTC_REDACTION_CONCURRENCY` | `16` | Changed transcripts redacted and packaged in parallel. |
-| `CTC_UPLOAD_CONCURRENCY` | `4` | Transcripts uploaded in parallel. |
-| `CTC_METADATA_CONCURRENCY` | `16` | S3 fingerprint checks performed in parallel. |
+| `CTC_HASH_CONCURRENCY` | `16` | Existing transcripts read and hashed in parallel. |
+| `CTC_ARCHIVE_CONCURRENCY` | `8` | Pending transcripts redacted and packaged in parallel. |
+| `CTC_UPLOAD_CONCURRENCY` | `8` | Transcripts uploaded in parallel. |
+| `CTC_METADATA_CONCURRENCY` | `20` | S3 object metadata checks performed in parallel. |
 | `CTC_SIDECAR_MAX_BYTES` | `104857600` | Side-file bytes collected per session. |
 | `CTC_USERNAME_STOPLIST` | _(unset)_ | Comma-separated logins to never redact. |
 | `PORT` | `8899` | Local review UI port. |
