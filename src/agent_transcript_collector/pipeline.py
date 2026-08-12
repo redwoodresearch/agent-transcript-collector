@@ -22,7 +22,6 @@ from .cache import (
     set_cache_for_transcript,
 )
 from .prepare_archive import (
-    REDACTION_VERSION,
     SOURCE_HASH_VERSION,
     TRANSCRIPT_FORMAT_VERSION,
     PreparedTranscript,
@@ -31,6 +30,7 @@ from .prepare_archive import (
     prepare_archive,
     prepare_transcript,
 )
+from .redactor import REDACTION_VERSION
 from .s3client import make_s3_client
 from .uploader import (
     classify_prepared,

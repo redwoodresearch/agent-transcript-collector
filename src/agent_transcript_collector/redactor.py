@@ -16,6 +16,9 @@ import string
 import subprocess
 from pathlib import Path
 
+# Increment this whenever redaction behavior or policy changes.
+REDACTION_VERSION = 1
+
 USERNAME_PLACEHOLDER = "[USER]"
 EMAIL_PLACEHOLDER = "[EMAIL]"
 

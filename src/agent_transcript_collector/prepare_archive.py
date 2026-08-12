@@ -12,17 +12,18 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .redactor import redact_identity, redact_jsonl_content, redact_path_token
+from .redactor import (
+    REDACTION_VERSION,
+    redact_identity,
+    redact_jsonl_content,
+    redact_path_token,
+)
 from .scan import load_transcript_inputs
 from .sidecars import EMPTY as NO_SIDECARS
 from .sidecars import SidecarSet
 
 TRANSCRIPT_FORMAT_VERSION = 4
 SOURCE_HASH_VERSION = 3
-# Increment this whenever redaction behavior or policy changes.
-REDACTION_VERSION = 1
-
-
 @dataclass(frozen=True)
 class PreparedTranscript:
     session: object

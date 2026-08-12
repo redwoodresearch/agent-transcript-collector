@@ -18,12 +18,15 @@ from botocore.exceptions import ClientError
 
 from agent_transcript_collector.paths import pipeline_cache_path, watcher_config_path
 from agent_transcript_collector.prepare_archive import (
-    REDACTION_VERSION,
     SOURCE_HASH_VERSION,
     TRANSCRIPT_FORMAT_VERSION,
     prepare_transcript,
 )
-from agent_transcript_collector.redactor import canonicalize_secrets, redact_identity
+from agent_transcript_collector.redactor import (
+    REDACTION_VERSION,
+    canonicalize_secrets,
+    redact_identity,
+)
 from agent_transcript_collector.s3client import S3_BUCKET, make_s3_client
 from agent_transcript_collector.uploader import (
     FORMAT_VERSION_METADATA,

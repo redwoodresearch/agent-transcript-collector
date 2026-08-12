@@ -12,11 +12,11 @@ from botocore.exceptions import ClientError
 
 from .paths import upload_lock_path
 from .prepare_archive import (
-    REDACTION_VERSION,
     SOURCE_HASH_VERSION,
     TRANSCRIPT_FORMAT_VERSION,
     PreparedTranscript,
 )
+from .redactor import REDACTION_VERSION
 from .s3client import S3_BUCKET
 from .storage import STORAGE_PREFIX
 
