@@ -8,14 +8,19 @@ redaction. Uploads redact and package only the confirmed pending records.
 
 from __future__ import annotations
 
-import json
 import os
-import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
 
-from .paths import pipeline_cache_path, prepared_artifacts_dir
+from .cache import (
+    CacheRecord,
+    cache_record_key,
+    get_cache,
+    get_cache_for_transcript,
+    save_cache,
+    set_cache_for_transcript,
+)
 from .s3client import make_s3_client
 from .uploader import (
     REDACTION_VERSION,
@@ -29,70 +34,10 @@ from .uploader import (
     prepare_transcript,
 )
 
-CACHE_SCHEMA_VERSION = 1
-
-
-def _cleanup_legacy_artifacts() -> None:
-    """Remove private ZIPs left by the pre-upload-redaction pipeline."""
-    root = prepared_artifacts_dir()
-    try:
-        resolved_root = root.resolve()
-        archives = list(root.rglob("transcript-*.zip"))
-    except OSError:
-        return
-    for archive in archives:
-        try:
-            if archive.resolve().is_relative_to(resolved_root):
-                archive.unlink(missing_ok=True)
-        except (OSError, RuntimeError):
-            continue
-
 
 def redaction_concurrency() -> int:
     """Return the number of transcripts prepared in parallel."""
     return max(1, int(os.environ.get("CTC_REDACTION_CONCURRENCY", "16")))
-
-
-def _record_key(contributor: str, source_id: str, session) -> str:
-    return json.dumps(
-        [contributor, source_id, str(session.path), session.id, session.parent or ""],
-        separators=(",", ":"),
-    )
-
-
-def _load(path: Path | None = None) -> dict:
-    target = path or pipeline_cache_path()
-    try:
-        value = json.loads(target.read_text())
-    except (OSError, json.JSONDecodeError):
-        value = {}
-    if value.get("schema_version") != CACHE_SCHEMA_VERSION:
-        if path is None:
-            _cleanup_legacy_artifacts()
-        return {"schema_version": CACHE_SCHEMA_VERSION, "records": {}}
-    records = value.get("records")
-    if not isinstance(records, dict):
-        value["records"] = {}
-    return value
-
-
-def _save(state: dict, path: Path | None = None) -> None:
-    target = path or pipeline_cache_path()
-    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(state, handle, separators=(",", ":"), sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, target)
-    finally:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
 
 
 def _item(source_id: str, session, status: str) -> dict:
@@ -105,9 +50,7 @@ def _item(source_id: str, session, status: str) -> dict:
     }
 
 
-def _record_is_current(record: object) -> bool:
-    if not isinstance(record, dict):
-        return False
+def _record_is_current(record: CacheRecord) -> bool:
     if (
         record.get("source_hash_version") != SOURCE_HASH_VERSION
         or record.get("redaction_version") != REDACTION_VERSION
@@ -143,7 +86,7 @@ def _prepare_changed(source, session, contributor: str) -> tuple:
     return replace(prepared, raw_bytes=b""), record
 
 
-def _prepared_from_record(record: dict, session) -> PreparedTranscript | None:
+def _prepared_from_record(record: CacheRecord, session) -> PreparedTranscript | None:
     try:
         return PreparedTranscript(
             session=session,
@@ -165,7 +108,6 @@ def refresh(
     s3=None,
     on_progress=None,
     cache_path: Path | None = None,
-    artifact_root: Path | None = None,
 ) -> dict:
     """Hash changed transcripts and reconcile only those with S3."""
     selections = [(source, list(sessions)) for source, sessions in selections]
@@ -174,29 +116,27 @@ def refresh(
         for source, sessions in selections
         for session in sessions
     ]
-    state = _load(cache_path)
-    records = state["records"]
+    cache = get_cache(cache_path)
+    records = cache["records"]
     changed = []
     prepared_by_key = {}
     items_by_key = {}
 
     for source, session in all_sessions:
-        key = _record_key(contributor, source.id, session)
-        record = records.get(key)
-        status = record.get("state") if isinstance(record, dict) else None
-        if status == "current" and _record_is_current(record):
+        key = cache_record_key(contributor, source.id, session)
+        record = get_cache_for_transcript(cache, contributor, source.id, session)
+        status = record.get("state") if record is not None else None
+        if record is not None and status == "current" and _record_is_current(record):
             items_by_key[key] = _item(source.id, session, "current")
         elif (
-            status == "ready"
+            record is not None
+            and status == "ready"
             and _record_is_current(record)
             and (cached := _prepared_from_record(record, session)) is not None
         ):
             prepared_by_key[key] = cached
         else:
-            changed.append((
-                key, source, session,
-                record if isinstance(record, dict) else {},
-            ))
+            changed.append((key, source, session))
 
     total_changed = len(changed)
     if on_progress:
@@ -206,7 +146,7 @@ def refresh(
     completed = 0
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {}
-        for key, source, session, old_record in changed:
+        for key, source, session in changed:
             future = executor.submit(
                 _prepare_changed, source, session, contributor
             )
@@ -217,24 +157,32 @@ def refresh(
             try:
                 prepared, record = future.result()
             except Exception as exc:
-                records[key] = {
-                    "source": source.id,
-                    "contributor": contributor,
-                    "group": session.group_key,
-                    "parent": session.parent,
-                    "session": session.id,
-                    "state": "error",
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
+                set_cache_for_transcript(
+                    cache,
+                    contributor,
+                    source.id,
+                    session,
+                    {
+                        "source": source.id,
+                        "contributor": contributor,
+                        "group": session.group_key,
+                        "parent": session.parent,
+                        "session": session.id,
+                        "state": "error",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                )
                 items_by_key[key] = _item(source.id, session, "error")
                 errors.append({"source": source.id, "session": session.id,
                                "error": f"{type(exc).__name__}: {exc}"})
             else:
-                records[key] = record
+                set_cache_for_transcript(
+                    cache, contributor, source.id, session, record
+                )
                 prepared_by_key[key] = prepared
             if on_progress:
                 on_progress("hashing", completed, total_changed)
-    _save(state, cache_path)
+    save_cache(cache, cache_path)
 
     prepared_items = list(prepared_by_key.values())
     if prepared_items:
@@ -270,10 +218,10 @@ def refresh(
                 record["source"], prepared.session, record["state"]
             )
 
-    _save(state, cache_path)
+    save_cache(cache, cache_path)
     items = []
     for source, session in all_sessions:
-        key = _record_key(contributor, source.id, session)
+        key = cache_record_key(contributor, source.id, session)
         item = items_by_key.get(key)
         if item is not None:
             items.append(item)
@@ -291,21 +239,22 @@ def refresh(
 
 def artifacts_for(selections, contributor: str, cache_path: Path | None = None):
     """Return pending upload candidates or sessions requiring Refresh."""
-    state = _load(cache_path)
+    cache = get_cache(cache_path)
     candidates = []
     stale = []
     for source, sessions in selections:
         for session in sessions:
-            key = _record_key(contributor, source.id, session)
-            record = state["records"].get(key)
+            record = get_cache_for_transcript(
+                cache, contributor, source.id, session
+            )
             if (
-                isinstance(record, dict)
+                record is not None
                 and record.get("state") == "current"
                 and _record_is_current(record)
             ):
                 continue
             if (
-                isinstance(record, dict)
+                record is not None
                 and record.get("state") == "ready"
                 and _record_is_current(record)
             ):
@@ -392,23 +341,16 @@ def prepare_upload_artifacts(
 
 
 def mark_uploaded(artifacts: list[dict], contributor: str,
-                  cache_path: Path | None = None,
-                  artifact_root: Path | None = None) -> None:
-    state = _load(cache_path)
-    records = state["records"]
+                  cache_path: Path | None = None) -> None:
+    cache = get_cache(cache_path)
+    records = cache["records"]
     uploaded = {
         (item.get("source"), item.get("group"), item.get("parent") or "",
          item.get("session"))
         for item in artifacts
     }
-    for key, record in records.items():
-        record_contributor = record.get("contributor")
-        if record_contributor is None:
-            try:
-                record_contributor = json.loads(key)[0]
-            except (json.JSONDecodeError, IndexError, TypeError):
-                continue
-        if record_contributor != contributor:
+    for record in records.values():
+        if record.get("contributor") != contributor:
             continue
         identity = (
             record.get("source"), record.get("group"), record.get("parent") or "",
@@ -417,4 +359,4 @@ def mark_uploaded(artifacts: list[dict], contributor: str,
         if identity in uploaded:
             record["state"] = "current"
             record.pop("error", None)
-    _save(state, cache_path)
+    save_cache(cache, cache_path)

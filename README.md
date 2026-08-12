@@ -159,7 +159,10 @@ conversion.
 
 The collector keeps a disposable `pipeline-cache.json` in its private state
 directory. It exists only to avoid rereading unchanged files and repeating S3
-metadata requests. A record is approximately:
+metadata requests. Its schema and file operations are defined in
+[`cache.py`](src/agent_transcript_collector/cache.py); the pipeline loads the
+whole file once with `get_cache()` and uses transcript-level lookup and update
+helpers. A record is approximately:
 
 ```json
 {
@@ -181,7 +184,7 @@ metadata requests. A record is approximately:
       "sidecar_count": 0,
       "redaction_version": 1,
       "format_version": 4,
-      "state": "current or ready"
+      "state": "checking, current, ready, or error"
     }
   }
 }

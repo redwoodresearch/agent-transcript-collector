@@ -430,25 +430,6 @@ def filesystem_snapshot_is_current(snapshot: object) -> bool:
     )
 
 
-def artifact_is_available(artifact: dict) -> bool:
-    """Return whether an immutable prepared archive is still readable."""
-    try:
-        archive = Path(artifact["path"])
-        return (
-            archive.is_file()
-            and archive.stat().st_size == int(artifact["zip_size_bytes"])
-        )
-    except (KeyError, OSError, TypeError, ValueError):
-        return False
-
-
-def artifact_is_current(artifact: dict) -> bool:
-    """Return whether an archive still represents the latest local content."""
-    return artifact_is_available(artifact) and filesystem_snapshot_is_current(
-        artifact.get("filesystem_snapshot")
-    )
-
-
 def build_upload_artifact(
     source, prepared: PreparedTranscript, contributor: str, directory: str | Path
 ) -> dict:
