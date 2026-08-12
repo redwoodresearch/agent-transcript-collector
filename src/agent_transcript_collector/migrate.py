@@ -14,6 +14,7 @@ from .watcher import (
     ProjectMember,
     SOURCE_ENV_VARS,
     WatcherConfig,
+    load_config,
     save_config,
 )
 
@@ -48,7 +49,6 @@ def _v1_to_v2(data: dict) -> dict:
                 os.environ[name] = value
 
     projects = []
-    matched = set()
     for project in projects_from_groups(discovered):
         members = {
             (harness["source"], group)
@@ -58,7 +58,6 @@ def _v1_to_v2(data: dict) -> dict:
         selected = configured & members
         if not selected:
             continue
-        matched.update(selected)
         projects.append(AllowedProject(
             identity=project["identity"],
             label=project["label"],
@@ -67,14 +66,6 @@ def _v1_to_v2(data: dict) -> dict:
                 for source, group in sorted(members)
             ),
         ))
-
-    missing = configured - matched
-    if missing:
-        formatted = ", ".join(f"{source}:{group}" for source, group in sorted(missing))
-        raise ValueError(
-            "Could not migrate watcher configuration because these selected "
-            f"transcript groups are unavailable: {formatted}"
-        )
 
     config = WatcherConfig(
         auto_uploader_version=int(data.get("auto_uploader_version", 0)),
@@ -98,6 +89,8 @@ def migrate_config(path: Path | None = None) -> WatcherConfig:
     target = path or watcher_config_path()
     data = json.loads(target.read_text())
     version = data.get("schema_version")
+    if version == CURRENT_SCHEMA_VERSION:
+        return load_config(target)
     while version != CURRENT_SCHEMA_VERSION:
         migration = MIGRATIONS.get(version)
         if migration is None:
