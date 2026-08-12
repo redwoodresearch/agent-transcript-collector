@@ -34,7 +34,7 @@ PACKAGE_SPEC = "git+https://github.com/redwoodresearch/agent-transcript-collecto
 LAUNCHD_LABEL = "com.redwoodresearch.agent-transcript-collector"
 SYSTEMD_NAME = "agent-transcript-collector"
 WATCH_INTERVAL_SECONDS = 60 * 60
-AUTO_UPLOADER_VERSION = 8
+AUTO_UPLOADER_VERSION = 9
 SOURCE_ENV_VARS = (
     "CLAUDE_CONFIG_DIR",
     "CODEX_HOME",
@@ -42,7 +42,8 @@ SOURCE_ENV_VARS = (
     "CURSOR_USER_DATA_DIR",
     "PI_CODING_AGENT_SESSION_DIR",
     "PI_CODING_AGENT_DIR",
-    "CTC_REDACTION_CONCURRENCY",
+    "CTC_HASH_CONCURRENCY",
+    "CTC_ARCHIVE_CONCURRENCY",
     "CTC_UPLOAD_CONCURRENCY",
     "CTC_METADATA_CONCURRENCY",
     "CTC_USERNAME_STOPLIST",

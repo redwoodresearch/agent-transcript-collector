@@ -34,8 +34,8 @@ UploadItem: TypeAlias = dict[str, str | None]
 PreparationCallback: TypeAlias = Callable[[int, int], None]
 
 
-def preparation_concurrency() -> int:
-    return max(1, int(os.environ.get("CTC_REDACTION_CONCURRENCY", "16")))
+def archive_concurrency() -> int:
+    return max(1, int(os.environ.get("CTC_ARCHIVE_CONCURRENCY", "8")))
 
 
 def upload_candidates(
@@ -93,7 +93,7 @@ def prepare_uploads(
         on_progress(completed, total)
 
     artifacts: list[ArchiveArtifact] = []
-    workers = min(preparation_concurrency(), len(work))
+    workers = min(archive_concurrency(), len(work))
     if workers:
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {

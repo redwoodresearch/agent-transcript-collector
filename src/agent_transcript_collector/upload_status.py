@@ -48,11 +48,11 @@ LEGACY_SOURCE_HASH_VERSION_METADATA = "fingerprint-version"
 
 
 def metadata_concurrency() -> int:
-    return max(1, int(os.environ.get("CTC_METADATA_CONCURRENCY", "16")))
+    return max(1, int(os.environ.get("CTC_METADATA_CONCURRENCY", "20")))
 
 
 def hashing_concurrency() -> int:
-    return max(1, int(os.environ.get("CTC_REDACTION_CONCURRENCY", "16")))
+    return max(1, int(os.environ.get("CTC_HASH_CONCURRENCY", "16")))
 
 
 def refresh_upload_status(

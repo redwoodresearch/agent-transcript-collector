@@ -396,9 +396,10 @@ These knobs exist for overriding defaults:
 |---|---|---|
 | `AWS_PROFILE` | _(unset)_ | Standard AWS profile selector; set it to your General Sandbox profile. |
 | `CTC_AWS_PROFILE` | _(unset)_ | Collector-specific profile override. |
-| `CTC_REDACTION_CONCURRENCY` | `16` | Changed transcripts redacted and packaged in parallel. |
-| `CTC_UPLOAD_CONCURRENCY` | `4` | Transcripts uploaded in parallel. |
-| `CTC_METADATA_CONCURRENCY` | `16` | S3 hash checks performed in parallel. |
+| `CTC_HASH_CONCURRENCY` | `16` | Existing transcripts read and hashed in parallel. |
+| `CTC_ARCHIVE_CONCURRENCY` | `8` | Pending transcripts redacted and packaged in parallel. |
+| `CTC_UPLOAD_CONCURRENCY` | `8` | Transcripts uploaded in parallel. |
+| `CTC_METADATA_CONCURRENCY` | `20` | S3 object metadata checks performed in parallel. |
 | `CTC_SIDECAR_MAX_BYTES` | `104857600` | Side-file bytes collected per session. |
 | `CTC_USERNAME_STOPLIST` | _(unset)_ | Comma-separated logins to never redact. |
 | `PORT` | `8899` | Local review UI port. |

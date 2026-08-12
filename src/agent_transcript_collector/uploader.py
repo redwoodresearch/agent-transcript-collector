@@ -35,7 +35,7 @@ from .upload_status import (
 
 
 def upload_concurrency() -> int:
-    return max(1, int(os.environ.get("CTC_UPLOAD_CONCURRENCY", "4")))
+    return max(1, int(os.environ.get("CTC_UPLOAD_CONCURRENCY", "8")))
 
 
 class UploadBusy(RuntimeError):
