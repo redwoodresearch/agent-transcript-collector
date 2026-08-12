@@ -148,13 +148,19 @@ Each session goes through the same pipeline:
    subagent sessions to their parents, and resolve referenced external files.
 3. **Compare:** hash the original transcript and external files, then compare
    that source hash and the redaction policy version with S3 metadata.
-4. **Redact and store:** when an upload starts, replace detected credentials and
-   local identity data on the local machine, package one redacted session per
-   ZIP, and upload it to a stable S3 key. A changed session replaces its previous
-   ZIP; unchanged content is skipped without first being redacted or compressed.
+4. **Redact and derive:** when an upload starts, replace detected credentials and
+   local identity data on the local machine, then derive an ATIF trajectory from
+   that redacted native transcript where Harbor supports the source.
+5. **Store:** package one redacted session per ZIP and upload it to a stable S3
+   key. A changed session replaces its previous ZIP; unchanged content is skipped
+   without first being redacted, converted, or compressed.
 
-The uploaded transcript contains the source's native data without schema
-conversion.
+The redacted native transcript remains the canonical artifact. Every Claude Code
+and Codex transcript ZIP also contains its own derived ATIF v1.7 trajectory.
+Child trajectories identify their parent in ATIF root metadata, so consumers can
+reconstruct the relationship without coupling the two archive pipelines.
+Cursor and Pi retain only their native transcript and record ATIF as unsupported
+in the manifest.
 
 ### Local cache
 
@@ -244,6 +250,7 @@ referenced by that transcript:
 ```text
 transcript.zip
 ├── transcript.<ext>             # .jsonl or .txt
+├── trajectory.atif.json         # Claude Code and Codex
 ├── manifest.json
 └── <sidecar-kind>/              # only when sidecars are present
     └── <name>
@@ -260,7 +267,7 @@ redaction result:
 
 ```json
 {
-  "transcript_format_version": 5,
+  "transcript_format_version": 6,
   "source": "claude_code",
   "source_format": "claude-jsonl",
   "contributor": "example-contributor",
@@ -282,6 +289,12 @@ redaction result:
   },
   "size_bytes": 12345,
   "redactions": 3,
+  "atif": {
+    "status": "complete",
+    "schema_version": "ATIF-v1.7",
+    "artifact": "trajectory.atif.json",
+    "converter": {"name": "harbor", "version": "0.20.0"}
+  },
   "sidecars": {
     "files": [
       {
@@ -302,7 +315,15 @@ redaction result:
 the redacted transcript hash, and the upload time. `size_bytes` is the redacted
 transcript size, and `redactions` is the total number of replacements. Each
 sidecar entry records its ZIP path, type, redacted original reference, redacted
-size, and hash. The three sidecar arrays are present even when empty.
+size, and hash. The three sidecar arrays are present even when empty. `atif`
+records `complete`, `unsupported`, or `failed`; a conversion failure never drops
+the canonical redacted transcript from the archive.
+
+Parent and subagent transcripts remain independent archives and independent ATIF
+documents. Each ATIF uses the collector session ID as its `trajectory_id`; a
+child's `extra.agent_transcript_collector.parent_transcript_id` points to its
+parent. The existing `session.parent` manifest field and nested S3 key retain the
+same relationship for native consumers.
 
 ### S3 object properties
 
