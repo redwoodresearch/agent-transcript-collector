@@ -126,7 +126,8 @@ rr-trans tui
 
 Use Enter to expand folders and `q` to quit. It opens at `mts-trans/` by default;
 pass `--prefix mts-trans/<contributor>/` to start at a narrower S3 prefix. The
-browser only lists object names and sizes. It does not download or extract data.
+browser shows each transcript's S3 last-modified time and orders transcripts from
+newest to oldest. It does not download or extract data.
 
 ## Transcript data and storage
 
