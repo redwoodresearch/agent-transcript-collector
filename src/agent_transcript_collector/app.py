@@ -717,9 +717,9 @@ def _put_watcher(body: dict):
             for identity, label in sorted(requested)
         ]
         if existing:
-            covered_groups = set().union(
-                *(discovered_projects[project] for project in requested),
-            ) if requested else set()
+            visible_groups = set().union(
+                *discovered_projects.values(),
+            ) if discovered_projects else set()
             projects.extend(
                 project
                 for project in existing.projects
@@ -729,7 +729,7 @@ def _put_watcher(body: dict):
             legacy_groups = [
                 group
                 for group in existing.legacy_groups
-                if (group.source, group.group) not in covered_groups
+                if (group.source, group.group) not in visible_groups
                 and (group.source, group.group) not in removed_legacy
             ]
         else:
