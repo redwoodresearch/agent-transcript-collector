@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import ClassVar
 
 from rich.text import Text
@@ -22,6 +23,7 @@ class S3Entry:
     name: str
     key: str
     is_folder: bool
+    last_modified: datetime | None = None
 
 
 def list_folder(s3, prefix: str) -> list[S3Entry]:
@@ -43,11 +45,33 @@ def list_folder(s3, prefix: str) -> list[S3Entry]:
             key = item["Key"]
             name = key.removeprefix(prefix)
             if name and "/" not in name and key.endswith(".zip"):
-                objects[key] = S3Entry(name=name, key=key, is_folder=False)
+                objects[key] = S3Entry(
+                    name=name,
+                    key=key,
+                    is_folder=False,
+                    last_modified=item["LastModified"],
+                )
     return [
         *sorted(folders.values(), key=lambda entry: entry.name.lower()),
-        *sorted(objects.values(), key=lambda entry: entry.name.lower()),
+        *sorted(
+            objects.values(),
+            key=lambda entry: (
+                -entry.last_modified.timestamp() if entry.last_modified else 0,
+                entry.name.lower(),
+            ),
+        ),
     ]
+
+
+def entry_label(entry: S3Entry) -> Text:
+    """Build a tree label, including upload time for transcript objects."""
+    label = Text(entry.name, style="cyan" if entry.is_folder else "")
+    if entry.last_modified is not None:
+        modified = entry.last_modified.astimezone(timezone.utc).strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        )
+        label.append(f"  {modified}", style="dim")
+    return label
 
 
 class TranscriptBrowser(App[None]):
@@ -131,7 +155,7 @@ class TranscriptBrowser(App[None]):
             node.add_leaf(Text("No transcripts found", style="dim"))
             return
         for entry in entries:
-            label = Text(entry.name, style="cyan" if entry.is_folder else "")
+            label = entry_label(entry)
             if entry.is_folder:
                 child = node.add(label, data=entry)
                 child.add_leaf(Text("Open to load", style="dim"))
