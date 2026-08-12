@@ -16,9 +16,7 @@ import threading
 import time
 import uuid
 import webbrowser
-from collections import defaultdict
 from functools import lru_cache
-from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -38,8 +36,9 @@ from .pipeline import (
 from .redactor import redact_identity, redact_jsonl_content
 from .s3client import make_s3_client as _make_s3_client
 from .s3client import selected_profile
-from .sources import SOURCES, get_source, projects_from_groups
-from .sources.base import human_size, session_sidecars
+from .scan import ScanResult, load_transcript_inputs, project_groups, scan_transcripts
+from .sources import SOURCES, get_source
+from .sources.base import human_size
 from .uploader import (
     UploadBusy,
     UploadLock,
@@ -112,12 +111,12 @@ SCAN_STATE = {
     "started_at": None,
     "finished_at": None,
 }
-SCAN_CACHE = {"projects": None, "groups_by_source": {}, "sessions": {}}
+SCAN_RESULT: ScanResult | None = None
 
 
 def _scan_status_unlocked() -> dict:
     result = dict(SCAN_STATE)
-    result["ready"] = SCAN_CACHE["projects"] is not None
+    result["ready"] = SCAN_RESULT is not None
     return result
 
 
@@ -127,30 +126,21 @@ def _scan_status() -> dict:
 
 
 def _run_scan() -> None:
-    discovered = []
-    groups_by_source = {}
-    sessions = {}
+    global SCAN_RESULT
+
     try:
-        for position, source in enumerate(SOURCES, start=1):
+        def progress(position, total, source, session_count):
             with SCAN_LOCK:
-                SCAN_STATE["source"] = source.label
-            groups = source.discover()
-            groups_by_source[source.id] = groups
-            discovered.extend((source, group) for group in groups)
-            for group in groups:
-                for session in group.sessions:
-                    key = (source.id, group.key, session.parent or None, session.id)
-                    sessions[key] = session
-            with SCAN_LOCK:
-                SCAN_STATE["completed_sources"] = position
-                SCAN_STATE["session_count"] = len(sessions)
-        projects = projects_from_groups(discovered)
+                SCAN_STATE.update({
+                    "source": source.label,
+                    "completed_sources": position,
+                    "total_sources": total,
+                    "session_count": session_count,
+                })
+
+        result = scan_transcripts(on_progress=progress)
         with SCAN_LOCK:
-            SCAN_CACHE.update({
-                "projects": projects,
-                "groups_by_source": groups_by_source,
-                "sessions": sessions,
-            })
+            SCAN_RESULT = result
             SCAN_STATE["status"] = "ready"
             SCAN_STATE["error"] = None
     except Exception as exc:
@@ -168,7 +158,7 @@ def _start_scan(force: bool = False) -> dict:
         if SCAN_STATE["status"] == "scanning":
             return _scan_status_unlocked()
         if (
-            SCAN_CACHE["projects"] is not None
+            SCAN_RESULT is not None
             and SCAN_STATE["status"] == "ready"
             and not force
         ):
@@ -189,7 +179,8 @@ def _start_scan(force: bool = False) -> dict:
 
 def _cached_session(source: str, group: str, session: str, parent: str | None):
     with SCAN_LOCK:
-        return SCAN_CACHE["sessions"].get((source, group, parent or None, session))
+        result = SCAN_RESULT
+    return result.find_session(source, group, session, parent) if result else None
 
 
 @app.post("/api/scan")
@@ -205,10 +196,10 @@ def scan_status():
 @app.get("/api/projects", response_class=HTMLResponse)
 def project_list():
     with SCAN_LOCK:
-        projects = SCAN_CACHE["projects"]
-    if projects is None:
+        result = SCAN_RESULT
+    if result is None:
         return JSONResponse(_scan_status(), status_code=202)
-    return jinja_env.get_template("_projects.html").render(projects=projects)
+    return jinja_env.get_template("_projects.html").render(projects=result.projects)
 
 
 @app.get("/api/preview")
@@ -221,15 +212,15 @@ def preview_session(source: str, group: str, session: str, parent: str = "",
         return JSONResponse({"error": "Session not found; try Refresh"}, status_code=404)
 
     try:
-        raw = Path(sess.path).read_text(encoding="utf-8", errors="replace")
+        inputs = load_transcript_inputs(src, sess)
     except OSError:
         return JSONResponse(
             {"error": "Session file is no longer available; try Refresh"},
             status_code=404,
         )
     # Resolve side files before redaction rewrites their referenced paths.
-    sidecars = session_sidecars(src, sess, raw)
-    parsed = src.parse_messages(raw)
+    sidecars = inputs.sidecars
+    parsed = src.parse_messages(inputs.text)
     offset = max(0, offset)
     limit = max(1, min(limit, 100))
     messages = []
@@ -426,32 +417,10 @@ _active_job = {"id": None}
 
 
 def _resolve_selection(selected):
-    """Resolve the UI selection to [(source, [Session])] (no network calls).
-
-    Key on (group, parent, id): subagents share their parent's group, so id
-    alone is not unique, so parent identity is part of the selection key.
-    """
-    picks_by_source: dict[str, set] = defaultdict(set)
-    for item in selected:
-        picks_by_source[item.get("source", "")].add(
-            (item.get("group", ""), item.get("parent") or None, item.get("session", ""))
-        )
-    out = []
-    for source_id, picks in picks_by_source.items():
-        source = get_source(source_id)
-        if source is None:
-            continue
-        with SCAN_LOCK:
-            resolved = {
-                (group, parent, session): value
-                for (sid, group, parent, session), value in
-                SCAN_CACHE["sessions"].items()
-                if sid == source_id
-            }
-        sessions = [resolved[p] for p in picks if p in resolved]
-        if sessions:
-            out.append((source, sessions))
-    return out
+    """Resolve untrusted UI descriptors against the current scan."""
+    with SCAN_LOCK:
+        result = SCAN_RESULT
+    return result.resolve_sessions(selected) if result else []
 
 
 def _upload_worker(serialized_selections, candidates, contributor, events):
@@ -673,15 +642,12 @@ def get_watcher_status():
     if not config:
         return result
     with SCAN_LOCK:
-        projects = list(SCAN_CACHE["projects"] or [])
+        scan = SCAN_RESULT
+    projects = list(scan.projects) if scan else []
     visible_projects = [
         (
             project,
-            {
-                (harness["source"], group)
-                for harness in project["harnesses"]
-                for group in harness["groups"]
-            },
+            project_groups(project),
         )
         for project in projects
     ]
@@ -718,14 +684,12 @@ def _put_watcher(body: dict):
     }
     requested -= removed
     with SCAN_LOCK:
-        discovered_projects = {
-            (str(project.get("identity", "")), str(project.get("label", ""))): {
-                (harness["source"], group)
-                for harness in project["harnesses"]
-                for group in harness["groups"]
-            }
-            for project in (SCAN_CACHE["projects"] or [])
-        }
+        scan = SCAN_RESULT
+    discovered_projects = {
+        (str(project.get("identity", "")), str(project.get("label", ""))):
+            project_groups(project)
+        for project in (scan.projects if scan else [])
+    }
     invalid = sorted(requested - discovered_projects.keys())
     if invalid:
         return JSONResponse(

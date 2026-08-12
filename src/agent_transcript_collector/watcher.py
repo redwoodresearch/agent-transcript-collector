@@ -23,10 +23,12 @@ from .pipeline import (
     artifacts_for,
     mark_uploaded,
     prepare_upload_artifacts,
+)
+from .pipeline import (
     refresh as refresh_pipeline,
 )
 from .s3client import make_s3_client
-from .sources import SOURCES, projects_from_groups
+from .scan import ScanResult, project_groups, scan_transcripts
 from .uploader import (
     UploadBusy,
     UploadLock,
@@ -176,42 +178,25 @@ def capture_source_env() -> dict[str, str]:
     return {name: os.environ[name] for name in SOURCE_ENV_VARS if os.environ.get(name)}
 
 
-def _resolve_allowed(config: WatcherConfig):
-    """Resolve project-level consent to every current group in each project."""
-    discovered = [
-        (source, group)
-        for source in SOURCES
-        for group in source.discover()
-    ]
+def _allowed_groups(scan: ScanResult, config: WatcherConfig) -> set[tuple[str, str]]:
+    """Resolve project-level consent against one discovery snapshot."""
     allowed = set()
-    for project in projects_from_groups(discovered):
-        project_groups = {
-            (harness["source"], group)
-            for harness in project["harnesses"]
-            for group in harness["groups"]
-        }
+    for project in scan.projects:
+        groups = project_groups(project)
         selected = any(
             item.identity == project["identity"]
             or bool({(member.source, member.group) for member in item.members}
-                    & project_groups)
+                    & groups)
             for item in config.projects
         )
-        if not selected:
-            continue
-        allowed.update(project_groups)
-    return [
-        (source, group)
-        for source, group in discovered
-        if (source.id, group.key) in allowed
-    ]
+        if selected:
+            allowed.update(groups)
+    return allowed
 
 
 def discover_allowed(config: WatcherConfig):
-    sessions_by_source = {}
-    for source, group in _resolve_allowed(config):
-        entry = sessions_by_source.setdefault(source.id, (source, []))
-        entry[1].extend(group.sessions)
-    return list(sessions_by_source.values())
+    scan = scan_transcripts()
+    return scan.sessions_for_groups(_allowed_groups(scan, config))
 
 
 def _sso_hint(exc: Exception, profile: str) -> str:

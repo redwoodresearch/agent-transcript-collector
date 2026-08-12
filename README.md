@@ -155,6 +155,19 @@ Each session goes through the same pipeline:
 The uploaded transcript contains the source's native data without schema
 conversion.
 
+### Scanning
+
+[`scan.py`](src/agent_transcript_collector/scan.py) is the single entry point
+for local transcript discovery. `scan_transcripts()` runs each source adapter
+once and returns a `ScanResult` containing projects, groups, a subagent-aware
+session index, and selection helpers shared by the UI and automatic watcher.
+The adapters retain only their harness-specific file and parent-link rules.
+
+Sidecars are resolved by `load_transcript_inputs()` when an individual session
+is previewed, hashed, or uploaded. They are not read eagerly during the initial
+scan, because their paths are embedded in transcript contents and doing so would
+turn a cheap discovery scan into a full read of every transcript.
+
 ### Local cache
 
 The collector keeps a disposable `pipeline-cache.json` in its private state

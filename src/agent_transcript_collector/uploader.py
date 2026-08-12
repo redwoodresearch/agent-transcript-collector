@@ -23,9 +23,9 @@ from .redactor import (
     redact_path_token,
 )
 from .s3client import S3_BUCKET
+from .scan import load_transcript_inputs
 from .sidecars import EMPTY as NO_SIDECARS
 from .sidecars import SidecarSet
-from .sources.base import session_sidecars
 from .storage import STORAGE_PREFIX
 
 TRANSCRIPT_FORMAT_VERSION = 4
@@ -235,13 +235,12 @@ def prepare_transcript(source, session, contributor: str) -> PreparedTranscript:
     key = transcript_key(contributor, source.id, session)
     for _attempt in range(2):
         transcript_before = _path_signature(path)
-        raw_bytes = path.read_bytes()
+        inputs = load_transcript_inputs(source, session)
+        raw_bytes = inputs.raw_bytes
         if transcript_before != _path_signature(path):
             continue
         transcript_hash_value = transcript_hash(raw_bytes)
-        sidecars = session_sidecars(
-            source, session, raw_bytes.decode("utf-8", errors="replace")
-        )
+        sidecars = inputs.sidecars
         probe = PreparedTranscript(
             session=session,
             raw_bytes=raw_bytes,
