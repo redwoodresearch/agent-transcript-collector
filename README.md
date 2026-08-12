@@ -253,11 +253,69 @@ transcript.zip
     └── <name>.txt
 ```
 
-`manifest.json` records each one under `sidecars`, with the redacted path the
-transcript refers to it by, so a pointer in the transcript can be matched to
-its file. Pointers whose target was already gone are listed under
-`sidecars.missing`. A session with no side files keeps the fingerprint it
-always had, so this does not rewrite earlier uploads.
+### `manifest.json`
+
+Each archive's manifest has this structure:
+
+```json
+{
+  "transcript_format_version": 4,
+  "source": "claude_code",
+  "source_format": "claude-jsonl",
+  "contributor": "example-contributor",
+  "project": {
+    "key": "example-project",
+    "name": "example-project"
+  },
+  "session": {
+    "id": "session-id",
+    "is_subagent": false,
+    "parent": null
+  },
+  "version": {
+    "fingerprint": "privacy-safe archive fingerprint",
+    "body_fingerprint": "privacy-safe transcript fingerprint",
+    "content_sha256": "SHA-256 of the redacted transcript",
+    "redact_identity": true,
+    "uploaded_at": "2026-01-01T00:00:00+00:00"
+  },
+  "size_bytes": 12345,
+  "redactions": 3,
+  "sidecars": {
+    "files": [
+      {
+        "path": "tool-results/result.txt",
+        "kind": "tool-results",
+        "referenced_as": "/redacted/path/to/result.txt",
+        "size_bytes": 456,
+        "sha256": "SHA-256 of the redacted sidecar"
+      }
+    ],
+    "missing": [
+      "/redacted/path/to/missing.output"
+    ],
+    "skipped_too_large": [
+      "/redacted/path/to/oversized.txt"
+    ]
+  }
+}
+```
+
+`project` identifies the local project grouping, while `session` identifies the
+transcript and its parent relationship. A subagent has `is_subagent` set to
+`true` and its parent session ID in `parent`. `version` records the fingerprints
+used to detect changes, the hash of the redacted transcript, the identity
+redaction policy, and the archive timestamp. `size_bytes` is the redacted
+transcript size, and `redactions` counts replacements across the transcript,
+sidecars, and project identity fields.
+
+Every included sidecar is listed under `sidecars.files`, with its ZIP path,
+kind, redacted path as referenced by the transcript, redacted size, and hash.
+Pointers whose target was already gone are listed under `sidecars.missing`;
+files rejected by the size budget are listed under `sidecars.skipped_too_large`.
+All three fields are present even when their arrays are empty. A session with no
+side files keeps the fingerprint it always had, so this does not rewrite earlier
+uploads.
 
 ## Configuration
 
