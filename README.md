@@ -155,44 +155,6 @@ Each session goes through the same pipeline:
 The uploaded transcript contains the source's native data without schema
 conversion.
 
-### Scanning
-
-[`scan.py`](src/agent_transcript_collector/scan.py) is the single entry point
-for local transcript discovery. `scan_transcripts()` runs each source adapter
-once and returns a `ScanResult` containing a flat transcript collection,
-derived projects, a subagent-aware session index, and selection helpers shared
-by the UI and automatic watcher.
-The adapters retain only their harness-specific file and parent-link rules.
-`scan.py` assigns the canonical merged project identity to every transcript, so
-there is no separate source-level group model.
-
-Watcher configuration stores only each selected project's identity and label.
-Older source/group configurations are converted once when loaded and then
-atomically rewritten in this current format.
-
-Sidecars are resolved by `load_transcript_inputs()` when an individual session
-is previewed, hashed, or uploaded. They are not read eagerly during the initial
-scan, because their paths are embedded in transcript contents and doing so would
-turn a cheap discovery scan into a full read of every transcript.
-
-### Archive preparation
-
-[`transcript_snapshot.py`](src/agent_transcript_collector/transcript_snapshot.py)
-owns stable unredacted input reads, source hashing, and lightweight filesystem
-snapshots. [`prepare_archive.py`](src/agent_transcript_collector/prepare_archive.py)
-uses that snapshot to redact content, collect sidecars, construct the manifest,
-and write the ZIP. It also performs the final stability check that prevents a
-transcript from changing between Refresh and archive creation.
-
-[`upload_status.py`](src/agent_transcript_collector/upload_status.py) checks S3
-object existence before local content is read. Missing objects are immediately
-classified as `not_uploaded`. Only transcripts with an existing object are read
-and hashed to distinguish `changed` from `current`. It returns typed
-`TranscriptStatus` values built around the shared `TranscriptRef` defined in
-`transcript.py`. `upload_workflow.py` selects pending transcripts, prepares
-their archives, and records successful uploads. `uploader.py` is limited to the
-upload lock and S3 transfer; S3 key construction lives in `storage.py`.
-
 ### Local cache
 
 The collector keeps a disposable `pipeline-cache.json` in its private state
