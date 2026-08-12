@@ -19,7 +19,12 @@ from .paths import (
     watcher_config_path,
     watcher_state_path,
 )
-from .pipeline import artifacts_for, mark_uploaded, refresh as refresh_pipeline
+from .pipeline import (
+    artifacts_for,
+    mark_uploaded,
+    prepare_upload_artifacts,
+    refresh as refresh_pipeline,
+)
 from .s3client import make_s3_client
 from .sources import SOURCES, projects_from_groups
 from .uploader import (
@@ -32,7 +37,7 @@ PACKAGE_SPEC = "git+https://github.com/redwoodresearch/agent-transcript-collecto
 LAUNCHD_LABEL = "com.redwoodresearch.agent-transcript-collector"
 SYSTEMD_NAME = "agent-transcript-collector"
 WATCH_INTERVAL_SECONDS = 60 * 60
-AUTO_UPLOADER_VERSION = 7
+AUTO_UPLOADER_VERSION = 8
 SOURCE_ENV_VARS = (
     "CLAUDE_CONFIG_DIR",
     "CODEX_HOME",
@@ -248,24 +253,31 @@ def run_once(
             result["errors"].extend(
                 item.get("error", str(item)) for item in pipeline["errors"]
             )
-            artifacts, stale = artifacts_for(selections, config.contributor)
+            candidates, stale = artifacts_for(selections, config.contributor)
             if stale:
                 result["errors"].append(
                     f"{len(stale)} transcript(s) require another refresh"
                 )
-            uploads, upload_errors = upload_artifacts(client, artifacts)
+            with tempfile.TemporaryDirectory(prefix="ctc-upload-") as directory:
+                artifacts, preparation_errors = prepare_upload_artifacts(
+                    selections, candidates, config.contributor, directory
+                )
+                result["errors"].extend(
+                    item.get("error", str(item)) for item in preparation_errors
+                )
+                uploads, upload_errors = upload_artifacts(client, artifacts)
             successful = {
                 (item.get("source"), item.get("group"), item.get("parent") or "",
                  item.get("session"))
                 for item in uploads
             }
-            uploaded_artifacts = [
-                item for item in artifacts
+            uploaded_candidates = [
+                item for item in candidates
                 if (item.get("source"), item.get("group"),
                     item.get("parent") or "", item.get("session")) in successful
             ]
-            if uploaded_artifacts:
-                mark_uploaded(uploaded_artifacts, config.contributor)
+            if uploaded_candidates:
+                mark_uploaded(uploaded_candidates, config.contributor)
             result["sessions_uploaded"] = sum(
                 item["transcript_count"] for item in uploads
             )

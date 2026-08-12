@@ -11,6 +11,7 @@ import os
 import queue
 import re
 import socket
+import tempfile
 import threading
 import time
 import uuid
@@ -26,7 +27,12 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Environment, PackageLoader
 
 from .redactor import redact_identity, redact_jsonl_content
-from .pipeline import artifacts_for, mark_uploaded, refresh as refresh_pipeline
+from .pipeline import (
+    artifacts_for,
+    mark_uploaded,
+    prepare_upload_artifacts,
+    refresh as refresh_pipeline,
+)
 from .paths import watcher_config_path
 from .s3client import make_s3_client as _make_s3_client
 from .s3client import selected_profile
@@ -35,7 +41,6 @@ from .sources.base import human_size, session_sidecars
 from .uploader import (
     UploadBusy,
     UploadLock,
-    artifact_is_available,
     upload_artifacts,
 )
 from .watcher import (
@@ -257,7 +262,7 @@ def preview_session(source: str, group: str, session: str, parent: str = "",
     }
 
 
-# --- one background scan → redact changed → check changed pipeline ---
+# --- one background scan → fingerprint changed → check changed pipeline ---
 PIPELINE_RUNS: dict[str, dict] = {}
 PIPELINE_LOCK = threading.Lock()
 _active_pipeline = {"id": None}
@@ -365,7 +370,7 @@ def _start_pipeline(body: dict):
         run_id = uuid.uuid4().hex[:12]
         total = sum(len(sessions) for _, sessions in selections)
         PIPELINE_RUNS[run_id] = {
-            "status": "running", "stage": "redacting", "done": 0,
+            "status": "running", "stage": "fingerprinting", "done": 0,
             "work_total": 0, "total": total, "changed": 0, "checked": 0,
             "cached": 0, "items": [], "errors": [],
             "contributor": contributor,
@@ -447,48 +452,62 @@ def _resolve_selection(selected):
     return out
 
 
-def _upload_worker(artifacts, contributor, events):
-    """Upload exactly the artifacts produced by the persistent pipeline."""
+def _upload_worker(serialized_selections, candidates, contributor, events):
+    """Redact, package, and upload candidates confirmed by Refresh."""
     uploads = []
     errors = []
     status = "failed"
     try:
         with UploadLock():
-            if not all(artifact_is_available(item) for item in artifacts):
-                raise RuntimeError("A prepared upload is no longer available. Refresh and try again.")
-            events.put({
-                "type": "progress", "status": "running", "stage": "uploading",
-                "stage_done": 0, "stage_total": len(artifacts),
-                "stage_item_done": 0, "stage_item_total": len(artifacts),
-            })
-            completed = 0
+            selections = [
+                (source, sessions)
+                for source_id, sessions in serialized_selections
+                if (source := get_source(source_id)) is not None
+            ]
 
-            def advance(count):
-                nonlocal completed
-                completed += count
-                events.put({"type": "advance", "count": count})
+            def progress(stage, done, total):
                 events.put({
-                    "type": "progress", "stage": "uploading",
-                    "stage_done": completed, "stage_total": len(artifacts),
-                    "stage_item_done": completed,
-                    "stage_item_total": len(artifacts),
+                    "type": "progress", "status": "running", "stage": stage,
+                    "stage_done": done, "stage_total": total,
+                    "stage_item_done": done, "stage_item_total": total,
                 })
 
-            uploads, errors = upload_artifacts(
-                _make_s3_client(), artifacts, on_progress=advance
-            )
+            with tempfile.TemporaryDirectory(prefix="ctc-upload-") as directory:
+                progress("redacting", 0, len(candidates))
+                artifacts, preparation_errors = prepare_upload_artifacts(
+                    selections,
+                    candidates,
+                    contributor,
+                    directory,
+                    on_progress=lambda done, total:
+                        progress("redacting", done, total),
+                )
+                errors.extend(preparation_errors)
+                completed = 0
+
+                def advance(count):
+                    nonlocal completed
+                    completed += count
+                    events.put({"type": "advance", "count": count})
+                    progress("uploading", completed, len(artifacts))
+
+                progress("uploading", 0, len(artifacts))
+                uploads, upload_errors = upload_artifacts(
+                    _make_s3_client(), artifacts, on_progress=advance
+                )
+                errors.extend(upload_errors)
             successful = {
                 (item.get("source"), item.get("group"), item.get("parent") or "",
                  item.get("session"))
                 for item in uploads
             }
-            uploaded_artifacts = [
-                item for item in artifacts
+            uploaded_candidates = [
+                item for item in candidates
                 if (item.get("source"), item.get("group"),
                     item.get("parent") or "", item.get("session")) in successful
             ]
-            if uploaded_artifacts:
-                mark_uploaded(uploaded_artifacts, contributor)
+            if uploaded_candidates:
+                mark_uploaded(uploaded_candidates, contributor)
             status = "completed" if not errors else "partial" if uploads else "failed"
     except UploadBusy as e:
         errors.append({"error": str(e)})
@@ -586,10 +605,10 @@ async def upload(request: Request):
             {"error": "Selected transcripts are no longer available"},
             status_code=400,
         )
-    artifacts, stale = artifacts_for(selections, contributor)
+    candidates, stale = artifacts_for(selections, contributor)
     if stale:
         return JSONResponse(
-            {"error": "Prepared uploads are stale. Refresh before uploading."},
+            {"error": "Upload status is stale. Refresh before uploading."},
             status_code=409,
         )
 
@@ -607,10 +626,10 @@ async def upload(request: Request):
         _active_job["id"] = job_id
         JOBS[job_id] = {
             "status": "uploading",
-            "stage": "uploading",
+            "stage": "redacting",
             "stage_done": 0,
-            "stage_total": len(artifacts),
-            "total": len(artifacts),
+            "stage_total": len(candidates),
+            "total": len(candidates),
             "done": 0,
             "errors": [],
             "uploads": [],
@@ -623,7 +642,8 @@ async def upload(request: Request):
         events = context.Queue()
         process = context.Process(
             target=_upload_worker,
-            args=(artifacts, contributor, events),
+            args=([(source.id, sessions) for source, sessions in selections],
+                  candidates, contributor, events),
             daemon=True,
         )
         process.start()

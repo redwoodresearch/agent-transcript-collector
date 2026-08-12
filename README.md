@@ -145,10 +145,12 @@ Each session goes through the same pipeline:
 1. **Discover:** find native transcripts and group them by project and source.
 2. **Assemble:** keep each transcript in its native JSONL or text format, link
    subagent sessions to their parents, and resolve referenced external files.
-3. **Redact:** replace detected credentials and local identity data on the local
-   machine, in both the transcript and its external files.
-4. **Store:** package one redacted session per ZIP and upload it to a stable S3
-   key. A changed session replaces its previous ZIP; unchanged content is skipped.
+3. **Compare:** fingerprint the original transcript and external files, then
+   compare that fingerprint and the redaction policy version with S3 metadata.
+4. **Redact and store:** when an upload starts, replace detected credentials and
+   local identity data on the local machine, package one redacted session per
+   ZIP, and upload it to a stable S3 key. A changed session replaces its previous
+   ZIP; unchanged content is skipped without first being redacted or compressed.
 
 The uploaded transcript contains the source's native data without schema
 conversion.
@@ -209,7 +211,7 @@ redaction result:
 
 ```json
 {
-  "transcript_format_version": 4,
+  "transcript_format_version": 5,
   "source": "claude_code",
   "source_format": "claude-jsonl",
   "contributor": "example-contributor",
@@ -223,8 +225,10 @@ redaction result:
     "parent": null
   },
   "version": {
-    "fingerprint": "privacy-safe archive fingerprint",
-    "body_fingerprint": "privacy-safe transcript fingerprint",
+    "source_fingerprint": "SHA-256 fingerprint of original transcript and sidecars",
+    "source_body_fingerprint": "SHA-256 fingerprint of original transcript",
+    "fingerprint_version": 3,
+    "redaction_version": 1,
     "content_sha256": "SHA-256 of the redacted transcript",
     "redact_identity": true,
     "uploaded_at": "2026-01-01T00:00:00+00:00"
@@ -247,16 +251,25 @@ redaction result:
 }
 ```
 
-`version` holds the fingerprints used for change detection, the redacted
-transcript hash, and the upload time. `size_bytes` is the redacted transcript
-size, and `redactions` is the total number of replacements. Each sidecar entry
-records its ZIP path, type, redacted original reference, redacted size, and hash.
-The three sidecar arrays are present even when empty.
+`version` holds the original-content fingerprints and their policy versions,
+the redacted transcript hash, and the upload time. `size_bytes` is the redacted
+transcript size, and `redactions` is the total number of replacements. Each
+sidecar entry records its ZIP path, type, redacted original reference, redacted
+size, and hash. The three sidecar arrays are present even when empty.
 
 ## Privacy and redaction
 
-Redaction happens on your machine before anything is written to a ZIP, and the
-count of replacements is recorded in its manifest.
+Redaction happens on your machine after you start an upload and before anything
+is written to its temporary ZIP. The count of replacements is recorded in the
+manifest. Background UI refreshes fingerprint original content to determine
+whether an upload is needed, but do not redact or package transcripts.
+
+The original-content SHA-256 fingerprint is stored in private S3 object metadata
+so future runs can skip unchanged content. It is a one-way digest, but it can
+confirm guesses about exact original content and reveal when content is equal.
+Uploaded metadata also records the fingerprint, redaction-policy, and
+archive-format versions; changing a policy version causes the transcript to be
+redacted and uploaded again.
 
 Two kinds of content are rewritten:
 

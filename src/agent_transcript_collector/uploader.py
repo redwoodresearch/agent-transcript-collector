@@ -18,7 +18,6 @@ from botocore.exceptions import ClientError
 
 from .paths import upload_lock_path
 from .redactor import (
-    canonicalize_secrets,
     redact_identity,
     redact_jsonl_content,
     redact_path_token,
@@ -29,11 +28,15 @@ from .sidecars import SidecarSet
 from .sources.base import session_sidecars
 from .storage import STORAGE_PREFIX
 
-TRANSCRIPT_FORMAT_VERSION = 4
-FINGERPRINT_VERSION = 2
+TRANSCRIPT_FORMAT_VERSION = 5
+FINGERPRINT_VERSION = 3
+REDACTION_VERSION = 1
 FINGERPRINT_METADATA = "content-fingerprint"
 BODY_FINGERPRINT_METADATA = "body-fingerprint"
 SIDECAR_COUNT_METADATA = "sidecar-count"
+FINGERPRINT_VERSION_METADATA = "fingerprint-version"
+REDACTION_VERSION_METADATA = "redaction-version"
+FORMAT_VERSION_METADATA = "transcript-format-version"
 
 
 def upload_concurrency() -> int:
@@ -103,17 +106,11 @@ class PreparedTranscript:
     sidecars: SidecarSet = NO_SIDECARS
 
 
-def _privacy_safe_digest(text: str) -> str:
-    canonical, _ = redact_identity(canonicalize_secrets(text))
-    return hashlib.sha256(canonical.encode()).hexdigest()
-
-
 def transcript_fingerprint(raw_bytes: bytes) -> str:
-    """Identify content without preserving or hashing raw secret values."""
-    policy = f"archive-v{FINGERPRINT_VERSION}:redact-id=1\0"
-    canonical = canonicalize_secrets(raw_bytes.decode("utf-8", errors="replace"))
-    canonical, _ = redact_identity(canonical)
-    return hashlib.sha256(policy.encode() + canonical.encode()).hexdigest()
+    """Identify the exact original content without running redaction."""
+    digest = hashlib.sha256(f"source-v{FINGERPRINT_VERSION}\0".encode())
+    digest.update(raw_bytes)
+    return digest.hexdigest()
 
 
 def content_fingerprint(body_fingerprint: str, sidecars: SidecarSet) -> str:
@@ -127,10 +124,12 @@ def content_fingerprint(body_fingerprint: str, sidecars: SidecarSet) -> str:
     digest = hashlib.sha256(f"sidecars-v1\0{body_fingerprint}".encode())
     for sidecar in sidecars.files:
         try:
-            text = sidecar.path.read_text(encoding="utf-8", errors="replace")
+            raw_bytes = sidecar.path.read_bytes()
         except OSError:
-            text = ""
-        digest.update(f"{sidecar.arcname}\0{_privacy_safe_digest(text)}\0".encode())
+            raw_bytes = b""
+        digest.update(sidecar.arcname.encode() + b"\0")
+        digest.update(hashlib.sha256(raw_bytes).digest())
+        digest.update(b"\0")
     return digest.hexdigest()
 
 
@@ -185,6 +184,13 @@ def _uploaded_metadata(s3, key: str, cache: dict[str, dict]) -> dict:
 
 def _already_uploaded(prepared: PreparedTranscript, remote: dict) -> bool:
     """Decide whether the stored object already holds this session's content."""
+    expected_versions = {
+        FINGERPRINT_VERSION_METADATA: str(FINGERPRINT_VERSION),
+        REDACTION_VERSION_METADATA: str(REDACTION_VERSION),
+        FORMAT_VERSION_METADATA: str(TRANSCRIPT_FORMAT_VERSION),
+    }
+    if any(remote.get(key) != value for key, value in expected_versions.items()):
+        return False
     if remote.get(FINGERPRINT_METADATA) == prepared.fingerprint:
         return True
     # Harnesses delete their own side files on their own schedule, so a session
@@ -225,7 +231,7 @@ def classify_prepared(
     uploaded_metadata: dict[str, dict] | None = None,
     on_status=None,
 ):
-    """Split already-prepared transcripts by their remote fingerprint."""
+    """Split fingerprinted transcripts by their remote source fingerprint."""
     existing = uploaded_metadata if uploaded_metadata is not None else {}
     pending = []
     current = []
@@ -329,8 +335,10 @@ def _build_transcript_zip(source, prepared: PreparedTranscript, contributor: str
             "parent": session.parent,
         },
         "version": {
-            "fingerprint": prepared.fingerprint,
-            "body_fingerprint": prepared.body_fingerprint,
+            "source_fingerprint": prepared.fingerprint,
+            "source_body_fingerprint": prepared.body_fingerprint,
+            "fingerprint_version": FINGERPRINT_VERSION,
+            "redaction_version": REDACTION_VERSION,
             "content_sha256": hashlib.sha256(raw.encode()).hexdigest(),
             "redact_identity": True,
             "uploaded_at": datetime.now(timezone.utc).isoformat(),
@@ -450,6 +458,9 @@ def upload_artifacts(s3, artifacts: list[dict], on_progress=None):
                 FINGERPRINT_METADATA: artifact["fingerprint"],
                 BODY_FINGERPRINT_METADATA: artifact["body_fingerprint"],
                 SIDECAR_COUNT_METADATA: str(artifact["sidecar_count"]),
+                FINGERPRINT_VERSION_METADATA: str(FINGERPRINT_VERSION),
+                REDACTION_VERSION_METADATA: str(REDACTION_VERSION),
+                FORMAT_VERSION_METADATA: str(TRANSCRIPT_FORMAT_VERSION),
             },
         )
         return {

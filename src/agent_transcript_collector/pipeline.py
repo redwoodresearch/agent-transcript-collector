@@ -1,9 +1,9 @@
 """Persistent scan-to-upload state shared by the Web UI and hourly watcher.
 
 The pipeline has one durable record per local transcript and contributor. A
-cheap filesystem signature decides whether redaction is necessary; only new or
-changed records are read, fingerprinted, packaged, and reconciled with S3.
-Uploads consume the resulting artifacts without repeating preparation.
+cheap filesystem signature decides whether fingerprinting is necessary. New or
+changed records are read, fingerprinted, and reconciled with S3 without running
+redaction. Uploads redact and package only the confirmed pending records.
 """
 
 from __future__ import annotations
@@ -12,15 +12,15 @@ import json
 import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from pathlib import Path
 
-from .paths import pipeline_cache_path, prepared_artifacts_dir
+from .paths import pipeline_cache_path
 from .s3client import make_s3_client
 from .uploader import (
     FINGERPRINT_VERSION,
+    REDACTION_VERSION,
     TRANSCRIPT_FORMAT_VERSION,
-    artifact_is_available,
-    artifact_is_current,
     build_upload_artifact,
     classify_prepared,
     prepare_transcript,
@@ -28,7 +28,7 @@ from .uploader import (
     signature_is_current,
 )
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 
 
 def redaction_concurrency() -> int:
@@ -93,42 +93,21 @@ def _item(source_id: str, session, status: str) -> dict:
     }
 
 
-def _artifact_root(contributor: str, root: Path | None = None) -> Path:
-    base = root or prepared_artifacts_dir()
-    safe = "".join(c if c.isalnum() or c in "._-" else "-" for c in contributor)
-    target = base / (safe or "anonymous")
-    target.mkdir(parents=True, exist_ok=True, mode=0o700)
-    return target
-
-
-def _unlink_artifact(record: dict, root: Path) -> None:
-    artifact = record.get("artifact")
-    if not isinstance(artifact, dict):
-        return
-    try:
-        path = Path(artifact["path"])
-        if path.resolve().is_relative_to(root.resolve()):
-            path.unlink(missing_ok=True)
-    except (KeyError, OSError, RuntimeError):
-        pass
-
-
-def _record_is_current(record: object, require_artifact: bool) -> bool:
+def _record_is_current(record: object) -> bool:
     if not isinstance(record, dict):
         return False
     if (
         record.get("fingerprint_version") != FINGERPRINT_VERSION
+        or record.get("redaction_version") != REDACTION_VERSION
         or record.get("format_version") != TRANSCRIPT_FORMAT_VERSION
         or not signature_is_current(record.get("signature"))
     ):
         return False
-    if require_artifact:
-        return artifact_is_current(record.get("artifact", {}))
     return True
 
 
-def _prepare_changed(source, session, contributor: str, root: Path) -> tuple:
-    """Redact and package one changed transcript without touching shared state."""
+def _prepare_changed(source, session, contributor: str) -> tuple:
+    """Fingerprint one changed transcript without touching shared state."""
     prepared = prepare_transcript(source, session, contributor)
     record = {
         "source": source.id,
@@ -138,14 +117,17 @@ def _prepare_changed(source, session, contributor: str, root: Path) -> tuple:
         "session": session.id,
         "path": str(session.path),
         "fingerprint_version": FINGERPRINT_VERSION,
+        "redaction_version": REDACTION_VERSION,
         "format_version": TRANSCRIPT_FORMAT_VERSION,
         "signature": prepared_signature(prepared),
         "fingerprint": prepared.fingerprint,
         "body_fingerprint": prepared.body_fingerprint,
-        "artifact": build_upload_artifact(source, prepared, contributor, root),
         "state": "checking",
     }
-    return prepared, record
+    # Remote comparison only needs fingerprints, sidecar count, and identity.
+    # Release transcript bodies as each worker finishes instead of retaining a
+    # cold cache's entire corpus until every S3 metadata check completes.
+    return replace(prepared, raw_bytes=b""), record
 
 
 def refresh(
@@ -157,7 +139,7 @@ def refresh(
     cache_path: Path | None = None,
     artifact_root: Path | None = None,
 ) -> dict:
-    """Prepare changed transcripts and reconcile only those with S3."""
+    """Fingerprint changed transcripts and reconcile only those with S3."""
     selections = [(source, list(sessions)) for source, sessions in selections]
     all_sessions = [
         (source, session)
@@ -166,7 +148,6 @@ def refresh(
     ]
     state = _load(cache_path)
     records = state["records"]
-    root = _artifact_root(contributor, artifact_root)
     changed = []
     items_by_key = {}
 
@@ -174,9 +155,8 @@ def refresh(
         key = _record_key(contributor, source.id, session)
         record = records.get(key)
         status = record.get("state") if isinstance(record, dict) else None
-        require_artifact = status == "ready"
         if status in {"current", "ready"} and _record_is_current(
-            record, require_artifact
+            record
         ):
             items_by_key[key] = _item(source.id, session, status)
         else:
@@ -188,16 +168,15 @@ def refresh(
     prepared_by_key = {}
     total_changed = len(changed)
     if on_progress:
-        on_progress("redacting", 0, total_changed)
+        on_progress("fingerprinting", 0, total_changed)
     errors = []
     workers = max(1, min(redaction_concurrency(), total_changed))
     completed = 0
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {}
         for key, source, session, old_record in changed:
-            _unlink_artifact(old_record, root)
             future = executor.submit(
-                _prepare_changed, source, session, contributor, root
+                _prepare_changed, source, session, contributor
             )
             futures[future] = (key, source, session)
         for future in as_completed(futures):
@@ -223,7 +202,7 @@ def refresh(
                 records[key] = record
                 prepared_by_key[key] = prepared
             if on_progress:
-                on_progress("redacting", completed, total_changed)
+                on_progress("fingerprinting", completed, total_changed)
     _save(state, cache_path)
 
     prepared_items = list(prepared_by_key.values())
@@ -246,8 +225,6 @@ def refresh(
             record = records[key]
             if id(prepared) in current_ids:
                 record["state"] = "current"
-                _unlink_artifact(record, root)
-                record.pop("artifact", None)
             elif id(prepared) in pending_ids:
                 record["state"] = "ready"
             else:
@@ -258,8 +235,6 @@ def refresh(
                      if item.get("key") == prepared.key),
                     "Upload status unavailable",
                 )
-                _unlink_artifact(record, root)
-                record.pop("artifact", None)
             items_by_key[key] = _item(
                 record["source"], prepared.session, record["state"]
             )
@@ -284,9 +259,9 @@ def refresh(
 
 
 def artifacts_for(selections, contributor: str, cache_path: Path | None = None):
-    """Return current prepared artifacts or the sessions requiring Refresh."""
+    """Return pending upload candidates or sessions requiring Refresh."""
     state = _load(cache_path)
-    artifacts = []
+    candidates = []
     stale = []
     for source, sessions in selections:
         for session in sessions:
@@ -295,21 +270,82 @@ def artifacts_for(selections, contributor: str, cache_path: Path | None = None):
             if (
                 isinstance(record, dict)
                 and record.get("state") == "current"
-                and _record_is_current(record, False)
+                and _record_is_current(record)
             ):
                 continue
             if (
                 isinstance(record, dict)
                 and record.get("state") == "ready"
-                # Upload means "send the prepared snapshot." A live session
-                # may change immediately afterward; Refresh notices that from
-                # the record signature and prepares its next snapshot.
-                and artifact_is_available(record.get("artifact", {}))
+                and _record_is_current(record)
             ):
-                artifacts.append(dict(record["artifact"]))
+                candidates.append(dict(record))
             else:
                 stale.append(_item(source.id, session, "stale"))
-    return artifacts, stale
+    return candidates, stale
+
+
+def prepare_upload_artifacts(
+    selections,
+    candidates: list[dict],
+    contributor: str,
+    directory: str | Path,
+    on_progress=None,
+):
+    """Revalidate, redact, and package candidates selected for upload."""
+    wanted = {
+        (item.get("source"), item.get("group"), item.get("parent") or "",
+         item.get("session")): item
+        for item in candidates
+    }
+    work = []
+    for source, sessions in selections:
+        for session in sessions:
+            identity = (source.id, session.group_key, session.parent or "", session.id)
+            if identity in wanted:
+                work.append((source, session, wanted[identity]))
+
+    artifacts = []
+    errors = []
+
+    def prepare_one(source, session, candidate):
+        prepared = prepare_transcript(source, session, contributor)
+        if (
+            prepared.fingerprint != candidate.get("fingerprint")
+            or prepared.body_fingerprint != candidate.get("body_fingerprint")
+            or prepared_signature(prepared) != candidate.get("signature")
+        ):
+            raise RuntimeError("Transcript changed after Refresh; refresh and try again")
+        artifact = build_upload_artifact(
+            source, prepared, contributor, directory
+        )
+        if prepared_signature(prepared) != candidate.get("signature"):
+            Path(artifact["path"]).unlink(missing_ok=True)
+            raise RuntimeError("Transcript changed during redaction; refresh and try again")
+        return artifact
+
+    total = len(work)
+    workers = max(1, min(redaction_concurrency(), total))
+    completed = 0
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(prepare_one, source, session, candidate):
+                (source, session)
+            for source, session, candidate in work
+        }
+        for future in as_completed(futures):
+            source, session = futures[future]
+            completed += 1
+            try:
+                artifacts.append(future.result())
+            except Exception as exc:
+                errors.append({
+                    "source": source.id,
+                    "session": session.id,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+            if on_progress:
+                on_progress(completed, total)
+    return artifacts, errors
 
 
 def mark_uploaded(artifacts: list[dict], contributor: str,
@@ -317,7 +353,6 @@ def mark_uploaded(artifacts: list[dict], contributor: str,
                   artifact_root: Path | None = None) -> None:
     state = _load(cache_path)
     records = state["records"]
-    root = _artifact_root(contributor, artifact_root)
     uploaded = {
         (item.get("source"), item.get("group"), item.get("parent") or "",
          item.get("session"))
@@ -338,7 +373,5 @@ def mark_uploaded(artifacts: list[dict], contributor: str,
         )
         if identity in uploaded:
             record["state"] = "current"
-            _unlink_artifact(record, root)
-            record.pop("artifact", None)
             record.pop("error", None)
     _save(state, cache_path)

@@ -254,7 +254,7 @@
 <body>
 
 <h1>Redwood Research Transcript Collector</h1>
-<p class="subtitle">Select the transcripts you'd like to share. Preview any session before deciding. Secrets and credentials are always redacted.</p>
+<p class="subtitle">Select the transcripts you'd like to share. Preview any session before deciding. Secrets and credentials are redacted locally when you upload.</p>
 
 <div class="control-card">
   <div class="readiness-controls" id="readiness-controls" data-status="scanning">
@@ -267,7 +267,7 @@
     </div>
     <div class="readiness-actions">
       <button class="secondary" id="refresh-btn" onclick="startScan(true)"
-              title="Scan transcripts and prepare uploads again" disabled>Refresh</button>
+              title="Scan transcripts and refresh their upload status" disabled>Refresh</button>
     </div>
   </div>
 <div class="auto-upload-controls">
@@ -284,7 +284,7 @@
         <span id="watcher-schedule">Checking last and next upload…</span>
       </div>
       <button id="upload-btn" onclick="uploadNow()"
-              title="Upload prepared transcripts from projects selected for automatic upload" disabled>Upload 0 transcripts now</button>
+              title="Redact and upload transcripts from projects selected for automatic upload" disabled>Upload 0 transcripts now</button>
       <button class="secondary" id="auto-upload-toggle" onclick="toggleAutoUpload()"
               title="Enable or disable automatic uploads every hour" disabled>Enable</button>
       <button class="secondary" id="reinstall-watcher" onclick="reinstallWatcher()"
@@ -780,7 +780,7 @@ async function startPipeline() {
     project.classList.add('pipeline-running');
   });
   setPipelineStatus('');
-  renderPipelineProgress('running', 0, 0, 'Preparing pipeline…');
+  renderPipelineProgress('running', 0, 0, 'Checking transcript changes…');
   updatePendingCounts();
   try {
     const resp = await fetch('/api/pipeline', {
@@ -867,14 +867,14 @@ async function startPipeline() {
 function pipelineMessage(data) {
   const count = Number(data.work_total || 0);
   const done = Number(data.done || 0);
-  if (data.stage === 'redacting') {
-    return count ? `Redacting ${count} new or changed transcript${count === 1 ? '' : 's'} · ${done}/${count}`
-      : 'Using cached redactions';
+  if (data.stage === 'fingerprinting') {
+    return count ? `Fingerprinting ${count} new or changed transcript${count === 1 ? '' : 's'} · ${done}/${count}`
+      : 'Using cached fingerprints';
   }
   if (data.stage === 'checking') {
     return `Checking ${count} transcript${count === 1 ? '' : 's'}\u2019 upload status · ${done}/${count}`;
   }
-  return 'Preparing pipeline…';
+  return 'Checking transcript changes…';
 }
 
 function renderPipelineProgress(status, done, total, message = '') {
@@ -894,12 +894,12 @@ function renderPipelineProgress(status, done, total, message = '') {
     detail.textContent = message;
   } else if (status === 'ready') {
     title.textContent = 'Uploads ready';
-    detail.textContent = message || `${total} transcript${total === 1 ? '' : 's'} prepared`;
+    detail.textContent = message || `${total} transcript${total === 1 ? '' : 's'} checked`;
   } else if (status === 'paused') {
-    title.textContent = 'Upload preparation paused';
+    title.textContent = 'Upload status refresh paused';
     detail.textContent = message;
   } else {
-    title.textContent = 'Upload preparation unavailable';
+    title.textContent = 'Upload status unavailable';
     detail.textContent = message;
   }
   detail.title = detail.textContent;
@@ -912,7 +912,7 @@ function pausePipelineForUpload() {
   if (controller) controller.abort();
   document.querySelectorAll('.project').forEach(project =>
     project.classList.remove('pipeline-running'));
-  renderPipelineProgress('paused', 0, 0, 'Uploading prepared transcripts');
+  renderPipelineProgress('paused', 0, 0, 'Redacting and uploading transcripts');
   setPipelineStatus('');
 }
 
@@ -981,17 +981,17 @@ function updatePendingCounts() {
       || !prepared || current;
     upload.textContent = current ? 'Current' : 'Upload';
     upload.title = pipelineRunning
-      ? 'Upload preparation is refreshing'
+      ? 'Upload status is refreshing'
       : watcherRunning
       ? 'Automatic uploader is running. Manual uploads will be available when it finishes.'
-      : !prepared ? 'Waiting for upload preparation to finish'
+      : !prepared ? 'Waiting for upload status refresh to finish'
       : current ? 'This transcript matches the uploaded version'
-      : 'Upload this prepared transcript';
+      : 'Redact and upload this transcript';
   });
 
   button.title = watcherRunning
     ? 'Automatic uploader is running. Manual uploads will be available when it finishes.'
-    : 'Upload prepared transcripts from projects selected for automatic upload';
+    : 'Redact and upload transcripts from projects selected for automatic upload';
   if (uploadBusy) {
     button.textContent = 'Uploading…';
     button.disabled = true;
@@ -1147,7 +1147,7 @@ function uploadNow() {
     .flatMap(project => consentedRows(project))
     .filter(row => row.classList.contains('pipeline-prepared'));
   if (!rows.length) {
-    showToast('No prepared transcripts to upload');
+    showToast('No pending transcripts to upload');
     return;
   }
   startUpload(rows);
@@ -1240,6 +1240,7 @@ function renderProgress(j) {
   const fill = document.getElementById('bar-fill');
   const text = document.getElementById('progress-text');
   const labels = {
+    redacting: 'Redacting',
     uploading: 'Uploading',
   };
   if (j.stage_total) {
