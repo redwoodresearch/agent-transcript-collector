@@ -11,9 +11,8 @@ to `s3://rr-agent-transcripts` in `us-east-1`.
 - [Review and upload transcripts](#review-and-upload-transcripts)
 - [Automatic uploads](#automatic-uploads)
 - [Browse uploaded transcripts](#browse-uploaded-transcripts)
-- [What gets collected](#what-gets-collected)
+- [Transcript data and storage](#transcript-data-and-storage)
 - [Privacy and redaction](#privacy-and-redaction)
-- [Storage layout](#storage-layout)
 - [Configuration](#configuration)
 
 ## Prerequisites
@@ -29,10 +28,6 @@ export AWS_PROFILE=<profile>
 
 The profile name is a local label. Use the same name when refreshing an expired
 session with `aws sso login --profile <profile>`.
-
-Uploads require `s3:PutObject` and `s3:GetObject`: the collector checks each
-session object's fingerprint so unchanged content can be skipped. The transcript
-browser only requires `s3:ListBucket`.
 
 ## Install
 
@@ -51,8 +46,7 @@ it in your browser. The background process also checks for an updated version
 whenever it starts.
 
 The service is installed for your user account with a macOS LaunchAgent or Linux
-systemd user service. It does not require `sudo`. `uv` must remain installed at
-the path recorded during setup.
+systemd user service.
 
 After setup, the user-facing command is `rr-trans`:
 
@@ -78,13 +72,7 @@ rr-trans ui
 ```
 
 The foreground command serves at <http://localhost:8899> and opens it in your
-browser (if that port is busy, the next free port is used). Both modes scan local
-transcript folders in the background; use **Refresh** after creating or moving
-sessions. Refresh stores a persistent filesystem signature for every transcript,
-so it only reads and redacts new or changed content. Those changed transcripts
-are compared with S3 and packaged into durable prepared archives. The upload
-button only sends those archives; it never repeats scanning, redaction, or
-upload-history work.
+browser (if that port is busy, the next free port is used).
 
 ## Automatic uploads
 
@@ -141,55 +129,130 @@ Use Enter to expand folders and `q` to quit. It opens at `mts-trans/` by default
 pass `--prefix mts-trans/<contributor>/` to start at a narrower S3 prefix. The
 browser only lists object names and sizes. It does not download or extract data.
 
-## What gets collected
+## Transcript data and storage
 
-Detection runs locally on your machine, and only sources actually present appear
-in the UI:
+The collector discovers native transcript files on your machine. Only sources
+that are present appear in the review UI.
 
-| Source | Default location | Override | Layout |
-|---|---|---|---|
-| Claude Code | `~/.claude/projects/` | `CLAUDE_CONFIG_DIR` | `<encoded-cwd>/<uuid>.jsonl` |
-| Codex | `~/.codex/sessions/` | `CODEX_HOME` | `YYYY/MM/DD/rollout-*.jsonl` |
-| Cursor | `~/.cursor/projects/` | `CURSOR_HOME` | `<encoded-project>/agent-transcripts/<id>/<id>.jsonl` |
-| Pi | `~/.pi/agent/sessions/` | `PI_CODING_AGENT_SESSION_DIR`, `PI_CODING_AGENT_DIR` | `--<encoded-cwd>--/<ts>_<id>.jsonl` |
-
-The uploaded artifact is the raw transcript in its native format after
-redaction. Preview rendering is best-effort, so schema drift between harness
-versions never changes what is uploaded.
-
-Cursor Agent JSONL transcripts include user messages, assistant text, and
-tool-call inputs; Cursor does not record tool outputs in these native files.
-
-Subagents are collected and marked in the manifest. Monitor and scaffolding
-sessions are excluded where the source schema makes that distinction possible.
-
-### Tool output stored outside the transcript
-
-Harnesses move oversized tool output into separate files and leave only a
-pointer in the transcript, so a transcript on its own records that the agent
-saw something without recording what. Those files are collected alongside the
-transcript that points at them:
-
-| Source | Folder | Holds |
+| Source | Search path | Transcript layout |
 |---|---|---|
-| Claude Code | `<project>/<session>/tool-results/` | Tool results too large to inline |
-| Claude Code | `<tmp>/claude-<uid>/<project>/<session>/tasks/` | Background command output |
-| Cursor | `<project>/agent-tools/` | Oversized tool results the agent reads back |
-| Cursor | `<project>/terminals/` | Shell output the agent reads back |
+| Claude Code | `~/.claude/projects/` (`CLAUDE_CONFIG_DIR`) | `<encoded-cwd>/<uuid>.jsonl` |
+| Codex | `~/.codex/sessions/` (`CODEX_HOME`) | `YYYY/MM/DD/rollout-*.jsonl` |
+| Cursor | `~/.cursor/projects/` (`CURSOR_HOME`) | `<encoded-project>/agent-transcripts/<id>/<id>.jsonl` |
+| Pi | `~/.pi/agent/sessions/` (`PI_CODING_AGENT_SESSION_DIR` or `PI_CODING_AGENT_DIR`) | `--<encoded-cwd>--/<ts>_<id>.jsonl` |
 
-Only files a transcript actually names are collected, resolved from the
-pointer rather than by listing a folder, because a resumed session keeps
-pointing at the folder it inherited from the session before it. A pointer is
-followed only when it stays inside the folder its harness owns, so a symlink
-leading elsewhere is ignored. Claude Code additionally points a finished task
-at the subagent transcript, which is collected as a session in its own right.
+Each session goes through the same pipeline:
 
-Harnesses delete these files on their own schedule, so some pointers are
-already dead by the time a transcript is uploaded. Those are listed in the
-manifest instead, and an upload that has lost side files never overwrites an
-earlier upload that still had them.
+1. **Discover:** find native transcripts and group them by project and source.
+2. **Assemble:** keep each transcript in its native JSONL or text format, link
+   subagent sessions to their parents, and resolve referenced external files.
+3. **Redact:** replace detected credentials and local identity data on the local
+   machine, in both the transcript and its external files.
+4. **Store:** package one redacted session per ZIP and upload it to a stable S3
+   key. A changed session replaces its previous ZIP; unchanged content is skipped.
 
-Codex and Pi keep tool output inline, so they have no such files.
+The uploaded transcript contains the source's native data without schema
+conversion.
+
+### What is not collected
+
+- Cursor's native transcripts omit tool output. The collector can include only
+  output that Cursor saved to a referenced external file.
+- Codex's internal review, compaction, and memory-maintenance sessions are
+  ignored; user sessions and task subagents are collected.
+- An external file is omitted if it has disappeared or exceeds the size budget.
+  Its redacted reference remains in the manifest under `missing` or
+  `skipped_too_large`.
+
+### Subagents and sidecars
+
+A subagent transcript is a separate session, not a file inside its parent's ZIP.
+Its manifest sets `session.is_subagent` to `true` and records the parent session
+ID. Its ZIP is stored below the parent under `subagents/`.
+
+A **sidecar** is agent-visible content that a transcript points to instead of
+embedding, such as an oversized tool result or background-task output. The
+collector follows only explicit pointers that stay within folders owned by the
+source. It does not treat a referenced subagent transcript as a sidecar.
+
+Sidecars are redacted and stored in the referring session's ZIP. Their manifest
+entries record the archive path, original reference after identity redaction,
+size, and content hash.
+
+### Folder structure
+
+Each session has one stable S3 object. Subagents are nested under their parent:
+
+```text
+s3://rr-agent-transcripts/mts-trans/<contributor>/<project>/<source>/<session>/transcript.zip
+s3://rr-agent-transcripts/mts-trans/<contributor>/<project>/<source>/<parent>/subagents/<session>/transcript.zip
+```
+
+Each ZIP contains the redacted native transcript, its manifest, and any sidecars
+referenced by that transcript:
+
+```text
+transcript.zip
+├── transcript.<ext>             # .jsonl or .txt
+├── manifest.json
+└── <sidecar-kind>/              # only when sidecars are present
+    └── <name>
+```
+
+The transcript and manifest are always present. Sidecar folders appear only
+when the session includes files of that kind. Current sidecar kinds are
+`tool-results`, `task-outputs`, `agent-tools`, and `terminals`.
+
+### `manifest.json`
+
+The manifest identifies the source, project, session, stored content, and
+redaction result:
+
+```json
+{
+  "transcript_format_version": 4,
+  "source": "claude_code",
+  "source_format": "claude-jsonl",
+  "contributor": "example-contributor",
+  "project": {
+    "key": "example-project",
+    "name": "example-project"
+  },
+  "session": {
+    "id": "session-id",
+    "is_subagent": false,
+    "parent": null
+  },
+  "version": {
+    "fingerprint": "privacy-safe archive fingerprint",
+    "body_fingerprint": "privacy-safe transcript fingerprint",
+    "content_sha256": "SHA-256 of the redacted transcript",
+    "redact_identity": true,
+    "uploaded_at": "2026-01-01T00:00:00+00:00"
+  },
+  "size_bytes": 12345,
+  "redactions": 3,
+  "sidecars": {
+    "files": [
+      {
+        "path": "tool-results/result.txt",
+        "kind": "tool-results",
+        "referenced_as": "/redacted/path/to/result.txt",
+        "size_bytes": 456,
+        "sha256": "SHA-256 of the redacted sidecar"
+      }
+    ],
+    "missing": ["/redacted/path/to/missing.output"],
+    "skipped_too_large": ["/redacted/path/to/oversized.txt"]
+  }
+}
+```
+
+`version` holds the fingerprints used for change detection, the redacted
+transcript hash, and the upload time. `size_bytes` is the redacted transcript
+size, and `redactions` is the total number of replacements. Each sidecar entry
+records its ZIP path, type, redacted original reference, redacted size, and hash.
+The three sidecar arrays are present even when empty.
 
 ## Privacy and redaction
 
@@ -220,39 +283,6 @@ to enumerate synthetic values.
 The patterns favor precision over recall: they only match values that are almost
 certainly secrets, so unusual or unformatted credentials can survive. Review
 what you select before uploading rather than treating redaction as a guarantee.
-
-## Storage layout
-
-Each transcript is stored in one ZIP at a stable key:
-
-```text
-s3://rr-agent-transcripts/mts-trans/<contributor>/<project-name>/<source>/<session>/transcript.zip
-s3://rr-agent-transcripts/mts-trans/<contributor>/<project-name>/<source>/<parent>/subagents/<session>/transcript.zip
-```
-
-Transcripts with the same project name share one project directory. Each ZIP
-contains one redacted transcript and a `manifest.json` with project, source,
-contributor, session, content-fingerprint, and redaction metadata. Resuming a
-session overwrites the same object only when the privacy-safe fingerprint
-changes.
-
-Side files sit beside the transcript in the same ZIP, under the folder they
-came from:
-
-```text
-transcript.jsonl
-manifest.json
-tool-results/<name>.txt
-task-outputs/<name>.output
-agent-tools/<name>.txt
-terminals/<name>.txt
-```
-
-`manifest.json` records each one under `sidecars`, with the redacted path the
-transcript refers to it by, so a pointer in the transcript can be matched to
-its file. Pointers whose target was already gone are listed under
-`sidecars.missing`. A session with no side files keeps the fingerprint it
-always had, so this does not rewrite earlier uploads.
 
 ## Configuration
 
