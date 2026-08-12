@@ -10,7 +10,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import TypedDict, cast
 
 from .paths import pipeline_cache_path, prepared_artifacts_dir
 from .prepare_archive import TRANSCRIPT_FORMAT_VERSION
@@ -42,9 +42,6 @@ class CacheRecord(TypedDict, total=False):
 
 class CacheFile(TypedDict):
     records: dict[str, CacheRecord]
-
-
-UploadDecision = Literal["skip", "upload", "stale"]
 
 
 def empty_cache() -> CacheFile:
@@ -104,25 +101,6 @@ def reusable_status(
     return TranscriptStatus(ref, cast(UploadState, state))
 
 
-def upload_decision(
-    cache: CacheFile, contributor: str, ref: TranscriptRef
-) -> tuple[UploadDecision, CacheRecord | None]:
-    """Decide whether a cached transcript is ready to upload."""
-    record = get_cache_for_transcript(
-        cache, contributor, ref.source.id, ref.session
-    )
-    if record is None:
-        return "stale", None
-    if record.get("state") == "not_uploaded":
-        return "upload", record
-    status = reusable_status(cache, contributor, ref)
-    if status is None:
-        return "stale", None
-    if status.state == "current":
-        return "skip", None
-    return "upload", record
-
-
 def store_status(
     cache: CacheFile, contributor: str, status: TranscriptStatus
 ) -> None:
@@ -150,22 +128,6 @@ def store_status(
     set_cache_for_transcript(
         cache, contributor, ref.source.id, ref.session, record
     )
-
-
-def mark_records_uploaded(
-    cache: CacheFile, contributor: str, identities: set[tuple[object, ...]]
-) -> None:
-    """Mark matching contributor records current after successful S3 writes."""
-    for record in cache["records"].values():
-        identity = (
-            record.get("source"),
-            record.get("project"),
-            record.get("parent") or "",
-            record.get("session"),
-        )
-        if record.get("contributor") == contributor and identity in identities:
-            record["state"] = "current"
-            record.pop("error", None)
 
 
 def _record_matches(record: CacheRecord, ref: TranscriptRef) -> bool:

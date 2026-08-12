@@ -11,17 +11,22 @@ from typing import Any, TypeAlias, cast
 from .cache import (
     CacheRecord,
     get_cache,
-    mark_records_uploaded,
+    get_cache_for_transcript,
     reusable_status,
     save_cache,
     store_status,
-    upload_decision,
 )
-from .prepare_archive import ArchiveArtifact, prepare_archive
+from .prepare_archive import (
+    TRANSCRIPT_FORMAT_VERSION,
+    ArchiveArtifact,
+    prepare_archive,
+)
+from .redactor import REDACTION_VERSION
 from .s3client import make_s3_client
 from .sources.base import Session, Source
 from .storage import transcript_key
 from .transcript import TranscriptIdentity, TranscriptRef, TranscriptStatus
+from .transcript_snapshot import SOURCE_HASH_VERSION
 from .upload_status import S3HeadClient, classify_uploads
 
 Selections: TypeAlias = Iterable[tuple[Source, Iterable[Session]]]
@@ -103,10 +108,16 @@ def artifacts_for(
     candidates: list[CacheRecord] = []
     stale: list[PipelineItem] = []
     for ref in _transcript_refs(selections, contributor):
-        decision, record = upload_decision(cache, contributor, ref)
-        if decision == "upload" and record is not None:
+        record = get_cache_for_transcript(
+            cache, contributor, ref.source.id, ref.session
+        )
+        if record is not None and record.get("state") == "not_uploaded":
             candidates.append(cast(CacheRecord, dict(record)))
-        elif decision == "stale":
+            continue
+        status = reusable_status(cache, contributor, ref)
+        if status is not None and status.state == "changed" and record is not None:
+            candidates.append(cast(CacheRecord, dict(record)))
+        elif status is None:
             stale.append(TranscriptStatus(ref, "stale").as_item())
     return candidates, stale
 
@@ -171,9 +182,21 @@ def mark_uploaded(
     cache_path: Path | None = None,
 ) -> None:
     cache = get_cache(cache_path)
-    mark_records_uploaded(
-        cache, contributor, {_record_identity(item) for item in artifacts}
-    )
+    uploaded = {_record_identity(item): item for item in artifacts}
+    for record in cache["records"].values():
+        artifact = uploaded.get(_record_identity(record))
+        if record.get("contributor") != contributor or artifact is None:
+            continue
+        record.update(
+            state="current",
+            source_hash=artifact["source_hash"],
+            source_hash_version=SOURCE_HASH_VERSION,
+            redaction_version=REDACTION_VERSION,
+            format_version=TRANSCRIPT_FORMAT_VERSION,
+            filesystem_snapshot=artifact["filesystem_snapshot"],
+            key=artifact["key"],
+        )
+        record.pop("error", None)
     save_cache(cache, cache_path)
 
 
