@@ -27,6 +27,7 @@ from jinja2 import Environment, PackageLoader
 
 from .redactor import redact_identity, redact_jsonl_content
 from .pipeline import artifacts_for, mark_uploaded, refresh as refresh_pipeline
+from .paths import watcher_config_path
 from .s3client import make_s3_client as _make_s3_client
 from .s3client import selected_profile
 from .sources import SOURCES, get_source, projects_from_groups
@@ -39,7 +40,7 @@ from .uploader import (
 )
 from .watcher import (
     AllowedProject,
-    LegacyAllowedGroup,
+    ProjectMember,
     WatcherConfig,
     capture_source_env,
 )
@@ -649,11 +650,6 @@ def get_watcher_status():
     config = result.get("config")
     if not config:
         return result
-    legacy_items = config.get("legacy_groups", [])
-    legacy = {
-        (item.get("source", ""), item.get("group", ""))
-        for item in legacy_items
-    }
     with SCAN_LOCK:
         projects = list(SCAN_CACHE["projects"] or [])
     visible_projects = [
@@ -683,22 +679,9 @@ def get_watcher_status():
             "identity": current.get("identity", ""),
             "label": current.get("label", ""),
         } if current else saved)
-    matched = set()
-    for project, groups in visible_projects:
-        if legacy & groups:
-            matched.update(legacy & groups)
-            selected.append({
-                "identity": project.get("identity", ""),
-                "label": project.get("label", ""),
-            })
     config["projects"] = list({
         item.get("identity", ""): item for item in selected
     }.values())
-    config["legacy_groups"] = [
-        item
-        for item in legacy_items
-        if (item.get("source", ""), item.get("group", "")) not in matched
-    ]
     return result
 
 
@@ -710,10 +693,6 @@ def _put_watcher(body: dict):
     removed = {
         (str(item.get("identity", "")), str(item.get("label", "")))
         for item in body.get("removed_projects", [])
-    }
-    removed_legacy = {
-        (str(item.get("source", "")), str(item.get("group", "")))
-        for item in body.get("removed_legacy_groups", [])
     }
     requested -= removed
     with SCAN_LOCK:
@@ -740,7 +719,7 @@ def _put_watcher(body: dict):
                 label=label,
                 members=tuple(sorted(
                     (
-                        LegacyAllowedGroup(source, group)
+                        ProjectMember(source, group)
                         for source, group in discovered_projects[(identity, label)]
                     ),
                     key=lambda item: (item.source, item.group),
@@ -764,14 +743,6 @@ def _put_watcher(body: dict):
                 )
                 and (project.identity, project.label) not in removed
             )
-            legacy_groups = [
-                group
-                for group in existing.legacy_groups
-                if (group.source, group.group) not in visible_groups
-                and (group.source, group.group) not in removed_legacy
-            ]
-        else:
-            legacy_groups = []
         config = WatcherConfig(
             auto_uploader_version=(
                 existing.auto_uploader_version
@@ -781,7 +752,6 @@ def _put_watcher(body: dict):
             contributor=_safe_name(body.get("contributor_name", "anonymous")),
             aws_profile=existing.aws_profile if existing else selected_profile(),
             projects=projects,
-            legacy_groups=legacy_groups,
             source_env=capture_source_env(),
             package_spec=WatcherConfig.package_spec,
             uv_path=existing.uv_path if existing else "",
@@ -872,6 +842,11 @@ def main(
     open_browser: bool = True,
     strict_port: bool = False,
 ) -> int:
+    config_path = watcher_config_path()
+    if config_path.exists():
+        from .migrate import migrate_config
+
+        migrate_config(config_path)
     base = port if port is not None else int(os.environ.get("PORT", "8899"))
     port = base if strict_port else _find_free_port(base, host=host)
     if port is None:

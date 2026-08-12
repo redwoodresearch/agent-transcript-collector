@@ -10,15 +10,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-
-try:
-    import fcntl
-except ImportError:  # Windows can browse transcripts but cannot install a watcher.
-    fcntl = None
 
 from .paths import (
     log_path,
@@ -39,7 +33,6 @@ LAUNCHD_LABEL = "com.redwoodresearch.agent-transcript-collector"
 SYSTEMD_NAME = "agent-transcript-collector"
 WATCH_INTERVAL_SECONDS = 60 * 60
 AUTO_UPLOADER_VERSION = 7
-_CONFIG_LOCK = threading.Lock()
 SOURCE_ENV_VARS = (
     "CLAUDE_CONFIG_DIR",
     "CODEX_HOME",
@@ -55,17 +48,16 @@ SOURCE_ENV_VARS = (
 
 
 @dataclass(frozen=True)
-class LegacyAllowedGroup:
+class ProjectMember:
     source: str
     group: str
-    label: str = ""
 
 
 @dataclass(frozen=True)
 class AllowedProject:
     identity: str
     label: str = ""
-    members: tuple[LegacyAllowedGroup, ...] = ()
+    members: tuple[ProjectMember, ...] = ()
 
 
 @dataclass
@@ -75,59 +67,33 @@ class WatcherConfig:
     contributor: str = "anonymous"
     aws_profile: str = "rw-eng"
     projects: list[AllowedProject] = field(default_factory=list)
-    legacy_groups: list[LegacyAllowedGroup] = field(default_factory=list, repr=False)
     source_env: dict[str, str] = field(default_factory=dict)
     package_spec: str = PACKAGE_SPEC
     uv_path: str = ""
 
     @classmethod
     def from_dict(cls, data: dict) -> "WatcherConfig":
-        schema_version = data.get("schema_version")
-        if schema_version not in (1, 2):
+        if data.get("schema_version") != 2:
             raise ValueError("unsupported watcher configuration version")
-        if schema_version == 1:
-            projects = set()
-            legacy_groups = {
-                LegacyAllowedGroup(
-                    source=str(item.get("source", "")),
-                    group=str(item.get("group", "")),
-                    label=str(item.get("label", "")),
-                )
-                for item in data.get("groups", [])
-                if item.get("source") and item.get("group")
-            }
-        else:
-            projects = {
-                AllowedProject(
-                    identity=str(
-                        item.get("identity")
-                        or f'directory:{item["directory"]}'
+        projects = {
+            AllowedProject(
+                identity=str(item["identity"]),
+                label=str(item.get("label", "")),
+                members=tuple(sorted(
+                    (
+                        ProjectMember(
+                            source=str(member.get("source", "")),
+                            group=str(member.get("group", "")),
+                        )
+                        for member in item.get("members", [])
+                        if member.get("source") and member.get("group")
                     ),
-                    label=str(item.get("label", "")),
-                    members=tuple(sorted(
-                        (
-                            LegacyAllowedGroup(
-                                source=str(member.get("source", "")),
-                                group=str(member.get("group", "")),
-                            )
-                            for member in item.get("members", [])
-                            if member.get("source") and member.get("group")
-                        ),
-                        key=lambda member: (member.source, member.group),
-                    )),
-                )
-                for item in data.get("projects", [])
-                if item.get("identity") or item.get("directory")
-            }
-            legacy_groups = {
-                LegacyAllowedGroup(
-                    source=str(item.get("source", "")),
-                    group=str(item.get("group", "")),
-                    label=str(item.get("label", "")),
-                )
-                for item in data.get("legacy_groups", [])
-                if item.get("source") and item.get("group")
-            }
+                    key=lambda member: (member.source, member.group),
+                )),
+            )
+            for item in data.get("projects", [])
+            if item.get("identity")
+        }
         projects = sorted(
             projects,
             key=lambda item: (item.identity, item.label),
@@ -138,10 +104,6 @@ class WatcherConfig:
             contributor=str(data.get("contributor", "anonymous")),
             aws_profile=str(data.get("aws_profile", "rw-eng")),
             projects=projects,
-            legacy_groups=sorted(
-                legacy_groups,
-                key=lambda item: (item.source, item.group),
-            ),
             source_env={
                 str(key): str(value)
                 for key, value in data.get("source_env", {}).items()
@@ -178,30 +140,12 @@ def _atomic_write(path: Path, data: bytes, mode: int = 0o600) -> None:
 
 
 def _config_payload(config: WatcherConfig) -> bytes:
-    data = asdict(config)
-    if not config.legacy_groups:
-        data.pop("legacy_groups", None)
-    return json.dumps(data, indent=2, sort_keys=True).encode() + b"\n"
-
-
-def _config_lock_path(path: Path) -> Path:
-    return path.with_name(f".{path.name}.lock")
+    return json.dumps(asdict(config), indent=2, sort_keys=True).encode() + b"\n"
 
 
 def save_config(config: WatcherConfig, path: Path | None = None) -> Path:
     target = path or watcher_config_path()
-    _ensure_private_dir(target.parent)
-    lock_path = _config_lock_path(target)
-    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-    with _CONFIG_LOCK:
-        try:
-            if fcntl is not None:
-                fcntl.flock(descriptor, fcntl.LOCK_EX)
-            _atomic_write(target, _config_payload(config))
-        finally:
-            if fcntl is not None:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-            os.close(descriptor)
+    _atomic_write(target, _config_payload(config))
     return target
 
 
@@ -238,7 +182,6 @@ def _resolve_allowed(config: WatcherConfig):
         for group in source.discover()
     ]
     allowed = set()
-    legacy = {(item.source, item.group) for item in config.legacy_groups}
     for project in projects_from_groups(discovered):
         project_groups = {
             (harness["source"], group)
@@ -250,7 +193,7 @@ def _resolve_allowed(config: WatcherConfig):
             or bool({(member.source, member.group) for member in item.members}
                     & project_groups)
             for item in config.projects
-        ) or bool(legacy & project_groups)
+        )
         if not selected:
             continue
         allowed.update(project_groups)
@@ -259,74 +202,6 @@ def _resolve_allowed(config: WatcherConfig):
         for source, group in discovered
         if (source.id, group.key) in allowed
     ]
-
-
-def migrate_config(path: Path | None = None) -> WatcherConfig:
-    """Atomically replace a v1 group config with exact discovered projects."""
-    target = path or watcher_config_path()
-    _ensure_private_dir(target.parent)
-    lock_path = _config_lock_path(target)
-    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-    with _CONFIG_LOCK:
-        try:
-            if fcntl is not None:
-                fcntl.flock(descriptor, fcntl.LOCK_EX)
-            config = WatcherConfig.from_dict(json.loads(target.read_text()))
-            if not config.legacy_groups:
-                return config
-            old_source_env = {
-                name: os.environ.get(name) for name in config.source_env
-            }
-            os.environ.update(config.source_env)
-            try:
-                discovered = [
-                    (source, group)
-                    for source in SOURCES
-                    for group in source.discover()
-                ]
-            finally:
-                for name, value in old_source_env.items():
-                    if value is None:
-                        os.environ.pop(name, None)
-                    else:
-                        os.environ[name] = value
-            legacy = {(item.source, item.group) for item in config.legacy_groups}
-            matched = set()
-            projects = {item.identity: item for item in config.projects}
-            for project in projects_from_groups(discovered):
-                project_groups = {
-                    (harness["source"], group)
-                    for harness in project["harnesses"]
-                    for group in harness["groups"]
-                }
-                selected_groups = legacy & project_groups
-                if selected_groups:
-                    projects[project["identity"]] = AllowedProject(
-                        project["identity"],
-                        project["label"],
-                        tuple(sorted(
-                            (
-                                LegacyAllowedGroup(source, group)
-                                for source, group in project_groups
-                            ),
-                            key=lambda item: (item.source, item.group),
-                        )),
-                    )
-                    matched.update(selected_groups)
-            config.projects = sorted(
-                projects.values(), key=lambda item: item.identity
-            )
-            config.legacy_groups = [
-                item
-                for item in config.legacy_groups
-                if (item.source, item.group) not in matched
-            ]
-            _atomic_write(target, _config_payload(config))
-            return config
-        finally:
-            if fcntl is not None:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-            os.close(descriptor)
 
 
 def discover_allowed(config: WatcherConfig):
@@ -676,7 +551,6 @@ def status(
                 "auto_uploader_version": config.auto_uploader_version,
                 "contributor": config.contributor,
                 "projects": [asdict(project) for project in config.projects],
-                "legacy_groups": [asdict(group) for group in config.legacy_groups],
                 "aws_profile": config.aws_profile,
             }
             result["needs_reinstall"] = (
@@ -697,8 +571,15 @@ def main(argv: list[str] | None = None) -> int:
     uninstall_parser = subparsers.add_parser("uninstall")
     uninstall_parser.add_argument("--purge", action="store_true")
     args = parser.parse_args(argv)
+    config = None
+    if args.command in {"run", "status"}:
+        from .migrate import migrate_config
+
+        config_path = args.config if args.command == "run" else watcher_config_path()
+        if config_path.exists():
+            config = migrate_config(config_path)
     if args.command == "run":
-        result = run_once(migrate_config(args.config))
+        result = run_once(config or load_config(args.config))
         print(json.dumps(result))
         return 0 if result["status"] in {"completed", "skipped"} else 1
     if args.command == "status":

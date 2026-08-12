@@ -484,7 +484,7 @@ function selectedAutoUploadProjects() {
   return consentedProjects().map(projectDescriptor);
 }
 
-async function updateAutoUploadConfig(enabled, removedProjects = [], removedLegacyGroups = []) {
+async function updateAutoUploadConfig(enabled, removedProjects = []) {
   const submittedNameRevision = nameRevision;
   const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
   const projects = selectedAutoUploadProjects();
@@ -494,7 +494,6 @@ async function updateAutoUploadConfig(enabled, removedProjects = [], removedLega
     body: JSON.stringify({
       projects,
       removed_projects: removedProjects,
-      removed_legacy_groups: removedLegacyGroups,
       contributor_name: contributorName,
       enabled,
     }),
@@ -508,7 +507,7 @@ async function updateAutoUploadConfig(enabled, removedProjects = [], removedLega
   return data;
 }
 
-function renderUnavailableProjects(projects, legacyGroups) {
+function renderUnavailableProjects(projects) {
   const container = document.getElementById('unavailable-watcher-groups');
   if (!projectsLoaded) {
     container.hidden = true;
@@ -518,10 +517,6 @@ function renderUnavailableProjects(projects, legacyGroups) {
   const unavailable = projects
     .filter(item => !visible.some(project => item.identity === project.identity))
     .map(item => ({project: item, label: item.label}));
-  unavailable.push(...legacyGroups.map(item => ({
-    legacyGroup: item,
-    label: item.label || `${item.source}: ${item.group}`,
-  })));
   container.replaceChildren();
   container.hidden = unavailable.length === 0;
   if (!unavailable.length) return;
@@ -544,20 +539,16 @@ function renderUnavailableProjects(projects, legacyGroups) {
     const remove = document.createElement('button');
     remove.className = 'secondary';
     remove.textContent = 'Remove';
-    remove.onclick = () => removeUnavailableSelection(item, remove);
+    remove.onclick = () => removeUnavailableProject(item.project, remove);
     entry.append(label, remove);
     list.appendChild(entry);
   });
 }
 
-async function removeUnavailableSelection(item, button) {
+async function removeUnavailableProject(project, button) {
   button.disabled = true;
   try {
-    await updateAutoUploadConfig(
-      autoUploadEnabled,
-      item.project ? [item.project] : [],
-      item.legacyGroup ? [item.legacyGroup] : [],
-    );
+    await updateAutoUploadConfig(autoUploadEnabled, [project]);
     showToast('Old auto-upload selection removed');
     await loadWatcher();
   } catch (e) {
@@ -607,8 +598,7 @@ async function loadWatcher(refreshPipeline = true) {
       }
     }
     const configuredProjects = (data.config && data.config.projects) || [];
-    const legacyGroups = (data.config && data.config.legacy_groups) || [];
-    renderUnavailableProjects(configuredProjects, legacyGroups);
+    renderUnavailableProjects(configuredProjects);
     document.querySelectorAll('.project').forEach(project => {
       const cb = project.querySelector('.auto-upload-checkbox');
       const descriptor = projectDescriptor(project);
