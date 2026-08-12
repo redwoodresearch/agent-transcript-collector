@@ -90,14 +90,14 @@ upload-history work.
 The review UI can install a per-user watcher on macOS or Linux:
 
 1. Enter the contributor name that should own the uploads.
-2. Check **auto upload** beside each folder you consent to share.
+2. Check **auto upload** beside each project you consent to share.
 3. Click **Enable**.
 
-The watcher uploads every existing transcript in those exact folders, then checks
-once an hour for new transcripts or changed content. Each session has one S3
-object: when its redacted content changes, that object is overwritten; unchanged
-content is skipped. Selecting a folder does not implicitly select similarly named
-or descendant folders.
+The watcher uploads every existing transcript associated with those projects
+across the supported agent harnesses, then checks once an hour for new transcripts
+or changed content. Each session has one S3 object: when its redacted content
+changes, that object is overwritten; unchanged content is skipped. Selecting a
+project does not implicitly select similarly named or descendant projects.
 
 Installation uses a macOS LaunchAgent or a Linux systemd user timer, so it never
 needs `sudo` and runs only while your login session is available (unless you

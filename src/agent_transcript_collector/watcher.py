@@ -48,41 +48,52 @@ SOURCE_ENV_VARS = (
 
 
 @dataclass(frozen=True)
-class AllowedGroup:
-    source: str
-    group: str
+class AllowedProject:
+    directory: str | None
     label: str = ""
 
 
 @dataclass
 class WatcherConfig:
-    schema_version: int = 1
+    schema_version: int = 2
     auto_uploader_version: int = AUTO_UPLOADER_VERSION
     contributor: str = "anonymous"
     aws_profile: str = "rw-eng"
-    groups: list[AllowedGroup] = field(default_factory=list)
+    projects: list[AllowedProject] = field(default_factory=list)
     source_env: dict[str, str] = field(default_factory=dict)
     package_spec: str = PACKAGE_SPEC
     uv_path: str = ""
 
     @classmethod
     def from_dict(cls, data: dict) -> "WatcherConfig":
-        if data.get("schema_version") != 1:
+        schema_version = data.get("schema_version")
+        if schema_version not in (1, 2):
             raise ValueError("unsupported watcher configuration version")
-        groups = [
-            AllowedGroup(
-                source=str(item["source"]),
-                group=str(item["group"]),
-                label=str(item.get("label", "")),
-            )
-            for item in data.get("groups", [])
-        ]
+        if schema_version == 1:
+            projects = {
+                AllowedProject(directory=None, label=str(item.get("label", "")))
+                for item in data.get("groups", [])
+                if item.get("label")
+            }
+        else:
+            projects = {
+                AllowedProject(
+                    directory=(str(item["directory"]) if item.get("directory") else None),
+                    label=str(item.get("label", "")),
+                )
+                for item in data.get("projects", [])
+                if item.get("directory") or item.get("label")
+            }
+        projects = sorted(
+            projects,
+            key=lambda item: (item.directory or "", item.label),
+        )
         return cls(
-            schema_version=1,
+            schema_version=2,
             auto_uploader_version=int(data.get("auto_uploader_version", 0)),
             contributor=str(data.get("contributor", "anonymous")),
             aws_profile=str(data.get("aws_profile", "rw-eng")),
-            groups=groups,
+            projects=projects,
             source_env={
                 str(key): str(value)
                 for key, value in data.get("source_env", {}).items()
@@ -152,7 +163,6 @@ def capture_source_env() -> dict[str, str]:
 
 def _resolve_allowed(config: WatcherConfig):
     """Resolve project-level consent to every current group in each project."""
-    configured = {(item.source, item.group) for item in config.groups}
     discovered = [
         (source, group)
         for source in SOURCES
@@ -160,13 +170,19 @@ def _resolve_allowed(config: WatcherConfig):
     ]
     allowed = set()
     for project in projects_from_groups(discovered):
+        selected = any(
+            (item.directory and item.directory == project["directory"])
+            or (not item.directory and item.label == project["label"])
+            for item in config.projects
+        )
+        if not selected:
+            continue
         project_groups = {
             (harness["source"], group)
             for harness in project["harnesses"]
             for group in harness["groups"]
         }
-        if configured & project_groups:
-            allowed.update(project_groups)
+        allowed.update(project_groups)
     return [
         (source, group)
         for source, group in discovered
@@ -520,7 +536,7 @@ def status(
             result["config"] = {
                 "auto_uploader_version": config.auto_uploader_version,
                 "contributor": config.contributor,
-                "groups": [asdict(group) for group in config.groups],
+                "projects": [asdict(project) for project in config.projects],
                 "aws_profile": config.aws_profile,
             }
             result["needs_reinstall"] = (
