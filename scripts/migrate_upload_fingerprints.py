@@ -16,7 +16,6 @@ from pathlib import Path
 
 from botocore.exceptions import ClientError
 
-from agent_transcript_collector.migrate import migrate_config
 from agent_transcript_collector.paths import pipeline_cache_path, watcher_config_path
 from agent_transcript_collector.redactor import canonicalize_secrets, redact_identity
 from agent_transcript_collector.s3client import S3_BUCKET, make_s3_client
@@ -34,7 +33,7 @@ from agent_transcript_collector.uploader import (
     metadata_concurrency,
     prepare_transcript,
 )
-from agent_transcript_collector.watcher import discover_allowed
+from agent_transcript_collector.watcher import discover_allowed, load_config
 
 LEGACY_HASH_VERSION = 2
 LEGACY_TRANSCRIPT_HASH_METADATA = "body-fingerprint"
@@ -218,7 +217,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    config = migrate_config(args.config)
+    config = load_config(args.config)
     os.environ.update(config.source_env)
     os.environ["CTC_AWS_PROFILE"] = config.aws_profile
     selections = discover_allowed(config)

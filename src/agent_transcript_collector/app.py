@@ -24,7 +24,6 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Environment, PackageLoader
 
-from .paths import watcher_config_path
 from .pipeline import (
     artifacts_for,
     mark_uploaded,
@@ -813,11 +812,6 @@ def main(
     open_browser: bool = True,
     strict_port: bool = False,
 ) -> int:
-    config_path = watcher_config_path()
-    if config_path.exists():
-        from .migrate import migrate_config
-
-        migrate_config(config_path)
     base = port if port is not None else int(os.environ.get("PORT", "8899"))
     port = base if strict_port else _find_free_port(base, host=host)
     if port is None:
