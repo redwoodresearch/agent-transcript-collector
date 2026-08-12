@@ -72,13 +72,7 @@ rr-trans ui
 ```
 
 The foreground command serves at <http://localhost:8899> and opens it in your
-browser (if that port is busy, the next free port is used). Both modes scan local
-transcript folders in the background; use **Refresh** after creating or moving
-sessions. Refresh stores a persistent filesystem signature for every transcript,
-so it only reads and redacts new or changed content. Those changed transcripts
-are compared with S3 and packaged into durable prepared archives. The upload
-button only sends those archives; it never repeats scanning, redaction, or
-upload-history work.
+browser (if that port is busy, the next free port is used).
 
 ## Automatic uploads
 
