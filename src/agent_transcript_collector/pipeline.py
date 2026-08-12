@@ -9,9 +9,11 @@ redaction. Uploads redact and package only the confirmed pending records.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, TypeAlias
 
 from .cache import (
     CacheRecord,
@@ -24,18 +26,26 @@ from .cache import (
 from .prepare_archive import (
     SOURCE_HASH_VERSION,
     TRANSCRIPT_FORMAT_VERSION,
-    PreparedTranscript,
+    ArchiveArtifact,
+    TranscriptSnapshot,
     filesystem_snapshot,
     filesystem_snapshot_is_current,
     prepare_archive,
-    prepare_transcript,
+    snapshot_transcript,
 )
 from .redactor import REDACTION_VERSION
 from .s3client import make_s3_client
-from .uploader import (
-    classify_prepared,
-    transcript_key,
+from .sources.base import Session, Source
+from .storage import transcript_key
+from .upload_status import (
+    find_existing_uploads,
+    upload_is_current,
 )
+
+Selections: TypeAlias = Iterable[tuple[Source, Iterable[Session]]]
+PipelineItem: TypeAlias = dict[str, Any]
+ProgressCallback: TypeAlias = Callable[[str, int, int], None]
+PreparationCallback: TypeAlias = Callable[[int, int], None]
 
 
 def redaction_concurrency() -> int:
@@ -43,7 +53,7 @@ def redaction_concurrency() -> int:
     return max(1, int(os.environ.get("CTC_REDACTION_CONCURRENCY", "16")))
 
 
-def _item(source_id: str, session, status: str) -> dict:
+def _item(source_id: str, session: Session, status: str) -> PipelineItem:
     return {
         "source": source_id,
         "project": session.project_id,
@@ -53,7 +63,9 @@ def _item(source_id: str, session, status: str) -> dict:
     }
 
 
-def _record_is_current(record: CacheRecord, source_id: str, session) -> bool:
+def _record_is_current(
+    record: CacheRecord, source_id: str, session: Session
+) -> bool:
     return (
         record.get("source") == source_id
         and record.get("project") == session.project_id
@@ -62,14 +74,21 @@ def _record_is_current(record: CacheRecord, source_id: str, session) -> bool:
         and record.get("source_hash_version") == SOURCE_HASH_VERSION
         and record.get("redaction_version") == REDACTION_VERSION
         and record.get("format_version") == TRANSCRIPT_FORMAT_VERSION
+        and isinstance(record.get("source_hash"), str)
+        and isinstance(record.get("key"), str)
         and filesystem_snapshot_is_current(record.get("filesystem_snapshot"))
     )
 
 
-def _prepare_changed(source, session, contributor: str) -> tuple:
-    """Hash one changed transcript without touching shared state."""
-    key = transcript_key(contributor, source.id, session)
-    prepared = prepare_transcript(source, session, key)
+def _snapshot_existing(
+    source: Source,
+    session: Session,
+    key: str,
+    metadata: dict[str, str],
+    contributor: str,
+) -> tuple[TranscriptSnapshot, CacheRecord, dict[str, str]]:
+    """Hash one existing S3 object's local transcript without shared mutation."""
+    snapshot = snapshot_transcript(source, session, key)
     record = {
         "source": source.id,
         "contributor": contributor,
@@ -79,39 +98,23 @@ def _prepare_changed(source, session, contributor: str) -> tuple:
         "source_hash_version": SOURCE_HASH_VERSION,
         "redaction_version": REDACTION_VERSION,
         "format_version": TRANSCRIPT_FORMAT_VERSION,
-        "filesystem_snapshot": prepared.filesystem_snapshot,
-        "source_hash": prepared.source_hash,
+        "filesystem_snapshot": snapshot.filesystem_snapshot,
+        "source_hash": snapshot.source_hash,
         "key": key,
         "state": "checking",
     }
-    # Remote comparison only needs the input hash and identity.
-    # Release transcript bodies as each worker finishes instead of retaining a
-    # cold cache's entire corpus until every S3 metadata check completes.
-    return replace(prepared, raw_bytes=b""), record
-
-
-def _prepared_from_record(record: CacheRecord, session) -> PreparedTranscript | None:
-    try:
-        return PreparedTranscript(
-            session=session,
-            raw_bytes=b"",
-            source_hash=str(record["source_hash"]),
-            key=str(record["key"]),
-            filesystem_snapshot=record["filesystem_snapshot"],
-        )
-    except (KeyError, TypeError, ValueError):
-        return None
+    return replace(snapshot, raw_bytes=b""), record, metadata
 
 
 def refresh(
-    selections,
+    selections: Selections,
     contributor: str,
     *,
-    s3=None,
-    on_progress=None,
+    s3: Any = None,
+    on_progress: ProgressCallback | None = None,
     cache_path: Path | None = None,
-) -> dict:
-    """Hash changed transcripts and reconcile only those with S3."""
+) -> dict[str, Any]:
+    """Check S3 existence first, then hash only transcripts with uploads."""
     selections = [(source, list(sessions)) for source, sessions in selections]
     all_sessions = [
         (source, session)
@@ -120,45 +123,112 @@ def refresh(
     ]
     cache = get_cache(cache_path)
     records = cache["records"]
-    changed = []
-    prepared_by_key = {}
+    unchecked = []
+    snapshots_by_key = {}
     items_by_key = {}
 
     for source, session in all_sessions:
         key = cache_record_key(contributor, source.id, session)
         record = get_cache_for_transcript(cache, contributor, source.id, session)
         status = record.get("state") if record is not None else None
-        if (record is not None and status == "current"
+        if (record is not None and status in {"changed", "current"}
                 and _record_is_current(record, source.id, session)):
-            items_by_key[key] = _item(source.id, session, "current")
-        elif (
-            record is not None
-            and status in {"not_uploaded", "changed"}
-            and _record_is_current(record, source.id, session)
-            and _prepared_from_record(record, session) is not None
-        ):
             items_by_key[key] = _item(source.id, session, status)
         else:
-            changed.append((key, source, session))
+            unchecked.append((key, source, session))
 
-    total_changed = len(changed)
-    if on_progress:
-        on_progress("hashing", 0, total_changed)
     errors = []
-    workers = max(1, min(redaction_concurrency(), total_changed))
+    client = (s3 or make_s3_client()) if unchecked else None
+    if on_progress:
+        on_progress("checking", 0, len(unchecked))
+
+    def checked(done, total):
+        if on_progress:
+            on_progress("checking", done, total)
+
+    missing, existing, check_errors = find_existing_uploads(
+        client,
+        [(source, session) for _, source, session in unchecked],
+        contributor,
+        on_status=checked,
+    ) if unchecked else ([], [], [])
+    errors.extend(check_errors)
+
+    keys_by_identity = {
+        (source.id, session.project_id, session.parent or "", session.id): cache_key
+        for cache_key, source, session in unchecked
+    }
+    for source, session, object_key in missing:
+        cache_key = keys_by_identity[
+            (source.id, session.project_id, session.parent or "", session.id)
+        ]
+        record = {
+            "source": source.id,
+            "contributor": contributor,
+            "project": session.project_id,
+            "parent": session.parent,
+            "session": session.id,
+            "key": object_key,
+            "state": "not_uploaded",
+        }
+        set_cache_for_transcript(cache, contributor, source.id, session, record)
+        items_by_key[cache_key] = _item(source.id, session, "not_uploaded")
+
+    failed = {
+        (
+            item.get("source"), item.get("project"),
+            item.get("parent") or "", item.get("session"),
+        )
+        for item in check_errors
+    }
+    for cache_key, source, session in unchecked:
+        identity = (
+            source.id, session.project_id, session.parent or "", session.id
+        )
+        if identity in failed:
+            set_cache_for_transcript(
+                cache,
+                contributor,
+                source.id,
+                session,
+                {
+                    "source": source.id,
+                    "contributor": contributor,
+                    "project": session.project_id,
+                    "parent": session.parent,
+                    "session": session.id,
+                    "state": "error",
+                    "error": next(
+                        item["error"] for item in check_errors
+                        if (
+                            item.get("source"), item.get("project"),
+                            item.get("parent") or "", item.get("session"),
+                        ) == identity
+                    ),
+                },
+            )
+            items_by_key[cache_key] = _item(source.id, session, "error")
+
+    if on_progress:
+        on_progress("hashing", 0, len(existing))
+    workers = max(1, min(redaction_concurrency(), len(existing)))
     completed = 0
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {}
-        for key, source, session in changed:
-            future = executor.submit(
-                _prepare_changed, source, session, contributor
-            )
-            futures[future] = (key, source, session)
+        futures = {
+            executor.submit(
+                _snapshot_existing, source, session, key, metadata, contributor
+            ):
+                (source, session)
+            for source, session, key, metadata in existing
+        }
         for future in as_completed(futures):
-            key, source, session = futures[future]
+            source, session = futures[future]
+            cache_key = keys_by_identity[
+                (source.id, session.project_id, session.parent or "", session.id)
+            ]
             completed += 1
             try:
-                prepared, record = future.result()
+                snapshot, record, metadata = future.result()
             except Exception as exc:
                 set_cache_for_transcript(
                     cache,
@@ -175,54 +245,25 @@ def refresh(
                         "error": f"{type(exc).__name__}: {exc}",
                     },
                 )
-                items_by_key[key] = _item(source.id, session, "error")
+                items_by_key[cache_key] = _item(source.id, session, "error")
                 errors.append({"source": source.id, "session": session.id,
                                "error": f"{type(exc).__name__}: {exc}"})
             else:
                 set_cache_for_transcript(
                     cache, contributor, source.id, session, record
                 )
-                prepared_by_key[key] = prepared
+                snapshots_by_key[cache_key] = (snapshot, metadata)
             if on_progress:
-                on_progress("hashing", completed, total_changed)
-    save_cache(cache, cache_path)
+                on_progress("hashing", completed, len(existing))
 
-    prepared_items = list(prepared_by_key.values())
-    if prepared_items:
-        client = s3 or make_s3_client()
-
-        def checked(done, total):
-            if on_progress:
-                on_progress("checking", done, total)
-
-        if on_progress:
-            on_progress("checking", 0, len(prepared_items))
-        not_uploaded, changed_remote, current, check_errors = classify_prepared(
-            client, prepared_items, on_status=checked
+    for cache_key, (snapshot, metadata) in snapshots_by_key.items():
+        record = records[cache_key]
+        record["state"] = (
+            "current" if upload_is_current(snapshot, metadata) else "changed"
         )
-        not_uploaded_ids = {id(item) for item in not_uploaded}
-        changed_ids = {id(item) for item in changed_remote}
-        current_ids = {id(item) for item in current}
-        errors.extend(check_errors)
-        for key, prepared in prepared_by_key.items():
-            record = records[key]
-            if id(prepared) in current_ids:
-                record["state"] = "current"
-            elif id(prepared) in not_uploaded_ids:
-                record["state"] = "not_uploaded"
-            elif id(prepared) in changed_ids:
-                record["state"] = "changed"
-            else:
-                record["state"] = "error"
-                record["error"] = next(
-                    (item.get("error", "Upload status unavailable")
-                     for item in check_errors
-                     if item.get("key") == prepared.key),
-                    "Upload status unavailable",
-                )
-            items_by_key[key] = _item(
-                record["source"], prepared.session, record["state"]
-            )
+        items_by_key[cache_key] = _item(
+            record["source"], snapshot.session, record["state"]
+        )
 
     save_cache(cache, cache_path)
     items = []
@@ -240,13 +281,17 @@ def refresh(
         "items": items,
         "errors": errors,
         "total": len(all_sessions),
-        "changed": total_changed,
-        "checked": len(prepared_items),
-        "cached": len(all_sessions) - total_changed,
+        "changed": len(existing),
+        "checked": len(unchecked),
+        "cached": len(all_sessions) - len(unchecked),
     }
 
 
-def artifacts_for(selections, contributor: str, cache_path: Path | None = None):
+def artifacts_for(
+    selections: Selections,
+    contributor: str,
+    cache_path: Path | None = None,
+) -> tuple[list[CacheRecord], list[PipelineItem]]:
     """Return pending upload candidates or sessions requiring Refresh."""
     cache = get_cache(cache_path)
     candidates = []
@@ -264,8 +309,13 @@ def artifacts_for(selections, contributor: str, cache_path: Path | None = None):
                 continue
             if (
                 record is not None
-                and record.get("state") in {"not_uploaded", "changed"}
-                and _record_is_current(record, source.id, session)
+                and (
+                    record.get("state") == "not_uploaded"
+                    or (
+                        record.get("state") == "changed"
+                        and _record_is_current(record, source.id, session)
+                    )
+                )
             ):
                 candidates.append(dict(record))
             else:
@@ -274,12 +324,12 @@ def artifacts_for(selections, contributor: str, cache_path: Path | None = None):
 
 
 def prepare_upload_artifacts(
-    selections,
-    candidates: list[dict],
+    selections: Selections,
+    candidates: list[CacheRecord],
     contributor: str,
     directory: str | Path,
-    on_progress=None,
-):
+    on_progress: PreparationCallback | None = None,
+) -> tuple[list[ArchiveArtifact], list[dict[str, str]]]:
     """Revalidate, redact, and package candidates selected for upload."""
     wanted = {
         (item.get("source"), item.get("project"), item.get("parent") or "",
@@ -306,20 +356,23 @@ def prepare_upload_artifacts(
         if identity not in resolved
     ]
 
-    def prepare_one(source, session, candidate):
+    def prepare_one(
+        source: Source, session: Session, candidate: CacheRecord
+    ) -> ArchiveArtifact:
         key = transcript_key(contributor, source.id, session)
-        prepared = prepare_transcript(source, session, key)
-        if (
-            prepared.source_hash != candidate.get("source_hash")
-            or prepared.filesystem_snapshot != candidate.get("filesystem_snapshot")
+        snapshot = snapshot_transcript(source, session, key)
+        previously_hashed = candidate.get("state") == "changed"
+        if previously_hashed and (
+            snapshot.source_hash != candidate.get("source_hash")
+            or snapshot.filesystem_snapshot != candidate.get("filesystem_snapshot")
         ):
             raise RuntimeError("Transcript changed after Refresh; refresh and try again")
         artifact = prepare_archive(
-            source, prepared, contributor, directory
+            source, snapshot, contributor, directory
         )
-        if filesystem_snapshot(prepared) != candidate.get("filesystem_snapshot"):
+        if filesystem_snapshot(snapshot) != snapshot.filesystem_snapshot:
             Path(artifact["path"]).unlink(missing_ok=True)
-            raise RuntimeError("Transcript changed during redaction; refresh and try again")
+            raise RuntimeError("Transcript changed while its archive was prepared")
         return artifact
 
     total = len(wanted)
@@ -349,8 +402,11 @@ def prepare_upload_artifacts(
     return artifacts, errors
 
 
-def mark_uploaded(artifacts: list[dict], contributor: str,
-                  cache_path: Path | None = None) -> None:
+def mark_uploaded(
+    artifacts: list[ArchiveArtifact],
+    contributor: str,
+    cache_path: Path | None = None,
+) -> None:
     cache = get_cache(cache_path)
     records = cache["records"]
     uploaded = {

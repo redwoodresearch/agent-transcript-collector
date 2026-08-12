@@ -876,7 +876,7 @@ function pipelineMessage(data) {
   const count = Number(data.work_total || 0);
   const done = Number(data.done || 0);
   if (data.stage === 'hashing') {
-    return count ? `Hashing ${count} new or changed transcript${count === 1 ? '' : 's'} · ${done}/${count}`
+    return count ? `Hashing ${count} uploaded transcript${count === 1 ? '' : 's'} · ${done}/${count}`
       : 'Using cached hashes';
   }
   if (data.stage === 'checking') {

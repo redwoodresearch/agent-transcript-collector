@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TypedDict, cast
 
 from .paths import pipeline_cache_path, prepared_artifacts_dir
+from .sources.base import Session
 
 
 class FilesystemSnapshotEntry(TypedDict, total=False):
@@ -46,7 +47,7 @@ def empty_cache() -> CacheFile:
     return {"records": {}}
 
 
-def cache_record_key(contributor: str, source_id: str, session) -> str:
+def cache_record_key(contributor: str, source_id: str, session: Session) -> str:
     """Return the stable cache key for one local transcript."""
     return json.dumps(
         [contributor, source_id, str(session.path), session.id, session.parent or ""],
@@ -77,7 +78,7 @@ def get_cache(path: Path | None = None) -> CacheFile:
 
 
 def get_cache_for_transcript(
-    cache: CacheFile, contributor: str, source_id: str, session
+    cache: CacheFile, contributor: str, source_id: str, session: Session
 ) -> CacheRecord | None:
     """Return one transcript record from an already-loaded cache."""
     record = cache["records"].get(cache_record_key(contributor, source_id, session))
@@ -88,7 +89,7 @@ def set_cache_for_transcript(
     cache: CacheFile,
     contributor: str,
     source_id: str,
-    session,
+    session: Session,
     record: CacheRecord,
 ) -> str:
     """Store one transcript record and return its cache key."""

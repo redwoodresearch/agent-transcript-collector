@@ -11,6 +11,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, TypedDict
 
 from .redactor import (
     REDACTION_VERSION,
@@ -21,17 +22,38 @@ from .redactor import (
 from .scan import load_transcript_inputs
 from .sidecars import EMPTY as NO_SIDECARS
 from .sidecars import SidecarSet
+from .sources.base import Session, Source
 
 TRANSCRIPT_FORMAT_VERSION = 4
 SOURCE_HASH_VERSION = 3
+
+
+class ArchiveArtifact(TypedDict):
+    """The local ZIP and metadata passed to the S3 uploader."""
+
+    source: str
+    project: str
+    session: str
+    parent: str | None
+    path: str
+    key: str
+    source_hash: str
+    sidecar_count: int
+    redactions: int
+    zip_size_bytes: int
+    filesystem_snapshot: list[dict[str, Any]]
+
+
 @dataclass(frozen=True)
-class PreparedTranscript:
-    session: object
+class TranscriptSnapshot:
+    """One stable, unredacted read of a transcript and its sidecars."""
+
+    session: Session
     raw_bytes: bytes
     source_hash: str
     key: str
     sidecars: SidecarSet = NO_SIDECARS
-    filesystem_snapshot: list[dict] | None = None
+    filesystem_snapshot: list[dict[str, Any]] | None = None
 
 
 def source_hash(raw_bytes: bytes, sidecars: SidecarSet) -> str:
@@ -53,7 +75,7 @@ def source_hash(raw_bytes: bytes, sidecars: SidecarSet) -> str:
     return digest.hexdigest()
 
 
-def _path_signature(path: str | Path) -> dict:
+def _path_signature(path: str | Path) -> dict[str, Any]:
     value = {"path": str(path)}
     try:
         stat = Path(path).stat()
@@ -64,13 +86,13 @@ def _path_signature(path: str | Path) -> dict:
     return value
 
 
-def filesystem_snapshot(prepared: PreparedTranscript) -> list[dict]:
+def filesystem_snapshot(snapshot: TranscriptSnapshot) -> list[dict[str, Any]]:
     """Capture every local path which can affect the archive."""
-    paths: list[str | Path] = [prepared.session.path]
-    paths.extend(sidecar.path for sidecar in prepared.sidecars.files)
-    paths.extend(prepared.sidecars.missing)
-    paths.extend(prepared.sidecars.skipped)
-    paths.extend(prepared.sidecars.directories)
+    paths: list[str | Path] = [snapshot.session.path]
+    paths.extend(sidecar.path for sidecar in snapshot.sidecars.files)
+    paths.extend(snapshot.sidecars.missing)
+    paths.extend(snapshot.sidecars.skipped)
+    paths.extend(snapshot.sidecars.directories)
     return [_path_signature(path) for path in dict.fromkeys(paths)]
 
 
@@ -82,7 +104,9 @@ def filesystem_snapshot_is_current(snapshot: object) -> bool:
     )
 
 
-def prepare_transcript(source, session, key: str) -> PreparedTranscript:
+def snapshot_transcript(
+    source: Source, session: Session, key: str
+) -> TranscriptSnapshot:
     """Read and hash one stable transcript/sidecar snapshot."""
     path = Path(session.path)
     for _attempt in range(2):
@@ -90,7 +114,7 @@ def prepare_transcript(source, session, key: str) -> PreparedTranscript:
         inputs = load_transcript_inputs(source, session)
         if transcript_before != _path_signature(path):
             continue
-        probe = PreparedTranscript(
+        probe = TranscriptSnapshot(
             session=session,
             raw_bytes=inputs.raw_bytes,
             source_hash="",
@@ -98,7 +122,7 @@ def prepare_transcript(source, session, key: str) -> PreparedTranscript:
             sidecars=inputs.sidecars,
         )
         snapshot = filesystem_snapshot(probe)
-        prepared = PreparedTranscript(
+        snapshot_data = TranscriptSnapshot(
             session=session,
             raw_bytes=inputs.raw_bytes,
             source_hash=source_hash(inputs.raw_bytes, inputs.sidecars),
@@ -106,8 +130,8 @@ def prepare_transcript(source, session, key: str) -> PreparedTranscript:
             sidecars=inputs.sidecars,
             filesystem_snapshot=snapshot,
         )
-        if snapshot == filesystem_snapshot(prepared):
-            return prepared
+        if snapshot == filesystem_snapshot(snapshot_data):
+            return snapshot_data
     raise RuntimeError("Transcript changed while it was being hashed")
 
 
@@ -118,13 +142,13 @@ def _redact(text: str) -> tuple[str, int]:
 
 
 def _redacted_sidecars(
-    prepared: PreparedTranscript,
+    snapshot: TranscriptSnapshot,
 ) -> tuple[list[tuple[str, str]], dict, int]:
     contents: list[tuple[str, str]] = []
     entries = []
-    missing = list(prepared.sidecars.missing)
+    missing = list(snapshot.sidecars.missing)
     redaction_count = 0
-    for sidecar in prepared.sidecars.files:
+    for sidecar in snapshot.sidecars.files:
         try:
             text = sidecar.path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -144,17 +168,19 @@ def _redacted_sidecars(
         "files": entries,
         "missing": [redact_identity(path)[0] for path in sorted(missing)],
         "skipped_too_large": [
-            redact_identity(path)[0] for path in prepared.sidecars.skipped
+            redact_identity(path)[0] for path in snapshot.sidecars.skipped
         ],
     }, redaction_count
 
 
-def _archive_bytes(source, prepared: PreparedTranscript, contributor: str):
-    session = prepared.session
+def _archive_bytes(
+    source: Source, snapshot: TranscriptSnapshot, contributor: str
+) -> tuple[bytes, dict[str, Any]]:
+    session = snapshot.session
     transcript, redaction_count = _redact(
-        prepared.raw_bytes.decode("utf-8", errors="replace")
+        snapshot.raw_bytes.decode("utf-8", errors="replace")
     )
-    sidecar_contents, sidecars, count = _redacted_sidecars(prepared)
+    sidecar_contents, sidecars, count = _redacted_sidecars(snapshot)
     redaction_count += count
     project_id, count = redact_path_token(session.project_id)
     redaction_count += count
@@ -175,7 +201,7 @@ def _archive_bytes(source, prepared: PreparedTranscript, contributor: str):
             "parent": session.parent,
         },
         "version": {
-            "source_hash": prepared.source_hash,
+            "source_hash": snapshot.source_hash,
             "source_hash_version": SOURCE_HASH_VERSION,
             "redaction_version": REDACTION_VERSION,
             "content_sha256": hashlib.sha256(transcript.encode()).hexdigest(),
@@ -195,10 +221,13 @@ def _archive_bytes(source, prepared: PreparedTranscript, contributor: str):
 
 
 def prepare_archive(
-    source, prepared: PreparedTranscript, contributor: str, directory: str | Path
-) -> dict:
+    source: Source,
+    snapshot: TranscriptSnapshot,
+    contributor: str,
+    directory: str | Path,
+) -> ArchiveArtifact:
     """Redact and write one transcript ZIP, returning its upload description."""
-    archive, manifest = _archive_bytes(source, prepared, contributor)
+    archive, manifest = _archive_bytes(source, snapshot, contributor)
     target_dir = Path(directory)
     target_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, temporary = tempfile.mkstemp(prefix="transcript-", suffix=".zip", dir=target_dir)
@@ -212,17 +241,17 @@ def prepare_archive(
         except OSError:
             pass
         raise
-    session = prepared.session
+    session = snapshot.session
     return {
         "source": source.id,
         "project": session.project_id,
         "session": session.id,
         "parent": session.parent,
         "path": temporary,
-        "key": prepared.key,
-        "source_hash": prepared.source_hash,
+        "key": snapshot.key,
+        "source_hash": snapshot.source_hash,
         "sidecar_count": len(manifest["sidecars"]["files"]),
         "redactions": manifest["redactions"],
         "zip_size_bytes": len(archive),
-        "filesystem_snapshot": filesystem_snapshot(prepared),
+        "filesystem_snapshot": filesystem_snapshot(snapshot),
     }

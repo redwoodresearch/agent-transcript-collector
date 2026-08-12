@@ -20,7 +20,7 @@ from agent_transcript_collector.paths import pipeline_cache_path, watcher_config
 from agent_transcript_collector.prepare_archive import (
     SOURCE_HASH_VERSION,
     TRANSCRIPT_FORMAT_VERSION,
-    prepare_transcript,
+    snapshot_transcript,
 )
 from agent_transcript_collector.redactor import (
     REDACTION_VERSION,
@@ -28,17 +28,17 @@ from agent_transcript_collector.redactor import (
     redact_identity,
 )
 from agent_transcript_collector.s3client import S3_BUCKET, make_s3_client
-from agent_transcript_collector.uploader import (
+from agent_transcript_collector.storage import transcript_key
+from agent_transcript_collector.upload_status import (
     FORMAT_VERSION_METADATA,
     LEGACY_SOURCE_HASH_METADATA,
     LEGACY_SOURCE_HASH_VERSION_METADATA,
     REDACTION_VERSION_METADATA,
     SOURCE_HASH_METADATA,
     SOURCE_HASH_VERSION_METADATA,
-    UploadLock,
     metadata_concurrency,
-    transcript_key,
 )
+from agent_transcript_collector.uploader import UploadLock
 from agent_transcript_collector.watcher import discover_allowed, load_config
 
 LEGACY_HASH_VERSION = 2
@@ -176,19 +176,19 @@ def migrate_uploads(
 
     def migrate_one(source, session):
         key = transcript_key(contributor, source.id, session)
-        prepared = prepare_transcript(source, session, key)
-        head = _head(s3, prepared.key)
+        snapshot = snapshot_transcript(source, session, key)
+        head = _head(s3, snapshot.key)
         if head is None:
             return "missing"
         metadata = head.get("Metadata", {})
-        if _remote_is_current(prepared, metadata):
+        if _remote_is_current(snapshot, metadata):
             return "current"
-        replacement = _replacement_metadata(prepared, metadata)
+        replacement = _replacement_metadata(snapshot, metadata)
         if replacement is None:
             return "needs_upload"
         if dry_run:
             return "eligible"
-        _copy_with_metadata(s3, prepared.key, head, replacement)
+        _copy_with_metadata(s3, snapshot.key, head, replacement)
         return "migrated"
 
     workers = max(1, min(metadata_concurrency(), len(work)))

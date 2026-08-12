@@ -365,7 +365,7 @@ def _start_pipeline(body: dict):
         run_id = uuid.uuid4().hex[:12]
         total = sum(len(sessions) for _, sessions in selections)
         PIPELINE_RUNS[run_id] = {
-            "status": "running", "stage": "hashing", "done": 0,
+            "status": "running", "stage": "checking", "done": 0,
             "work_total": 0, "total": total, "changed": 0, "checked": 0,
             "cached": 0, "items": [], "errors": [],
             "contributor": contributor,
