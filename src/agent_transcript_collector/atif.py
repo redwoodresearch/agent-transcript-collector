@@ -75,6 +75,32 @@ def _result_identifiers(value: Any) -> set[str]:
     return found
 
 
+def _result_mentions(value: Any, aliases: Iterable[str]) -> set[str]:
+    """Return known aliases that appear as complete tokens in a result."""
+    patterns = {
+        alias: re.compile(
+            rf"(?<![A-Za-z0-9_-]){re.escape(alias)}(?![A-Za-z0-9_-])"
+        )
+        for alias in aliases
+    }
+    found: set[str] = set()
+
+    def visit(item: Any) -> None:
+        if isinstance(item, dict):
+            for nested in item.values():
+                visit(nested)
+        elif isinstance(item, list):
+            for nested in item:
+                visit(nested)
+        elif isinstance(item, str):
+            for alias, pattern in patterns.items():
+                if alias not in found and pattern.search(item):
+                    found.add(alias)
+
+    visit(value)
+    return found
+
+
 def _is_spawn_tool(source_id: str, function_name: str) -> bool:
     normalized = re.sub(
         r"[^a-z0-9]+", "_", function_name.casefold()
@@ -125,6 +151,8 @@ def _enrich_subagent_references(
                 continue
             identifiers = _result_identifiers(result.content)
             identifiers.update(_result_identifiers(result.extra))
+            identifiers.update(_result_mentions(result.content, aliases))
+            identifiers.update(_result_mentions(result.extra, aliases))
             matched = {
                 reference["trajectory_id"]: reference
                 for identifier in identifiers
