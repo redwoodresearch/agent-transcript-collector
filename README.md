@@ -84,7 +84,7 @@ The review UI can install a per-user watcher on macOS or Linux:
 
 The watcher uploads every existing transcript associated with those projects
 across the supported agent harnesses, then checks once an hour for new transcripts
-or changed content. Each session has one S3 object: when its redacted content
+or changed content. Each transcript has one S3 object: when its redacted content
 changes, that object is overwritten; unchanged content is skipped.
 
 Installation uses a macOS LaunchAgent or a Linux systemd user timer, so it never
@@ -143,7 +143,7 @@ that are present appear in the review UI.
 | Cursor | `~/.cursor/projects/` (`CURSOR_HOME`) | `<encoded-project>/agent-transcripts/<id>/<id>.jsonl` |
 | Pi | `~/.pi/agent/sessions/` (`PI_CODING_AGENT_SESSION_DIR` or `PI_CODING_AGENT_DIR`) | `--<encoded-cwd>--/<ts>_<id>.jsonl` |
 
-Each session goes through the same pipeline:
+Each transcript goes through the same pipeline:
 
 1. **Discover:** find native transcripts and assign each one a project and source.
 2. **Assemble:** keep each transcript in its native JSONL or text format, link
@@ -153,8 +153,8 @@ Each session goes through the same pipeline:
 4. **Redact and derive:** when an upload starts, replace detected credentials and
    local identity data on the local machine, then derive an ATIF trajectory from
    that redacted native transcript where Harbor supports the source.
-5. **Store:** package one redacted session per ZIP and upload it to a stable S3
-   key. A changed session replaces its previous ZIP; unchanged content is skipped
+5. **Store:** package one redacted transcript per ZIP and upload it to a stable S3
+   key. A changed transcript replaces its previous ZIP; unchanged content is skipped
    without first being redacted, converted, or compressed.
 
 The redacted native transcript remains the canonical artifact. Every Claude Code
@@ -189,7 +189,7 @@ helpers. A record is approximately:
       "source_hash": "hash of the original transcript and sidecars",
       "key": "S3 object key",
       "redaction_version": 1,
-      "format_version": 5,
+      "format_version": 7,
       "state": "not_uploaded, changed, current, or error"
     }
   }
@@ -224,26 +224,26 @@ original content, it is written with user-only permissions.
 
 ### Subagents and sidecars
 
-A subagent transcript is a separate session, not a file inside its parent's ZIP.
-Its manifest sets `session.is_subagent` to `true` and records the parent session
-ID. Its ZIP is stored below the parent under `subagents/`.
+A subagent transcript is a separate peer object, not a file inside its parent's
+ZIP. Its manifest records a `subagent_of` relationship to the parent's stable
+transcript ID. Main and subagent ZIPs use the same flat storage layout.
 
 A **sidecar** is agent-visible content that a transcript points to instead of
 embedding, such as an oversized tool result or background-task output. The
 collector follows only explicit pointers that stay within folders owned by the
 source. It does not treat a referenced subagent transcript as a sidecar.
 
-Sidecars are redacted and stored in the referring session's ZIP. Their manifest
+Sidecars are redacted and stored in the referring transcript's ZIP. Their manifest
 entries record the archive path, original reference after identity redaction,
 size, and content hash.
 
 ### Folder structure
 
-Each session has one stable S3 object. Subagents are nested under their parent:
+Each transcript has one stable S3 object. The source is included in the
+transcript ID so native IDs from different harnesses cannot collide:
 
 ```text
-s3://rr-agent-transcripts/mts-trans/<contributor>/<project>/<source>/<session>/transcript.zip
-s3://rr-agent-transcripts/mts-trans/<contributor>/<project>/<source>/<parent>/subagents/<session>/transcript.zip
+s3://rr-agent-transcripts/mts-trans/<contributor>/<project>/<source>--<native-id>.zip
 ```
 
 Each ZIP contains the redacted native transcript, its manifest, and any sidecars
@@ -259,38 +259,55 @@ transcript.zip
 ```
 
 The transcript and manifest are always present. Sidecar folders appear only
-when the session includes files of that kind. Current sidecar kinds are
+when the transcript includes files of that kind. Current sidecar kinds are
 `tool-results`, `task-outputs`, `agent-tools`, and `terminals`.
 
 ### `manifest.json`
 
-The manifest identifies the source, project, session, stored content, and
+The manifest identifies the transcript, source, collection, stored content, and
 redaction result:
 
 ```json
 {
-  "transcript_format_version": 6,
-  "source": "claude_code",
-  "source_format": "claude-jsonl",
-  "contributor": "example-contributor",
-  "project": {
-    "key": "project-a1b2c3d4e5f6",
-    "name": "example-project"
+  "transcript_format_version": 7,
+  "transcript": {
+    "id": "claude_code--child-id",
+    "native_id": "child-id",
+    "kind": "subagent",
+    "artifact": {
+      "path": "transcript.jsonl",
+      "media_type": "application/x-ndjson",
+      "size_bytes": 12345,
+      "sha256": "SHA-256 of the redacted transcript"
+    },
+    "relationships": [
+      {"type": "subagent_of", "transcript_id": "claude_code--parent-id"}
+    ],
+    "attributes": {}
   },
-  "session": {
-    "id": "session-id",
-    "is_subagent": false,
-    "parent": null
+  "source": {
+    "id": "claude_code",
+    "format": "claude-jsonl",
+    "attributes": {}
   },
-  "version": {
+  "collection": {
+    "type": "contributed_project",
+    "name": "agent-transcript-collector",
+    "contributor": {"id": "example-contributor", "name": "example-contributor"},
+    "project": {"id": "project-a1b2c3d4e5f6", "name": "example-project"},
+    "attributes": {}
+  },
+  "processing": {
     "source_hash": "SHA-256 hash of original transcript and sidecars",
     "source_hash_version": 3,
-    "redaction_version": 1,
-    "content_sha256": "SHA-256 of the redacted transcript",
-    "uploaded_at": "2026-01-01T00:00:00+00:00"
+    "packaged_at": "2026-01-01T00:00:00+00:00",
+    "redaction": {
+      "version": 1,
+      "count": 3,
+      "scope": ["secrets", "identity"],
+      "left_intact": []
+    }
   },
-  "size_bytes": 12345,
-  "redactions": 3,
   "atif": {
     "status": "complete",
     "schema_version": "ATIF-v1.7",
@@ -313,19 +330,17 @@ redaction result:
 }
 ```
 
-`version` holds the original-content hash and its algorithm version,
-the redacted transcript hash, and the upload time. `size_bytes` is the redacted
-transcript size, and `redactions` is the total number of replacements. Each
-sidecar entry records its ZIP path, type, redacted original reference, redacted
+`processing` holds the original-content hash, its algorithm version, packaging
+time, and redaction result. The transcript artifact holds the stored content's
+size and hash. Each sidecar entry records its ZIP path, type, redacted original reference, redacted
 size, and hash. The three sidecar arrays are present even when empty. `atif`
 records `complete`, `unsupported`, or `failed`; a conversion failure never drops
 the canonical redacted transcript from the archive.
 
 Parent and subagent transcripts remain independent archives and independent ATIF
-documents. Each ATIF uses the collector session ID as its `trajectory_id`; a
+documents. Each ATIF uses the stable transcript ID as its `trajectory_id`; a
 child's `extra.agent_transcript_collector.parent_transcript_id` points to its
-parent. The existing `session.parent` manifest field and nested S3 key retain the
-same relationship for native consumers.
+parent. The manifest relationship carries the same link for native consumers.
 
 ### S3 object properties
 
@@ -333,13 +348,22 @@ Each `transcript.zip` has these custom metadata fields:
 
 | Field | Meaning |
 |---|---|
-| `content-fingerprint` | Privacy-safe fingerprint of the transcript and included sidecars. |
-| `body-fingerprint` | Privacy-safe fingerprint of the transcript alone. |
-| `sidecar-count` | Number of sidecars included in the ZIP. |
+| `mts-format-version` | Version of the MTS archive envelope. |
+| `mts-transcript-id` | Stable `<source>--<native-id>` transcript identity. |
+| `mts-transcript-kind` | `main` or `subagent`. |
+| `mts-parent-transcript-id` | Parent identity for a subagent; omitted otherwise. |
+| `mts-parent-object-key` | Parent S3 key for a subagent; omitted otherwise. |
+| `mts-source` | Source adapter ID. |
+| `mts-collection-type` | `contributed_project` for collector uploads. |
+| `content-sha256` | SHA-256 of the stored, redacted transcript. |
+| `source-hash` | Hash of the original transcript and included sidecars. |
+| `source-hash-version` | Version of the source-hash algorithm. |
+| `redaction-version` | Version of the local redaction policy. |
+| `transcript-format-version` | Archive format version used for freshness checks. |
 
-The fingerprints identify redacted content, not the ZIP bytes. The standard S3
-`LastModified` property is the time the session's ZIP was last uploaded or
-overwritten and can be used to find recent uploads.
+The content hash identifies redacted transcript content, not the ZIP bytes. The
+standard S3 `LastModified` property is the time the transcript ZIP was last
+uploaded or overwritten and can be used to find recent uploads.
 
 ## Privacy and redaction
 

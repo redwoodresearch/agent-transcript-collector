@@ -2,7 +2,7 @@
 
 Supports multiple agent harnesses (Claude Code, Codex, Cursor, Pi) via the source
 adapters in `.sources`. Each transcript is uploaded as one ZIP under
-``mts-trans/<contributor>/<project>/<source>/<session>/``.
+``mts-trans/<contributor>/<project>/<transcript-id>.zip``.
 """
 
 import getpass

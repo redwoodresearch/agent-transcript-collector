@@ -19,6 +19,7 @@ from .redactor import (
     redact_jsonl_content,
 )
 from .sources.base import Session, Source
+from .storage import parent_transcript_key, transcript_id
 from .transcript_snapshot import (
     SOURCE_HASH_VERSION,
     FilesystemSnapshotEntry,
@@ -27,7 +28,7 @@ from .transcript_snapshot import (
     snapshot_transcript,
 )
 
-TRANSCRIPT_FORMAT_VERSION = 6
+TRANSCRIPT_FORMAT_VERSION = 7
 
 
 class ArchiveArtifact(TypedDict):
@@ -37,6 +38,11 @@ class ArchiveArtifact(TypedDict):
     project: str
     session: str
     parent: str | None
+    transcript_id: str
+    transcript_kind: str
+    parent_transcript_id: str | None
+    parent_object_key: str | None
+    content_sha256: str
     path: str
     key: str
     source_hash: str
@@ -96,33 +102,65 @@ def _archive_bytes(
     if suffix not in {".jsonl", ".txt"}:
         suffix = ".txt"
     transcript_name = f"transcript{suffix}"
+    identity = transcript_id(source.id, session.id)
+    parent_identity = (
+        transcript_id(source.id, session.parent) if session.parent else None
+    )
+    transcript_bytes = transcript.encode("utf-8")
+    content_sha256 = hashlib.sha256(transcript_bytes).hexdigest()
     atif, atif_manifest = derive_atif(
         source.id,
         transcript,
         transcript_name,
-        session.id,
-        session.parent,
+        identity,
+        parent_identity,
     )
     manifest = {
         "transcript_format_version": TRANSCRIPT_FORMAT_VERSION,
-        "source": source.id,
-        "source_format": source.source_format,
-        "contributor": contributor,
-        "project": {"key": f"project-{project_digest}", "name": project_label},
-        "session": {
-            "id": session.id,
-            "is_subagent": session.is_subagent,
-            "parent": session.parent,
+        "transcript": {
+            "id": identity,
+            "native_id": session.id,
+            "kind": "subagent" if session.is_subagent else "main",
+            "artifact": {
+                "path": transcript_name,
+                "media_type": (
+                    "application/x-ndjson" if suffix == ".jsonl" else "text/plain"
+                ),
+                "size_bytes": len(transcript_bytes),
+                "sha256": content_sha256,
+            },
+            "relationships": ([{
+                "type": "subagent_of",
+                "transcript_id": parent_identity,
+            }] if parent_identity else []),
+            "attributes": {},
         },
-        "version": {
+        "source": {
+            "id": source.id,
+            "format": source.source_format,
+            "attributes": {},
+        },
+        "collection": {
+            "type": "contributed_project",
+            "name": "agent-transcript-collector",
+            "contributor": {"id": contributor, "name": contributor},
+            "project": {
+                "id": f"project-{project_digest}",
+                "name": project_label,
+            },
+            "attributes": {},
+        },
+        "processing": {
             "source_hash": snapshot.source_hash,
             "source_hash_version": SOURCE_HASH_VERSION,
-            "redaction_version": REDACTION_VERSION,
-            "content_sha256": hashlib.sha256(transcript.encode()).hexdigest(),
-            "uploaded_at": datetime.now(UTC).isoformat(),
+            "packaged_at": datetime.now(UTC).isoformat(),
+            "redaction": {
+                "version": REDACTION_VERSION,
+                "count": redaction_count,
+                "scope": ["secrets", "identity"],
+                "left_intact": [],
+            },
         },
-        "size_bytes": len(transcript.encode("utf-8")),
-        "redactions": redaction_count,
         "atif": atif_manifest,
         "sidecars": sidecars,
     }
@@ -156,6 +194,10 @@ def prepare_archive(
         raise RuntimeError("Transcript changed after Refresh; refresh and try again")
 
     archive, manifest = _archive_bytes(source, snapshot, contributor)
+    identity = transcript_id(source.id, session.id)
+    parent_identity = (
+        transcript_id(source.id, session.parent) if session.parent else None
+    )
     target_dir = Path(directory)
     target_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, temporary = tempfile.mkstemp(prefix="transcript-", suffix=".zip", dir=target_dir)
@@ -178,11 +220,18 @@ def prepare_archive(
         "project": session.project_id,
         "session": session.id,
         "parent": session.parent,
+        "transcript_id": identity,
+        "transcript_kind": "subagent" if session.is_subagent else "main",
+        "parent_transcript_id": parent_identity,
+        "parent_object_key": parent_transcript_key(
+            contributor, source.id, session
+        ),
+        "content_sha256": manifest["transcript"]["artifact"]["sha256"],
         "path": temporary,
         "key": snapshot.key,
         "source_hash": snapshot.source_hash,
         "sidecar_count": len(manifest["sidecars"]["files"]),
-        "redactions": manifest["redactions"],
+        "redactions": manifest["processing"]["redaction"]["count"],
         "zip_size_bytes": len(archive),
         "filesystem_snapshot": filesystem_snapshot(snapshot),
     }
