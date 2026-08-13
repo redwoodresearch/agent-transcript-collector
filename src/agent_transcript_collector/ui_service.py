@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import plistlib
@@ -11,9 +12,11 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
-from .paths import ui_log_path
+from .native_service import replace_launchd_service
+from .paths import installation_lock_path, ui_log_path, watcher_config_path
 
 PACKAGE_NAME = "agent-transcript-collector"
 PACKAGE_SPEC = (
@@ -71,6 +74,18 @@ def _atomic_write(path: Path, data: bytes, mode: int = 0o600) -> None:
             os.unlink(temporary)
         except FileNotFoundError:
             pass
+
+
+@contextmanager
+def _installation_lock():
+    path = installation_lock_path()
+    _ensure_private_dir(path.parent)
+    with path.open("a+") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def _environment() -> dict[str, str]:
@@ -170,23 +185,12 @@ def install_service(
     if platform == "darwin":
         service_path = launchd_path()
         _atomic_write(service_path, render_launchd(uv_path))
-        domain = f"gui/{os.getuid()}"
         try:
-            run_command(
-                ["launchctl", "bootout", f"{domain}/{LAUNCHD_LABEL}"],
-                check=False,
-                capture_output=True,
+            replace_launchd_service(
+                LAUNCHD_LABEL,
+                service_path,
+                run_command=run_command,
             )
-            completed = run_command(
-                ["launchctl", "bootstrap", domain, str(service_path)],
-                check=False,
-                capture_output=True,
-            )
-            if completed.returncode:
-                raise RuntimeError(
-                    completed.stderr.decode(errors="replace")
-                    or "launchctl bootstrap failed"
-                )
         except Exception:
             service_path.unlink(missing_ok=True)
             raise
@@ -211,35 +215,62 @@ def install_service(
     return status(platform=platform, run_command=run_command)
 
 
+def install_refreshed_services(run_command=subprocess.run) -> dict:
+    """Install the UI and refresh the watcher when upload consent exists."""
+    ui = install_service(run_command=run_command)
+    config_path = watcher_config_path()
+    if config_path.exists():
+        from .watcher import install as install_watcher
+        from .watcher import load_config
+
+        watcher = install_watcher(load_config(config_path), run_command=run_command)
+        watcher["configured"] = True
+    else:
+        watcher = {
+            "configured": False,
+            "installed": False,
+            "skipped": "automatic uploads have not been configured",
+        }
+    return {**ui, "ui": ui, "watcher": watcher}
+
+
 def install_and_update(run_command=subprocess.run) -> dict:
-    """Refresh the CLI, then let the refreshed package install the UI service."""
+    """Refresh the CLI, then install all configured services from that version."""
     uv_path = _find_uv()
-    run_command(
-        [uv_path, "tool", "install", "--force", "--refresh", PACKAGE_SPEC],
-        check=True,
-    )
-    completed = run_command(
-        [
-            uv_path,
-            "tool",
-            "run",
-            "--refresh-package",
-            PACKAGE_NAME,
-            "--from",
-            PACKAGE_SPEC,
-            "rr-trans",
-            "ui-service",
-            "install",
-        ],
-        check=True,
-        text=True,
-        capture_output=True,
-    )
+    with _installation_lock():
+        run_command(
+            [uv_path, "tool", "install", "--force", "--refresh", PACKAGE_SPEC],
+            check=True,
+        )
+        completed = run_command(
+            [
+                uv_path,
+                "tool",
+                "run",
+                "--refresh-package",
+                PACKAGE_NAME,
+                "--from",
+                PACKAGE_SPEC,
+                "rr-trans",
+                "ui-service",
+                "install",
+            ],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        if completed.returncode:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            raise RuntimeError(
+                "updated CLI could not install background services"
+                + (f": {detail}" if detail else "")
+            )
     try:
         result = json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError(
-            f"updated CLI could not install the UI service: {completed.stdout.strip()}"
+            "updated CLI returned an invalid background-service result: "
+            f"{completed.stdout.strip()}"
         ) from exc
     # The service's uv process can only acquire its package cache after the
     # nested installer above exits. Give it a short window to become reachable

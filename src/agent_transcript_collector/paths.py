@@ -51,6 +51,10 @@ def upload_lock_path() -> Path:
     return Path(os.environ.get("CTC_UPLOAD_LOCK", state_dir() / "upload.lock"))
 
 
+def installation_lock_path() -> Path:
+    return state_dir() / "install.lock"
+
+
 def project_identity_cache_path() -> Path:
     return state_dir() / "project-identities.json"
 
