@@ -18,7 +18,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     commands.add_parser(
         "install",
-        help="Install or update the CLI and always-on local UI (default).",
+        help="Update the CLI, UI, and configured watcher (default).",
     )
 
     ui = commands.add_parser("ui", help="Open the local upload and consent UI.")
@@ -28,7 +28,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ui.add_argument("--strict-port", action="store_true")
 
     ui_service = commands.add_parser(
-        "ui-service", help="Manage the always-on local UI service."
+        "ui-service", help="Manage the always-on background services."
     )
     ui_service.add_argument("action", choices=("install", "status", "uninstall"))
 
@@ -68,10 +68,10 @@ def main(argv: list[str] | None = None) -> int:
             strict_port=args.strict_port,
         )
     if args.command == "ui-service":
-        from .ui_service import install_service, status, uninstall
+        from .ui_service import install_refreshed_services, status, uninstall
 
         operation = {
-            "install": install_service,
+            "install": install_refreshed_services,
             "status": status,
             "uninstall": uninstall,
         }[args.action]

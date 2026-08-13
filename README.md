@@ -31,9 +31,10 @@ uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
 ```
 
 This installs `rr-trans`, starts a per-user background service, and opens the
-review UI at <http://localhost:8123>. Run the command again to update and restart
-the service. The service also checks the `main` branch for updates when it
-starts.
+review UI at <http://localhost:8123>. Run the command again to update the CLI and
+restart the UI from the latest `main` branch. If automatic uploads have already
+been configured, the command also updates and reloads the watcher without
+changing its saved consent. The services check `main` for updates when they run.
 
 No `sudo` is required. The installer uses a LaunchAgent on macOS and a systemd
 user service on Linux.
@@ -87,8 +88,9 @@ state, and logs. `--purge` also removes the configuration and state.
 
 | Command | Purpose |
 |---|---|
-| `rr-trans` or `rr-trans install` | Install or update the CLI and background UI |
+| `rr-trans` or `rr-trans install` | Update the CLI and UI, plus the watcher when configured |
 | `rr-trans ui` | Run the review UI in the foreground |
+| `rr-trans ui-service install` | Reinstall the UI and configured watcher |
 | `rr-trans ui-service status` | Show background UI status and paths |
 | `rr-trans ui-service uninstall` | Remove the background UI service |
 | `rr-trans watcher status` | Show automatic-upload status |

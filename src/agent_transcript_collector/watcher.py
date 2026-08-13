@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .native_service import replace_launchd_service
 from .paths import (
     log_path,
     watcher_config_path,
@@ -539,23 +540,12 @@ def install(
     if platform == "darwin":
         service_path = launchd_path()
         _atomic_write(service_path, render_launchd(config, target))
-        domain = f"gui/{os.getuid()}"
         try:
-            run_command(
-                ["launchctl", "bootout", f"{domain}/{LAUNCHD_LABEL}"],
-                check=False,
-                capture_output=True,
+            replace_launchd_service(
+                LAUNCHD_LABEL,
+                service_path,
+                run_command=run_command,
             )
-            completed = run_command(
-                ["launchctl", "bootstrap", domain, str(service_path)],
-                check=False,
-                capture_output=True,
-            )
-            if completed.returncode:
-                raise RuntimeError(
-                    completed.stderr.decode(errors="replace")
-                    or "launchctl bootstrap failed"
-                )
         except Exception:
             service_path.unlink(missing_ok=True)
             raise
@@ -569,6 +559,9 @@ def install(
             run_command(["systemctl", "--user", "daemon-reload"], check=True)
             run_command(
                 ["systemctl", "--user", "enable", "--now", timer_path.name], check=True
+            )
+            run_command(
+                ["systemctl", "--user", "restart", timer_path.name], check=True
             )
         except Exception:
             service_path.unlink(missing_ok=True)
