@@ -3,6 +3,106 @@
 Review, redact, and upload transcripts from Claude Code, Codex, Cursor, and Pi.
 Uploads go to `s3://rr-agent-transcripts/mts-trans/` in `us-east-1`.
 
+## Bucket layout
+
+Each session is stored as one stable ZIP. Uploading a changed session overwrites
+that object; it does not create a dated copy.
+
+```text
+s3://rr-agent-transcripts/mts-trans/<contributor>/<project>/<source>/<session>/transcript.zip
+s3://rr-agent-transcripts/mts-trans/<contributor>/<project>/<source>/<parent>/subagents/<session>/transcript.zip
+```
+
+The `source` values are listed below. Contributor and session segments are made
+S3-safe; project labels preserve their readable names with path separators
+percent-encoded.
+
+Each ZIP contains the redacted native transcript, a manifest, an optional ATIF
+trajectory, and any collected sidecars:
+
+```text
+transcript.zip
+├── transcript.jsonl (or transcript.txt)
+├── trajectory.atif.json                                      # when available
+├── manifest.json
+└── tool-results/, task-outputs/, agent-tools/, or terminals/  # when present
+```
+
+| Source | `source` | Native file | `source_format` | ATIF |
+|---|---|---|---|---|
+| Claude Code | `claude_code` | `transcript.jsonl` | `claude-jsonl` | ATIF v1.7 |
+| Codex | `codex` | `transcript.jsonl` | `codex-rollout-jsonl` | ATIF v1.7 |
+| Cursor | `cursor` | `transcript.jsonl` or `transcript.txt` | `cursor-agent-transcript` | Unsupported |
+| Pi | `pi` | `transcript.jsonl` | `pi-session-jsonl-v3` | Unsupported |
+
+The native transcript is the canonical artifact. ATIF conversion is
+best-effort: a failed conversion is recorded in the manifest and does not block
+the upload. Parent and subagent ZIPs remain separate. A child ATIF records its
+parent transcript ID in
+`extra.agent_transcript_collector.parent_transcript_id`.
+
+### `manifest.json`
+
+Format version 6 has this structure:
+
+```json
+{
+  "transcript_format_version": 6,
+  "source": "claude_code",
+  "source_format": "claude-jsonl",
+  "contributor": "example-contributor",
+  "project": {
+    "key": "project-a1b2c3d4e5f6",
+    "name": "example-project"
+  },
+  "session": {
+    "id": "session-id",
+    "is_subagent": false,
+    "parent": null
+  },
+  "version": {
+    "source_hash": "SHA-256 of the original transcript bundle",
+    "source_hash_version": 3,
+    "redaction_version": 1,
+    "content_sha256": "SHA-256 of the redacted native transcript",
+    "uploaded_at": "2026-01-01T00:00:00+00:00"
+  },
+  "size_bytes": 12345,
+  "redactions": 3,
+  "atif": {
+    "status": "complete",
+    "schema_version": "ATIF-v1.7",
+    "converter": {
+      "name": "harbor",
+      "version": "0.20.0"
+    },
+    "artifact": "trajectory.atif.json"
+  },
+  "sidecars": {
+    "files": [
+      {
+        "path": "tool-results/result.txt",
+        "kind": "tool-results",
+        "referenced_as": "/redacted/path/to/result.txt",
+        "size_bytes": 456,
+        "sha256": "SHA-256 of the redacted sidecar"
+      }
+    ],
+    "missing": ["/redacted/path/to/missing.output"],
+    "skipped_too_large": ["/redacted/path/to/oversized.txt"]
+  }
+}
+```
+
+`atif.status` is `complete`, `unsupported`, or `failed`. Only `complete` has an
+`artifact`; `failed` also has an `error`. The three sidecar arrays are always
+present. `size_bytes` is the redacted native transcript size, not the ZIP size.
+
+S3 object metadata contains `source-hash`, `source-hash-version`,
+`redaction-version`, and `transcript-format-version`. The source hash covers the
+unredacted transcript bundle and is used to detect changes. Anyone who can read
+the metadata could use it to confirm a guess about exact source content.
+
 ## Requirements
 
 - macOS or Linux
@@ -107,12 +207,6 @@ Only sources found on the local machine appear in the UI.
 | Cursor | `~/.cursor/projects/` | `<project>/agent-transcripts/**/*.jsonl` and legacy `.txt` files |
 | Pi | `~/.pi/agent/sessions/` | project session JSONL files and subagent `session.jsonl` files |
 
-The redacted native transcript remains the canonical artifact. Claude Code and
-Codex ZIPs also contain a derived ATIF v1.7 trajectory. Cursor and Pi are not
-currently supported by the ATIF converter and retain only their native
-transcript. ATIF conversion is best-effort: a failure is recorded in the
-manifest and does not prevent the native transcript from being uploaded.
-
 Codex review, compaction, memory-maintenance, and other internal sessions are
 excluded. Cursor transcript files do not contain tool output unless Cursor
 stored it in a referenced external file.
@@ -123,34 +217,6 @@ to it (or, for a Claude parent session, when it is in that session's own tool
 result directory) and the resolved file stays inside a source-owned directory.
 Missing files and files beyond the 100 MiB per-session sidecar budget are listed
 in the manifest but not uploaded.
-
-Subagents are uploaded as separate sessions beneath their parent:
-
-```text
-mts-trans/<contributor>/<project>/<source>/<session>/transcript.zip
-mts-trans/<contributor>/<project>/<source>/<parent>/subagents/<session>/transcript.zip
-```
-
-Each ZIP contains:
-
-```text
-transcript.zip
-├── transcript.jsonl (or transcript.txt)
-├── trajectory.atif.json                                      # when available
-├── manifest.json
-└── tool-results/, task-outputs/, agent-tools/, or terminals/  # when present
-```
-
-The manifest records the source, project, session and parent IDs, source and
-redacted-content hashes, format and redaction versions, redaction count, upload
-time, ATIF conversion result, and sidecar results. Parent and subagent ATIF
-documents remain separate; a child's ATIF metadata records its parent transcript
-ID.
-
-S3 object metadata contains `source-hash`, `source-hash-version`,
-`redaction-version`, and `transcript-format-version`. The source hash covers the
-unredacted transcript and sidecars. It is used to detect changes; anyone who can
-read the metadata could use it to confirm a guess about exact source content.
 
 ## Redaction and privacy
 
