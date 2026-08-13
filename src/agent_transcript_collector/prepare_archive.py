@@ -8,10 +8,11 @@ import json
 import os
 import tempfile
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypedDict
 
+from .atif import ATIF_FILENAME, derive_atif
 from .redactor import (
     REDACTION_VERSION,
     redact_identity,
@@ -26,7 +27,7 @@ from .transcript_snapshot import (
     snapshot_transcript,
 )
 
-TRANSCRIPT_FORMAT_VERSION = 5
+TRANSCRIPT_FORMAT_VERSION = 6
 
 
 class ArchiveArtifact(TypedDict):
@@ -94,6 +95,14 @@ def _archive_bytes(
     suffix = Path(session.path).suffix.lower()
     if suffix not in {".jsonl", ".txt"}:
         suffix = ".txt"
+    transcript_name = f"transcript{suffix}"
+    atif, atif_manifest = derive_atif(
+        source.id,
+        transcript,
+        transcript_name,
+        session.id,
+        session.parent,
+    )
     manifest = {
         "transcript_format_version": TRANSCRIPT_FORMAT_VERSION,
         "source": source.id,
@@ -110,16 +119,19 @@ def _archive_bytes(
             "source_hash_version": SOURCE_HASH_VERSION,
             "redaction_version": REDACTION_VERSION,
             "content_sha256": hashlib.sha256(transcript.encode()).hexdigest(),
-            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            "uploaded_at": datetime.now(UTC).isoformat(),
         },
         "size_bytes": len(transcript.encode("utf-8")),
         "redactions": redaction_count,
+        "atif": atif_manifest,
         "sidecars": sidecars,
     }
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
-        archive.writestr(f"transcript{suffix}", transcript)
+        archive.writestr(transcript_name, transcript)
         archive.writestr("manifest.json", json.dumps(manifest, indent=2))
+        if atif is not None:
+            archive.writestr(ATIF_FILENAME, atif)
         for arcname, text in sidecar_contents:
             archive.writestr(arcname, text)
     return buffer.getvalue(), manifest
