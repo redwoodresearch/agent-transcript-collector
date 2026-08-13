@@ -16,7 +16,7 @@ from .cache import (
     save_cache,
 )
 from .prepare_archive import (
-    TRANSCRIPT_FORMAT_VERSION,
+    MANIFEST_VERSION,
     ArchiveArtifact,
     prepare_archive,
 )
@@ -133,7 +133,7 @@ def record_uploaded(
             source_hash=artifact["source_hash"],
             source_hash_version=SOURCE_HASH_VERSION,
             redaction_version=REDACTION_VERSION,
-            format_version=TRANSCRIPT_FORMAT_VERSION,
+            format_version=MANIFEST_VERSION,
             filesystem_snapshot=artifact["filesystem_snapshot"],
             key=artifact["key"],
         )

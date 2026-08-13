@@ -41,14 +41,3 @@ def transcript_key(contributor: str, source_id: str, session: Session) -> str:
     identity = transcript_id(source_id, session.id)
     prefix = transcript_prefix(contributor, session)
     return f"{prefix}{_safe_segment(identity)}.zip"
-
-
-def parent_transcript_key(
-    contributor: str, source_id: str, session: Session
-) -> str | None:
-    """Return the expected flat key for a transcript's parent, when known."""
-    if not session.parent:
-        return None
-    identity = transcript_id(source_id, session.parent)
-    prefix = transcript_prefix(contributor, session)
-    return f"{prefix}{_safe_segment(identity)}.zip"

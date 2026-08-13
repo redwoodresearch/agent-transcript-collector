@@ -160,101 +160,48 @@ hierarchy. A child ATIF records its parent transcript ID in
 
 ### `manifest.json`
 
-Format version 7 has this structure:
+The manifest deliberately contains only information that cannot be learned by
+listing the ZIP. Version 1 has this structure:
 
 ```json
 {
-  "transcript_format_version": 7,
-  "transcript": {
-    "id": "claude_code--child-id",
-    "native_id": "child-id",
-    "kind": "subagent",
-    "artifact": {
-      "path": "transcript.jsonl",
-      "media_type": "application/x-ndjson",
-      "size_bytes": 12345,
-      "sha256": "SHA-256 of the redacted native transcript"
-    },
-    "relationships": [
-      {"type": "subagent_of", "transcript_id": "claude_code--parent-id"}
-    ],
-    "attributes": {}
-  },
+  "manifest_version": 1,
+  "id": "claude_code--child-id",
+  "format": "claude-jsonl",
   "source": {
-    "id": "claude_code",
-    "format": "claude-jsonl",
-    "attributes": {}
+    "type": "claude_code",
+    "id": "child-id"
   },
   "collection": {
-    "type": "contributed_project",
-    "name": "agent-transcript-collector",
-    "contributor": {
-      "id": "example-contributor",
-      "name": "example-contributor"
-    },
-    "project": {
-      "id": "project-a1b2c3d4e5f6",
-      "name": "example-project"
-    },
-    "attributes": {}
+    "type": "project",
+    "contributor": "example-contributor",
+    "name": "example-project"
   },
-  "processing": {
-    "source_hash": "SHA-256 of the original transcript bundle",
-    "source_hash_version": 3,
-    "packaged_at": "2026-01-01T00:00:00+00:00",
-    "redaction": {
-      "version": 1,
-      "count": 3,
-      "scope": ["secrets", "identity"],
-      "left_intact": []
-    }
-  },
-  "atif": {
-    "status": "complete",
-    "schema_version": "ATIF-v1.7",
-    "converter": {
-      "name": "harbor",
-      "version": "0.20.0"
-    },
-    "artifact": "trajectory.atif.json"
-  },
-  "sidecars": {
-    "files": [
-      {
-        "path": "tool-results/result.txt",
-        "kind": "tool-results",
-        "referenced_as": "/redacted/path/to/result.txt",
-        "size_bytes": 456,
-        "sha256": "SHA-256 of the redacted sidecar"
-      }
-    ],
-    "missing": ["/redacted/path/to/missing.output"],
-    "skipped_too_large": ["/redacted/path/to/oversized.txt"]
+  "parent_id": "claude_code--parent-id",
+  "redaction": {
+    "policy": "agent-transcript-collector/1",
+    "count": 3
   }
 }
 ```
 
-`atif.status` is `complete`, `unsupported`, or `failed`. Only `complete` has an
-`artifact`; `failed` also has an `error`. The three sidecar arrays are always
-present. The transcript artifact's `size_bytes` is the redacted native
-transcript size, not the ZIP size.
+`parent_id` is present only for a subagent. The fixed archive names identify the
+native transcript and optional ATIF; all other files are attachments. Their
+paths, sizes, and ZIP checksums are available from the ZIP directory and are not
+repeated in the manifest. Missing or size-limited sidecars are not recorded in
+the portable archive manifest.
 
 S3 object metadata contains:
 
 | Field | Meaning |
 |---|---|
-| `mts-format-version` | Version of the MTS archive envelope. |
+| `mts-manifest-version` | Version of `manifest.json`. |
 | `mts-transcript-id` | Stable `<source>--<native-id>` transcript identity. |
-| `mts-transcript-kind` | `main` or `subagent`. |
-| `mts-parent-transcript-id` | Parent identity for a subagent; omitted otherwise. |
-| `mts-parent-object-key` | Parent S3 key for a subagent; omitted otherwise. |
+| `mts-parent-id` | Parent identity for a subagent; omitted otherwise. |
 | `mts-source` | Source adapter ID. |
-| `mts-collection-type` | `contributed_project` for collector uploads. |
-| `content-sha256` | SHA-256 of the stored, redacted transcript. |
 | `source-hash` | Hash of the original transcript and included sidecars. |
 | `source-hash-version` | Version of the source-hash algorithm. |
 | `redaction-version` | Version of the local redaction policy. |
-| `transcript-format-version` | Archive format version used for freshness checks. |
 
 The source hash covers the unredacted transcript bundle and is used to detect
 changes. Anyone who can read the metadata could use it to confirm a guess about

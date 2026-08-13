@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TypedDict, cast
 
 from .paths import pipeline_cache_path
-from .prepare_archive import TRANSCRIPT_FORMAT_VERSION
+from .prepare_archive import MANIFEST_VERSION
 from .redactor import REDACTION_VERSION
 from .sources.base import Session
 from .transcript import TranscriptRef, TranscriptStatus, UploadState
@@ -119,7 +119,7 @@ def store_status(
         record.update(
             source_hash_version=SOURCE_HASH_VERSION,
             redaction_version=REDACTION_VERSION,
-            format_version=TRANSCRIPT_FORMAT_VERSION,
+            format_version=MANIFEST_VERSION,
             filesystem_snapshot=status.snapshot.filesystem_snapshot or [],
             source_hash=status.snapshot.source_hash,
         )
@@ -139,7 +139,7 @@ def _record_matches(record: CacheRecord, ref: TranscriptRef) -> bool:
         and record.get("key") == ref.key
         and record.get("source_hash_version") == SOURCE_HASH_VERSION
         and record.get("redaction_version") == REDACTION_VERSION
-        and record.get("format_version") == TRANSCRIPT_FORMAT_VERSION
+        and record.get("format_version") == MANIFEST_VERSION
         and isinstance(record.get("source_hash"), str)
         and filesystem_snapshot_is_current(record.get("filesystem_snapshot"))
     )

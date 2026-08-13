@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import os
 import tempfile
 import zipfile
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import TypedDict
 
 from .atif import ATIF_FILENAME, derive_atif
 from .redactor import (
@@ -19,16 +17,15 @@ from .redactor import (
     redact_jsonl_content,
 )
 from .sources.base import Session, Source
-from .storage import parent_transcript_key, transcript_id
+from .storage import transcript_id
 from .transcript_snapshot import (
-    SOURCE_HASH_VERSION,
     FilesystemSnapshotEntry,
     TranscriptSnapshot,
     filesystem_snapshot,
     snapshot_transcript,
 )
 
-TRANSCRIPT_FORMAT_VERSION = 7
+MANIFEST_VERSION = 1
 
 
 class ArchiveArtifact(TypedDict):
@@ -39,10 +36,7 @@ class ArchiveArtifact(TypedDict):
     session: str
     parent: str | None
     transcript_id: str
-    transcript_kind: str
     parent_transcript_id: str | None
-    parent_object_key: str | None
-    content_sha256: str
     path: str
     key: str
     source_hash: str
@@ -60,44 +54,28 @@ def _redact(text: str) -> tuple[str, int]:
 
 def _redacted_sidecars(
     snapshot: TranscriptSnapshot,
-) -> tuple[list[tuple[str, str]], dict, int]:
+) -> tuple[list[tuple[str, str]], int]:
     contents: list[tuple[str, str]] = []
-    entries = []
-    missing = list(snapshot.sidecars.missing)
     redaction_count = 0
     for sidecar in snapshot.sidecars.files:
         text = sidecar.path.read_text(encoding="utf-8", errors="replace")
         text, count = _redact(text)
         redaction_count += count
         contents.append((sidecar.arcname, text))
-        entries.append({
-            "path": sidecar.arcname,
-            "kind": sidecar.kind,
-            "referenced_as": redact_identity(sidecar.reference)[0],
-            "size_bytes": len(text.encode("utf-8")),
-            "sha256": hashlib.sha256(text.encode()).hexdigest(),
-        })
-    return contents, {
-        "files": entries,
-        "missing": [redact_identity(path)[0] for path in sorted(missing)],
-        "skipped_too_large": [
-            redact_identity(path)[0] for path in snapshot.sidecars.skipped
-        ],
-    }, redaction_count
+    return contents, redaction_count
 
 
 def _archive_bytes(
     source: Source, snapshot: TranscriptSnapshot, contributor: str
-) -> tuple[bytes, dict[str, Any]]:
+) -> tuple[bytes, dict]:
     session = snapshot.session
     transcript, redaction_count = _redact(
         snapshot.raw_bytes.decode("utf-8", errors="replace")
     )
-    sidecar_contents, sidecars, count = _redacted_sidecars(snapshot)
+    sidecar_contents, count = _redacted_sidecars(snapshot)
     redaction_count += count
     project_label, count = redact_identity(session.project_label)
     redaction_count += count
-    project_digest = hashlib.sha256(session.project_id.encode()).hexdigest()[:12]
     suffix = Path(session.path).suffix.lower()
     if suffix not in {".jsonl", ".txt"}:
         suffix = ".txt"
@@ -106,9 +84,7 @@ def _archive_bytes(
     parent_identity = (
         transcript_id(source.id, session.parent) if session.parent else None
     )
-    transcript_bytes = transcript.encode("utf-8")
-    content_sha256 = hashlib.sha256(transcript_bytes).hexdigest()
-    atif, atif_manifest = derive_atif(
+    atif, _atif_manifest = derive_atif(
         source.id,
         transcript,
         transcript_name,
@@ -116,54 +92,25 @@ def _archive_bytes(
         parent_identity,
     )
     manifest = {
-        "transcript_format_version": TRANSCRIPT_FORMAT_VERSION,
-        "transcript": {
-            "id": identity,
-            "native_id": session.id,
-            "kind": "subagent" if session.is_subagent else "main",
-            "artifact": {
-                "path": transcript_name,
-                "media_type": (
-                    "application/x-ndjson" if suffix == ".jsonl" else "text/plain"
-                ),
-                "size_bytes": len(transcript_bytes),
-                "sha256": content_sha256,
-            },
-            "relationships": ([{
-                "type": "subagent_of",
-                "transcript_id": parent_identity,
-            }] if parent_identity else []),
-            "attributes": {},
-        },
+        "manifest_version": MANIFEST_VERSION,
+        "id": identity,
+        "format": source.source_format,
         "source": {
-            "id": source.id,
-            "format": source.source_format,
-            "attributes": {},
+            "type": source.id,
+            "id": session.id,
         },
         "collection": {
-            "type": "contributed_project",
-            "name": "agent-transcript-collector",
-            "contributor": {"id": contributor, "name": contributor},
-            "project": {
-                "id": f"project-{project_digest}",
-                "name": project_label,
-            },
-            "attributes": {},
+            "type": "project",
+            "contributor": contributor,
+            "name": project_label,
         },
-        "processing": {
-            "source_hash": snapshot.source_hash,
-            "source_hash_version": SOURCE_HASH_VERSION,
-            "packaged_at": datetime.now(UTC).isoformat(),
-            "redaction": {
-                "version": REDACTION_VERSION,
-                "count": redaction_count,
-                "scope": ["secrets", "identity"],
-                "left_intact": [],
-            },
+        "redaction": {
+            "policy": f"agent-transcript-collector/{REDACTION_VERSION}",
+            "count": redaction_count,
         },
-        "atif": atif_manifest,
-        "sidecars": sidecars,
     }
+    if parent_identity:
+        manifest["parent_id"] = parent_identity
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
         archive.writestr(transcript_name, transcript)
@@ -221,17 +168,12 @@ def prepare_archive(
         "session": session.id,
         "parent": session.parent,
         "transcript_id": identity,
-        "transcript_kind": "subagent" if session.is_subagent else "main",
         "parent_transcript_id": parent_identity,
-        "parent_object_key": parent_transcript_key(
-            contributor, source.id, session
-        ),
-        "content_sha256": manifest["transcript"]["artifact"]["sha256"],
         "path": temporary,
         "key": snapshot.key,
         "source_hash": snapshot.source_hash,
-        "sidecar_count": len(manifest["sidecars"]["files"]),
-        "redactions": manifest["processing"]["redaction"]["count"],
+        "sidecar_count": len(snapshot.sidecars.files),
+        "redactions": manifest["redaction"]["count"],
         "zip_size_bytes": len(archive),
         "filesystem_snapshot": filesystem_snapshot(snapshot),
     }

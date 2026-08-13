@@ -11,14 +11,14 @@ from typing import IO, Any, Protocol, TypeAlias
 
 from .paths import upload_lock_path
 from .prepare_archive import (
-    TRANSCRIPT_FORMAT_VERSION,
+    MANIFEST_VERSION,
     ArchiveArtifact,
 )
 from .redactor import REDACTION_VERSION
 from .s3client import S3_BUCKET
 from .transcript_snapshot import SOURCE_HASH_VERSION
 from .upload_status import (
-    FORMAT_VERSION_METADATA,
+    MANIFEST_VERSION_METADATA,
     REDACTION_VERSION_METADATA,
     SOURCE_HASH_METADATA,
     SOURCE_HASH_VERSION_METADATA,
@@ -33,14 +33,9 @@ class S3UploadClient(Protocol):
 
     def put_object(self, **kwargs: Any) -> dict[str, Any]: ...
 
-MTS_FORMAT_VERSION_METADATA = "mts-format-version"
 MTS_TRANSCRIPT_ID_METADATA = "mts-transcript-id"
-MTS_TRANSCRIPT_KIND_METADATA = "mts-transcript-kind"
-MTS_PARENT_TRANSCRIPT_ID_METADATA = "mts-parent-transcript-id"
-MTS_PARENT_OBJECT_KEY_METADATA = "mts-parent-object-key"
+MTS_PARENT_ID_METADATA = "mts-parent-id"
 MTS_SOURCE_METADATA = "mts-source"
-MTS_COLLECTION_TYPE_METADATA = "mts-collection-type"
-CONTENT_SHA256_METADATA = "content-sha256"
 
 
 def upload_concurrency() -> int:
@@ -111,24 +106,16 @@ def upload_artifacts(
 
     def upload_one(artifact: ArchiveArtifact) -> UploadResult:
         metadata = {
-            MTS_FORMAT_VERSION_METADATA: str(TRANSCRIPT_FORMAT_VERSION),
+            MANIFEST_VERSION_METADATA: str(MANIFEST_VERSION),
             MTS_TRANSCRIPT_ID_METADATA: artifact["transcript_id"],
-            MTS_TRANSCRIPT_KIND_METADATA: artifact["transcript_kind"],
             MTS_SOURCE_METADATA: artifact["source"],
-            MTS_COLLECTION_TYPE_METADATA: "contributed_project",
-            CONTENT_SHA256_METADATA: artifact["content_sha256"],
             SOURCE_HASH_METADATA: artifact["source_hash"],
             SOURCE_HASH_VERSION_METADATA: str(SOURCE_HASH_VERSION),
             REDACTION_VERSION_METADATA: str(REDACTION_VERSION),
-            FORMAT_VERSION_METADATA: str(TRANSCRIPT_FORMAT_VERSION),
         }
         if artifact["parent_transcript_id"]:
-            metadata[MTS_PARENT_TRANSCRIPT_ID_METADATA] = artifact[
+            metadata[MTS_PARENT_ID_METADATA] = artifact[
                 "parent_transcript_id"
-            ]
-        if artifact["parent_object_key"]:
-            metadata[MTS_PARENT_OBJECT_KEY_METADATA] = artifact[
-                "parent_object_key"
             ]
         s3.put_object(
             Bucket=S3_BUCKET,
