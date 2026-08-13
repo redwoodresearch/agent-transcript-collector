@@ -172,21 +172,7 @@ class TranscriptBrowser(App[None]):
 
     def _open_vim(self, atif_path: Path) -> None:
         with self.suspend():
-            subprocess.run(
-                [
-                    "vim",
-                    "-N",
-                    "-u",
-                    "NONE",
-                    "-i",
-                    "NONE",
-                    "-n",
-                    "-R",
-                    "--",
-                    str(atif_path),
-                ],
-                check=False,
-            )
+            subprocess.run(["vim", str(atif_path)], check=False)
 
     def on_tree_node_expanded(self, event: Tree.NodeExpanded[S3Entry]) -> None:
         entry = event.node.data
