@@ -3,6 +3,99 @@
 Review, redact, and upload transcripts from Claude Code, Codex, Cursor, and Pi.
 Uploads go to `s3://rr-agent-transcripts/mts-trans/` in `us-east-1`.
 
+## Requirements
+
+- macOS or Linux
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- An AWS SSO profile with access to the Redwood General Sandbox account
+
+Follow the AWS setup in the
+[Redwood devbox guide](https://github.com/redwoodresearch/research-devboxes/blob/main/docs/getting-started.md),
+then select the profile in your shell:
+
+```bash
+export AWS_PROFILE=<profile>
+```
+
+If the session expires, refresh it with:
+
+```bash
+aws sso login --profile <profile>
+```
+
+## Install
+
+```bash
+uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
+  rr-trans
+```
+
+This installs `rr-trans`, starts a per-user background service, and opens the
+review UI at <http://localhost:8123>. Run the command again to update and restart
+the service. The service also checks the `main` branch for updates when it
+starts.
+
+No `sudo` is required. The installer uses a LaunchAgent on macOS and a systemd
+user service on Linux.
+
+## Upload transcripts
+
+Open <http://localhost:8123>, enter the contributor name, review the discovered
+sessions, and select the transcripts to upload. Click a session summary to
+preview its redacted text before uploading.
+
+For a temporary foreground server, run:
+
+```bash
+rr-trans ui
+```
+
+It opens <http://localhost:8899> by default and uses the next available port if
+8899 is busy.
+
+### Automatic uploads
+
+In the review UI:
+
+1. Enter the contributor name.
+2. Select **auto upload** for each project you consent to share.
+3. Click **Enable**.
+
+The watcher runs immediately and then once an hour. It uploads new sessions and
+replaces an existing session ZIP when the local transcript or its sidecars have
+changed. Unchanged sessions are skipped.
+
+The watcher cannot open an interactive AWS login. If its status reports expired
+credentials, run `aws sso login --profile <profile>` yourself. `uv` must remain
+at the path recorded when the watcher was enabled.
+
+```bash
+rr-trans watcher status
+rr-trans watcher uninstall
+rr-trans watcher uninstall --purge
+```
+
+`uninstall` removes the scheduled job but keeps its configuration, last-run
+state, and logs. `--purge` also removes the configuration and state.
+
+## Commands
+
+| Command | Purpose |
+|---|---|
+| `rr-trans` or `rr-trans install` | Install or update the CLI and background UI |
+| `rr-trans ui` | Run the review UI in the foreground |
+| `rr-trans ui-service status` | Show background UI status and paths |
+| `rr-trans ui-service uninstall` | Remove the background UI service |
+| `rr-trans watcher status` | Show automatic-upload status |
+| `rr-trans watcher uninstall [--purge]` | Remove automatic uploads |
+| `rr-trans tui` | Browse uploaded transcript keys in S3 |
+
+`rr-trans tui` never modifies S3. It starts at `mts-trans/`; use
+`--prefix mts-trans/<contributor>/` to narrow the listing. Press Enter to expand
+a folder, `v` to view a selected transcript's ATIF in Vim, and `q` to quit. The
+viewer downloads the ATIF to a private temporary directory and removes it after
+Vim exits.
+
 ## What is collected
 
 Only sources found on the local machine appear in the UI.
@@ -124,99 +217,6 @@ S3 object metadata contains `source-hash`, `source-hash-version`,
 `redaction-version`, and `transcript-format-version`. The source hash covers the
 unredacted transcript bundle and is used to detect changes. Anyone who can read
 the metadata could use it to confirm a guess about exact source content.
-
-## Requirements
-
-- macOS or Linux
-- [uv](https://docs.astral.sh/uv/getting-started/installation/)
-- An AWS SSO profile with access to the Redwood General Sandbox account
-
-Follow the AWS setup in the
-[Redwood devbox guide](https://github.com/redwoodresearch/research-devboxes/blob/main/docs/getting-started.md),
-then select the profile in your shell:
-
-```bash
-export AWS_PROFILE=<profile>
-```
-
-If the session expires, refresh it with:
-
-```bash
-aws sso login --profile <profile>
-```
-
-## Install
-
-```bash
-uvx --from 'git+https://github.com/redwoodresearch/agent-transcript-collector' \
-  rr-trans
-```
-
-This installs `rr-trans`, starts a per-user background service, and opens the
-review UI at <http://localhost:8123>. Run the command again to update and restart
-the service. The service also checks the `main` branch for updates when it
-starts.
-
-No `sudo` is required. The installer uses a LaunchAgent on macOS and a systemd
-user service on Linux.
-
-## Upload transcripts
-
-Open <http://localhost:8123>, enter the contributor name, review the discovered
-sessions, and select the transcripts to upload. Click a session summary to
-preview its redacted text before uploading.
-
-For a temporary foreground server, run:
-
-```bash
-rr-trans ui
-```
-
-It opens <http://localhost:8899> by default and uses the next available port if
-8899 is busy.
-
-### Automatic uploads
-
-In the review UI:
-
-1. Enter the contributor name.
-2. Select **auto upload** for each project you consent to share.
-3. Click **Enable**.
-
-The watcher runs immediately and then once an hour. It uploads new sessions and
-replaces an existing session ZIP when the local transcript or its sidecars have
-changed. Unchanged sessions are skipped.
-
-The watcher cannot open an interactive AWS login. If its status reports expired
-credentials, run `aws sso login --profile <profile>` yourself. `uv` must remain
-at the path recorded when the watcher was enabled.
-
-```bash
-rr-trans watcher status
-rr-trans watcher uninstall
-rr-trans watcher uninstall --purge
-```
-
-`uninstall` removes the scheduled job but keeps its configuration, last-run
-state, and logs. `--purge` also removes the configuration and state.
-
-## Commands
-
-| Command | Purpose |
-|---|---|
-| `rr-trans` or `rr-trans install` | Install or update the CLI and background UI |
-| `rr-trans ui` | Run the review UI in the foreground |
-| `rr-trans ui-service status` | Show background UI status and paths |
-| `rr-trans ui-service uninstall` | Remove the background UI service |
-| `rr-trans watcher status` | Show automatic-upload status |
-| `rr-trans watcher uninstall [--purge]` | Remove automatic uploads |
-| `rr-trans tui` | Browse uploaded transcript keys in S3 |
-
-`rr-trans tui` never modifies S3. It starts at `mts-trans/`; use
-`--prefix mts-trans/<contributor>/` to narrow the listing. Press Enter to expand
-a folder, `v` to view a selected transcript's ATIF in Vim, and `q` to quit. The
-viewer downloads the ATIF to a private temporary directory and removes it after
-Vim exits.
 
 ## Redaction and privacy
 
