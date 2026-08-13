@@ -126,10 +126,11 @@ rr-trans tui
 
 Use Enter to expand folders, `v` to view the selected transcript's ATIF in Vim,
 and `q` to quit. The ATIF viewer downloads `trajectory.atif.json` to a private
-temporary directory, waits for Vim to exit, and then deletes it. The browser opens
-at `mts-trans/` by default; pass `--prefix mts-trans/<contributor>/` to start at a
-narrower S3 prefix. It shows each transcript's S3 last-modified time and orders
-transcripts from newest to oldest.
+temporary directory, opens a clean read-only Vim session without user plugins,
+waits for Vim to exit, and then deletes it. The browser opens at `mts-trans/` by
+default; pass `--prefix mts-trans/<contributor>/` to start at a narrower S3 prefix.
+It shows each transcript's S3 last-modified time and orders transcripts from newest
+to oldest.
 
 ## Transcript data and storage
 
