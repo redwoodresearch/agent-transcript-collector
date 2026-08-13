@@ -12,7 +12,7 @@ from .attachments import EMPTY as NO_ATTACHMENTS
 from .attachments import AttachmentSet
 from .sources.base import Session, Source
 
-SOURCE_HASH_VERSION = 4
+SOURCE_HASH_VERSION = 5
 
 
 class FilesystemSnapshotEntry(TypedDict, total=False):
@@ -34,19 +34,27 @@ class TranscriptSnapshot:
     filesystem_snapshot: list[FilesystemSnapshotEntry] | None = None
 
 
-def source_hash(raw_bytes: bytes, attachments: AttachmentSet) -> str:
-    """Identify the original transcript and all available attachment content."""
+def source_hash(
+    raw_bytes: bytes,
+    attachments: AttachmentSet,
+    child_ids: tuple[str, ...] = (),
+) -> str:
+    """Identify transcript, attachments, and derived subagent links."""
     digest = hashlib.sha256(f"source-v{SOURCE_HASH_VERSION}\0".encode())
     digest.update(raw_bytes)
-    if not attachments.files:
-        return digest.hexdigest()
-    transcript_digest = digest.hexdigest()
-    digest = hashlib.sha256(f"attachments-v1\0{transcript_digest}".encode())
-    for attachment in attachments.files:
-        raw = attachment.path.read_bytes()
-        digest.update(attachment.arcname.encode() + b"\0")
-        digest.update(hashlib.sha256(raw).digest())
-        digest.update(b"\0")
+    if attachments.files:
+        transcript_digest = digest.hexdigest()
+        digest = hashlib.sha256(f"attachments-v1\0{transcript_digest}".encode())
+        for attachment in attachments.files:
+            raw = attachment.path.read_bytes()
+            digest.update(attachment.arcname.encode() + b"\0")
+            digest.update(hashlib.sha256(raw).digest())
+            digest.update(b"\0")
+    if child_ids:
+        content_digest = digest.hexdigest()
+        digest = hashlib.sha256(f"subagent-links-v1\0{content_digest}".encode())
+        for child_id in sorted(set(child_ids)):
+            digest.update(child_id.encode() + b"\0")
     return digest.hexdigest()
 
 
@@ -100,7 +108,11 @@ def snapshot_transcript(
         )
         snapshot_before_hash = filesystem_snapshot(probe)
         try:
-            hashed = source_hash(inputs.raw_bytes, inputs.attachments)
+            hashed = source_hash(
+                inputs.raw_bytes,
+                inputs.attachments,
+                session.child_ids,
+            )
         except OSError:
             continue
         snapshot_after_hash = filesystem_snapshot(probe)

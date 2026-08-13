@@ -242,6 +242,7 @@ class Session:
     modified: datetime | None = None
     is_subagent: bool = False      # spawned task subagent, not a top-level session
     parent: str | None = None      # parent session id, when is_subagent
+    child_ids: tuple[str, ...] = ()  # discovered direct children, for ATIF links
 
     @property
     def size_human(self) -> str:

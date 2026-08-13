@@ -29,6 +29,11 @@ def transcript_id(source_id: str, native_id: str) -> str:
     return f"{source_id}--{native_id}"
 
 
+def transcript_filename(source_id: str, native_id: str) -> str:
+    """Return the portable sibling filename for one transcript archive."""
+    return f"{_safe_segment(transcript_id(source_id, native_id))}.zip"
+
+
 def transcript_prefix(contributor: str, session: Session) -> str:
     """Return the flat contributor/project prefix for one transcript."""
     return (
@@ -38,6 +43,5 @@ def transcript_prefix(contributor: str, session: Session) -> str:
 
 
 def transcript_key(contributor: str, source_id: str, session: Session) -> str:
-    identity = transcript_id(source_id, session.id)
     prefix = transcript_prefix(contributor, session)
-    return f"{prefix}{_safe_segment(identity)}.zip"
+    return f"{prefix}{transcript_filename(source_id, session.id)}"

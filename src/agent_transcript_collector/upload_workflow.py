@@ -136,6 +136,7 @@ def record_uploaded(
             format_version=MANIFEST_VERSION,
             filesystem_snapshot=artifact["filesystem_snapshot"],
             key=artifact["key"],
+            child_ids=list(artifact["child_ids"]),
         )
         record.pop("error", None)
     save_cache(cache, cache_path)

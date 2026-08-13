@@ -17,7 +17,7 @@ from .redactor import (
     redact_jsonl_content,
 )
 from .sources.base import Session, Source
-from .storage import transcript_id
+from .storage import transcript_filename, transcript_id
 from .transcript_snapshot import (
     FilesystemSnapshotEntry,
     TranscriptSnapshot,
@@ -37,6 +37,7 @@ class ArchiveArtifact(TypedDict):
     parent: str | None
     transcript_id: str
     parent_transcript_id: str | None
+    child_ids: tuple[str, ...]
     path: str
     key: str
     source_hash: str
@@ -90,6 +91,14 @@ def _archive_bytes(
         transcript_name,
         identity,
         parent_identity,
+        subagent_refs=[
+            {
+                "trajectory_id": transcript_id(source.id, child_id),
+                "session_id": child_id,
+                "trajectory_path": transcript_filename(source.id, child_id),
+            }
+            for child_id in session.child_ids
+        ],
     )
     manifest = {
         "manifest_version": MANIFEST_VERSION,
@@ -169,6 +178,7 @@ def prepare_archive(
         "parent": session.parent,
         "transcript_id": identity,
         "parent_transcript_id": parent_identity,
+        "child_ids": session.child_ids,
         "path": temporary,
         "key": snapshot.key,
         "source_hash": snapshot.source_hash,

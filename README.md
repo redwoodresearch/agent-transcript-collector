@@ -158,6 +158,14 @@ relationship is stored in the manifest and S3 metadata rather than the object
 hierarchy. A child ATIF records its parent transcript ID in
 `extra.agent_transcript_collector.parent_transcript_id`.
 
+When an exact child ID is present in a Claude Code or Codex spawn-tool result,
+the parent's ATIF observation also contains an external
+`subagent_trajectory_ref`. Its `source_call_id` identifies the spawning tool
+call and its `trajectory_path` is the child ZIP's relative sibling filename.
+Viewers can therefore open that child directly without listing the project or
+reading S3 object metadata. The collector does not guess a link when the native
+result lacks an exact child ID.
+
 ### `manifest.json`
 
 The manifest deliberately contains only information that cannot be learned by
@@ -203,9 +211,9 @@ S3 object metadata contains:
 | `source-hash-version` | Version of the source-hash algorithm. |
 | `redaction-version` | Version of the local redaction policy. |
 
-The source hash covers the unredacted transcript bundle and is used to detect
-changes. Anyone who can read the metadata could use it to confirm a guess about
-exact source content.
+The source hash covers the unredacted transcript bundle and its discovered
+direct-child IDs, and is used to detect content or link changes. Anyone who can
+read the metadata could use it to confirm a guess about exact source content.
 
 ## Redaction and privacy
 

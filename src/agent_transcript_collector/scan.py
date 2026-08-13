@@ -188,8 +188,12 @@ def _merge_projects(transcripts: list[Session]) -> list[Project]:
         project_info.setdefault(identity, (transcript.project_label, directory))
 
     projects = [
-        Project(identity, project_info[identity][0], project_info[identity][1],
-                tuple(items))
+        Project(
+            identity,
+            project_info[identity][0],
+            project_info[identity][1],
+            _link_project_children(items),
+        )
         for identity, items in merged.items()
     ]
     projects.sort(
@@ -200,3 +204,18 @@ def _merge_projects(transcripts: list[Session]) -> list[Project]:
         )
     )
     return projects
+
+
+def _link_project_children(transcripts: list[Session]) -> tuple[Session, ...]:
+    """Record direct child IDs on each discovered parent transcript."""
+    children: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for transcript in transcripts:
+        if transcript.parent:
+            children[(transcript.source, transcript.parent)].append(transcript.id)
+    return tuple(
+        replace(
+            transcript,
+            child_ids=tuple(sorted(children.get((transcript.source, transcript.id), []))),
+        )
+        for transcript in transcripts
+    )
