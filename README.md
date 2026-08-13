@@ -61,9 +61,9 @@ In the review UI:
 2. Select **auto upload** for each project you consent to share.
 3. Click **Enable**.
 
-The watcher runs immediately and then once an hour. It uploads new sessions and
-replaces an existing session ZIP when the local transcript or its sidecars have
-changed. Unchanged sessions are skipped.
+The watcher runs immediately and then once an hour. It uploads new transcripts
+and replaces an existing transcript ZIP when the local transcript or its
+attachments have changed. Unchanged transcripts are skipped.
 
 Each check also refreshes the watcher from the supported release branch. When
 that branch advances to a new Git revision, the watcher updates the installed
@@ -120,25 +120,26 @@ Claude Code and Cursor sometimes store agent-visible tool output outside the
 transcript. The collector includes such a file only when the transcript points
 to it (or, for a Claude parent session, when it is in that session's own tool
 result directory) and the resolved file stays inside a source-owned directory.
-Missing files and files beyond the 100 MiB per-session sidecar budget are listed
-in the manifest but not uploaded.
+Missing files and files beyond the 100 MiB per-session attachment budget are
+omitted from the ZIP and reported in the local preview.
 
 ## Bucket layout
 
-Each session is stored as one stable ZIP. Uploading a changed session overwrites
-that object; it does not create a dated copy.
+Each transcript is stored as one stable ZIP. Uploading a changed transcript
+overwrites that object; it does not create a dated copy. Main and subagent
+transcripts are peers in the same flat project directory.
 
 ```text
-s3://rr-agent-transcripts/mts-trans/<contributor>/<project>/<source>/<session>/transcript.zip
-s3://rr-agent-transcripts/mts-trans/<contributor>/<project>/<source>/<parent>/subagents/<session>/transcript.zip
+s3://rr-agent-transcripts/mts-trans/<contributor>/<project>/<source>--<native-id>.zip
 ```
 
-The `source` values are listed below. Contributor and session segments are made
-S3-safe; project labels preserve their readable names with path separators
-percent-encoded.
+The `source` values are listed below. Including the source in the transcript ID
+prevents native IDs from different harnesses from colliding. Contributor and
+transcript ID segments are made S3-safe; project labels preserve their readable
+names with path separators percent-encoded.
 
 Each ZIP contains the redacted native transcript, a manifest, an optional ATIF
-trajectory, and any collected sidecars:
+trajectory, and any collected attachments:
 
 ```text
 transcript.zip
@@ -156,72 +157,68 @@ transcript.zip
 | Pi | `pi` | `transcript.jsonl` | `pi-session-jsonl-v3` | Unsupported |
 
 The native transcript is the canonical artifact. ATIF conversion is
-best-effort: a failed conversion is recorded in the manifest and does not block
-the upload. Parent and subagent ZIPs remain separate. A child ATIF records its
-parent transcript ID in
+best-effort: a failed conversion leaves the ATIF absent and does not block the
+upload. Parent and subagent ZIPs remain separate peer objects. Their
+relationship is stored in the manifest and S3 metadata rather than the object
+hierarchy. A child ATIF records its parent transcript ID in
 `extra.agent_transcript_collector.parent_transcript_id`.
+
+When an exact child ID is present in a Claude Code or Codex spawn-tool result,
+the parent's ATIF observation also contains an external
+`subagent_trajectory_ref`. Its `source_call_id` identifies the spawning tool
+call and its `trajectory_path` is the child ZIP's relative sibling filename.
+Viewers can therefore open that child directly without listing the project or
+reading S3 object metadata. The collector does not guess a link when the native
+result lacks an exact child ID.
 
 ### `manifest.json`
 
-Format version 6 has this structure:
+The manifest deliberately contains only information that cannot be learned by
+listing the ZIP. Version 7 has this structure:
 
 ```json
 {
-  "transcript_format_version": 6,
-  "source": "claude_code",
-  "source_format": "claude-jsonl",
-  "contributor": "example-contributor",
-  "project": {
-    "key": "project-a1b2c3d4e5f6",
+  "manifest_version": 7,
+  "id": "claude_code--child-id",
+  "format": "claude-jsonl",
+  "source": {
+    "type": "claude_code",
+    "id": "child-id"
+  },
+  "collection": {
+    "type": "project",
+    "contributor": "example-contributor",
     "name": "example-project"
   },
-  "session": {
-    "id": "session-id",
-    "is_subagent": false,
-    "parent": null
-  },
-  "version": {
-    "source_hash": "SHA-256 of the original transcript bundle",
-    "source_hash_version": 3,
-    "redaction_version": 1,
-    "content_sha256": "SHA-256 of the redacted native transcript",
-    "uploaded_at": "2026-01-01T00:00:00+00:00"
-  },
-  "size_bytes": 12345,
-  "redactions": 3,
-  "atif": {
-    "status": "complete",
-    "schema_version": "ATIF-v1.7",
-    "converter": {
-      "name": "harbor",
-      "version": "0.20.0"
-    },
-    "artifact": "trajectory.atif.json"
-  },
-  "sidecars": {
-    "files": [
-      {
-        "path": "tool-results/result.txt",
-        "kind": "tool-results",
-        "referenced_as": "/redacted/path/to/result.txt",
-        "size_bytes": 456,
-        "sha256": "SHA-256 of the redacted sidecar"
-      }
-    ],
-    "missing": ["/redacted/path/to/missing.output"],
-    "skipped_too_large": ["/redacted/path/to/oversized.txt"]
+  "parent_id": "claude_code--parent-id",
+  "redaction": {
+    "policy": "agent-transcript-collector/1",
+    "count": 3
   }
 }
 ```
 
-`atif.status` is `complete`, `unsupported`, or `failed`. Only `complete` has an
-`artifact`; `failed` also has an `error`. The three sidecar arrays are always
-present. `size_bytes` is the redacted native transcript size, not the ZIP size.
+`parent_id` is present only for a subagent. The fixed archive names identify the
+native transcript and optional ATIF; all other files are attachments. Their
+paths, sizes, and ZIP checksums are available from the ZIP directory and are not
+repeated in the manifest. Missing or size-limited attachments are not recorded in
+the portable archive manifest.
 
-S3 object metadata contains `source-hash`, `source-hash-version`,
-`redaction-version`, and `transcript-format-version`. The source hash covers the
-unredacted transcript bundle and is used to detect changes. Anyone who can read
-the metadata could use it to confirm a guess about exact source content.
+S3 object metadata contains:
+
+| Field | Meaning |
+|---|---|
+| `mts-manifest-version` | Version of `manifest.json`. |
+| `mts-transcript-id` | Stable `<source>--<native-id>` transcript identity. |
+| `mts-parent-id` | Parent identity for a subagent; omitted otherwise. |
+| `mts-source` | Source adapter ID. |
+| `source-hash` | Hash of the original transcript and included attachments. |
+| `source-hash-version` | Version of the source-hash algorithm. |
+| `redaction-version` | Version of the local redaction policy. |
+
+The source hash covers the unredacted transcript bundle and its discovered
+direct-child IDs, and is used to detect content or link changes. Anyone who can
+read the metadata could use it to confirm a guess about exact source content.
 
 ## Redaction and privacy
 
@@ -263,14 +260,14 @@ Profile selection uses the first value set in this order:
 | `CTC_ARCHIVE_CONCURRENCY` | `8` | Concurrent redaction and archive jobs |
 | `CTC_UPLOAD_CONCURRENCY` | `8` | Concurrent S3 uploads |
 | `CTC_METADATA_CONCURRENCY` | `20` | Concurrent S3 metadata requests |
-| `CTC_SIDECAR_MAX_BYTES` | `104857600` | Sidecar budget for a foreground `rr-trans ui` process |
+| `CTC_ATTACHMENT_MAX_BYTES` | `104857600` | Attachment budget for a foreground `rr-trans ui` process |
 | `PORT` | `8899` | Starting port for `rr-trans ui` |
 
 Source paths, profile selection, concurrency settings, and the username stoplist
 are captured when background services are installed or enabled. Reinstall the UI
 service or watcher after changing them. The background UI always listens on
 `127.0.0.1:8123`; `PORT` only affects the foreground command. The installed
-services currently use the default sidecar budget.
+services currently use the default attachment budget.
 
 ### Local files
 

@@ -1,4 +1,4 @@
-"""S3 key layout for collected transcripts."""
+"""S3 key layout and identities for collected transcripts."""
 
 import hashlib
 import re
@@ -24,18 +24,24 @@ def _project_segment(session: Session) -> str:
     return value.replace("%", "%25").replace("/", "%2F").replace("\\", "%5C")
 
 
-def transcript_prefix(contributor: str, source_id: str, session: Session) -> str:
-    root = (
+def transcript_id(source_id: str, native_id: str) -> str:
+    """Return an MTS identity that is unique across source adapters."""
+    return f"{source_id}--{native_id}"
+
+
+def transcript_filename(source_id: str, native_id: str) -> str:
+    """Return the portable sibling filename for one transcript archive."""
+    return f"{_safe_segment(transcript_id(source_id, native_id))}.zip"
+
+
+def transcript_prefix(contributor: str, session: Session) -> str:
+    """Return the flat contributor/project prefix for one transcript."""
+    return (
         f"{STORAGE_PREFIX}/{_safe_segment(contributor)}/"
-        f"{_project_segment(session)}/{_safe_segment(source_id)}/"
+        f"{_project_segment(session)}/"
     )
-    if session.is_subagent and session.parent:
-        return (
-            f"{root}{_safe_segment(session.parent)}/subagents/"
-            f"{_safe_segment(session.id)}/"
-        )
-    return f"{root}{_safe_segment(session.id)}/"
 
 
 def transcript_key(contributor: str, source_id: str, session: Session) -> str:
-    return f"{transcript_prefix(contributor, source_id, session)}transcript.zip"
+    prefix = transcript_prefix(contributor, session)
+    return f"{prefix}{transcript_filename(source_id, session.id)}"

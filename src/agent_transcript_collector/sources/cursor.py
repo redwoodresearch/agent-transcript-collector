@@ -13,7 +13,7 @@ Format: Composer 2 JSONL entries with top-level `role` and
 
 Shell output and oversized tool results are written per project under
 `terminals/` and `agent-tools/`, and the agent reads them back by path; see
-`sidecars` below.
+`attachments` below.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-from ..sidecars import SidecarBuilder, SidecarSet
+from ..attachments import AttachmentBuilder, AttachmentSet
 from .base import (
     Session,
     canonical_project_directory,
@@ -34,10 +34,10 @@ from .base import (
     truncate,
 )
 
-# Side-file paths reach the transcript as tool-call arguments (the agent reads
+# Attachment paths reach the transcript as tool-call arguments (the agent reads
 # them back), so they sit inside JSON strings and end at a quote or separator.
 # Both folders are flat, so the file name itself cannot contain a separator.
-_SIDE_FILE_RE = re.compile(
+_ATTACHMENT_PATH_RE = re.compile(
     r"/[^\s\"'\\<>,)\]]*/(agent-tools|terminals)/[^\s\"'\\<>,)\]/]+"
 )
 
@@ -297,7 +297,7 @@ class CursorSource:
         first = next((m["text"] for m in messages if m["role"] == "user" and m["text"].strip()), "")
         return truncate(first) if first else "(empty session)", len(messages)
 
-    def sidecars(self, session: Session, raw_text: str) -> SidecarSet:
+    def attachments(self, session: Session, raw_text: str) -> AttachmentSet:
         """Resolve the terminal and tool-output files this session read back.
 
         Both folders are shared by every session in a project, so only files
@@ -306,9 +306,9 @@ class CursorSource:
         """
         project_dir = self._project_dir(Path(session.path))
         if project_dir is None:
-            return SidecarSet()
-        builder = SidecarBuilder(roots=[project_dir])
-        for match in _SIDE_FILE_RE.finditer(raw_text):
+            return AttachmentSet()
+        builder = AttachmentBuilder(roots=[project_dir])
+        for match in _ATTACHMENT_PATH_RE.finditer(raw_text):
             builder.add(match.group(0), match.group(1))
         return builder.build()
 

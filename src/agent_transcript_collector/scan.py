@@ -1,4 +1,4 @@
-"""Unified discovery of local projects, transcripts, subagents, and sidecars."""
+"""Unified discovery of local projects, transcripts, subagents, and attachments."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 
-from .sidecars import SidecarSet
+from .attachments import AttachmentSet
 from .sources import SOURCES
-from .sources.base import Session, Source, session_sidecars
+from .sources.base import Session, Source, session_attachments
 
 SessionKey = tuple[str, str, str | None, str]
 ScanProgress = Callable[[int, int, Source, int], None]
@@ -17,7 +17,7 @@ ScanProgress = Callable[[int, int, Source, int], None]
 @dataclass(frozen=True)
 class TranscriptInputs:
     raw_bytes: bytes
-    sidecars: SidecarSet
+    attachments: AttachmentSet
 
     @property
     def text(self) -> str:
@@ -155,7 +155,7 @@ def load_transcript_inputs(source: Source, session: Session) -> TranscriptInputs
     text = raw_bytes.decode("utf-8", errors="replace")
     return TranscriptInputs(
         raw_bytes=raw_bytes,
-        sidecars=session_sidecars(source, session, text),
+        attachments=session_attachments(source, session, text),
     )
 
 
@@ -188,8 +188,12 @@ def _merge_projects(transcripts: list[Session]) -> list[Project]:
         project_info.setdefault(identity, (transcript.project_label, directory))
 
     projects = [
-        Project(identity, project_info[identity][0], project_info[identity][1],
-                tuple(items))
+        Project(
+            identity,
+            project_info[identity][0],
+            project_info[identity][1],
+            _link_project_children(items),
+        )
         for identity, items in merged.items()
     ]
     projects.sort(
@@ -200,3 +204,18 @@ def _merge_projects(transcripts: list[Session]) -> list[Project]:
         )
     )
     return projects
+
+
+def _link_project_children(transcripts: list[Session]) -> tuple[Session, ...]:
+    """Record direct child IDs on each discovered parent transcript."""
+    children: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for transcript in transcripts:
+        if transcript.parent:
+            children[(transcript.source, transcript.parent)].append(transcript.id)
+    return tuple(
+        replace(
+            transcript,
+            child_ids=tuple(sorted(children.get((transcript.source, transcript.id), []))),
+        )
+        for transcript in transcripts
+    )

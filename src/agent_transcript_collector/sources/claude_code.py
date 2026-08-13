@@ -6,7 +6,7 @@ Format: JSONL; entries have type "user"/"assistant" and a `message.content`
         that is either a string or a list of content blocks.
 
 Oversized tool results and background-task output are written outside the
-transcript, which keeps only a pointer to them; see `sidecars` below.
+transcript, which keeps only a pointer to them; see `attachments` below.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from ..sidecars import SidecarBuilder, SidecarSet
+from ..attachments import AttachmentBuilder, AttachmentSet
 from .base import (
     Session,
     canonical_project_directory,
@@ -30,7 +30,7 @@ from .base import (
 _PATH_DELIMITERS = frozenset(" \t\r\n\"'\\<>,)]")
 
 
-def _sidecar_pointers(raw_text: str, marker: str, suffix: str = "") -> list[str]:
+def _attachment_pointers(raw_text: str, marker: str, suffix: str = "") -> list[str]:
     """Extract path tokens around a literal marker in one linear pass.
 
     The previous leading-wildcard regex backtracked across every slash in a
@@ -178,17 +178,17 @@ class ClaudeCodeSource:
                     first = truncate(text)
         return cwd, first or "(empty session)", count
 
-    def sidecars(self, session: Session, raw_text: str) -> SidecarSet:
+    def attachments(self, session: Session, raw_text: str) -> AttachmentSet:
         """Resolve the oversized tool results and task output this session saw.
 
         Pointers are followed rather than the session folder simply being
         listed, because a resumed session inherits the earlier session's
         folder and keeps pointing back at it.
         """
-        builder = SidecarBuilder(roots=[_projects_dir(), *_task_output_roots()])
-        for pointer in _sidecar_pointers(raw_text, "/tool-results/"):
+        builder = AttachmentBuilder(roots=[_projects_dir(), *_task_output_roots()])
+        for pointer in _attachment_pointers(raw_text, "/tool-results/"):
             builder.add(pointer, "tool-results")
-        for pointer in _sidecar_pointers(raw_text, "/tasks/", ".output"):
+        for pointer in _attachment_pointers(raw_text, "/tasks/", ".output"):
             builder.add(pointer, "task-outputs")
         if not session.is_subagent:
             # A session's own folder also holds output its subagents asked for,

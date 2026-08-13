@@ -11,10 +11,18 @@ from typing import IO, Any, Protocol, TypeAlias
 
 from .paths import upload_lock_path
 from .prepare_archive import (
-    TRANSCRIPT_FORMAT_VERSION,
+    MANIFEST_VERSION,
     ArchiveArtifact,
 )
+from .redactor import REDACTION_VERSION
+from .s3client import S3_BUCKET
 from .transcript_snapshot import SOURCE_HASH_VERSION
+from .upload_status import (
+    MANIFEST_VERSION_METADATA,
+    REDACTION_VERSION_METADATA,
+    SOURCE_HASH_METADATA,
+    SOURCE_HASH_VERSION_METADATA,
+)
 
 UploadResult: TypeAlias = dict[str, Any]
 UploadError: TypeAlias = dict[str, str]
@@ -24,14 +32,10 @@ class S3UploadClient(Protocol):
     """Small part of the S3 client needed to upload an archive."""
 
     def put_object(self, **kwargs: Any) -> dict[str, Any]: ...
-from .redactor import REDACTION_VERSION
-from .s3client import S3_BUCKET
-from .upload_status import (
-    FORMAT_VERSION_METADATA,
-    REDACTION_VERSION_METADATA,
-    SOURCE_HASH_METADATA,
-    SOURCE_HASH_VERSION_METADATA,
-)
+
+MTS_TRANSCRIPT_ID_METADATA = "mts-transcript-id"
+MTS_PARENT_ID_METADATA = "mts-parent-id"
+MTS_SOURCE_METADATA = "mts-source"
 
 
 def upload_concurrency() -> int:
@@ -101,23 +105,30 @@ def upload_artifacts(
     errors = []
 
     def upload_one(artifact: ArchiveArtifact) -> UploadResult:
+        metadata = {
+            MANIFEST_VERSION_METADATA: str(MANIFEST_VERSION),
+            MTS_TRANSCRIPT_ID_METADATA: artifact["transcript_id"],
+            MTS_SOURCE_METADATA: artifact["source"],
+            SOURCE_HASH_METADATA: artifact["source_hash"],
+            SOURCE_HASH_VERSION_METADATA: str(SOURCE_HASH_VERSION),
+            REDACTION_VERSION_METADATA: str(REDACTION_VERSION),
+        }
+        if artifact["parent_transcript_id"]:
+            metadata[MTS_PARENT_ID_METADATA] = artifact[
+                "parent_transcript_id"
+            ]
         s3.put_object(
             Bucket=S3_BUCKET,
             Key=artifact["key"],
             Body=Path(artifact["path"]).read_bytes(),
             ContentType="application/zip",
-            Metadata={
-                SOURCE_HASH_METADATA: artifact["source_hash"],
-                SOURCE_HASH_VERSION_METADATA: str(SOURCE_HASH_VERSION),
-                REDACTION_VERSION_METADATA: str(REDACTION_VERSION),
-                FORMAT_VERSION_METADATA: str(TRANSCRIPT_FORMAT_VERSION),
-            },
+            Metadata=metadata,
         )
         return {
             key: artifact[key]
             for key in (
                 "source", "project", "session", "parent", "zip_size_bytes",
-                "redactions", "sidecar_count",
+                "redactions", "attachment_count",
             )
         } | {"s3_key": artifact["key"], "transcript_count": 1}
 

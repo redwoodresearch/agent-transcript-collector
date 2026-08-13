@@ -12,7 +12,7 @@ from typing import Any, Protocol, TypeAlias, cast
 from botocore.exceptions import ClientError
 
 from .cache import get_cache, reusable_status, save_cache, store_status
-from .prepare_archive import TRANSCRIPT_FORMAT_VERSION
+from .prepare_archive import MANIFEST_VERSION
 from .redactor import REDACTION_VERSION
 from .s3client import S3_BUCKET, make_s3_client
 from .transcript import (
@@ -40,7 +40,7 @@ class S3HeadClient(Protocol):
 SOURCE_HASH_METADATA = "source-hash"
 SOURCE_HASH_VERSION_METADATA = "source-hash-version"
 REDACTION_VERSION_METADATA = "redaction-version"
-FORMAT_VERSION_METADATA = "transcript-format-version"
+MANIFEST_VERSION_METADATA = "mts-manifest-version"
 
 # Read-only compatibility with uploads written before hashes were renamed.
 LEGACY_SOURCE_HASH_METADATA = "content-fingerprint"
@@ -212,7 +212,7 @@ def upload_is_current(
     if (
         hash_version != str(SOURCE_HASH_VERSION)
         or metadata.get(REDACTION_VERSION_METADATA) != str(REDACTION_VERSION)
-        or metadata.get(FORMAT_VERSION_METADATA) != str(TRANSCRIPT_FORMAT_VERSION)
+        or metadata.get(MANIFEST_VERSION_METADATA) != str(MANIFEST_VERSION)
     ):
         return False
     return metadata.get(
