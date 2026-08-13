@@ -3,6 +3,28 @@
 Review, redact, and upload transcripts from Claude Code, Codex, Cursor, and Pi.
 Uploads go to `s3://rr-agent-transcripts/mts-trans/` in `us-east-1`.
 
+## What is collected
+
+Only sources found on the local machine appear in the UI.
+
+| Source | Default location | Files |
+|---|---|---|
+| Claude Code | `~/.claude/projects/` | `<encoded-cwd>/<uuid>.jsonl` |
+| Codex | `~/.codex/sessions/` | `YYYY/MM/DD/rollout-*.jsonl` |
+| Cursor | `~/.cursor/projects/` | `<project>/agent-transcripts/**/*.jsonl` and legacy `.txt` files |
+| Pi | `~/.pi/agent/sessions/` | project session JSONL files and subagent `session.jsonl` files |
+
+Codex review, compaction, memory-maintenance, and other internal sessions are
+excluded. Cursor transcript files do not contain tool output unless Cursor
+stored it in a referenced external file.
+
+Claude Code and Cursor sometimes store agent-visible tool output outside the
+transcript. The collector includes such a file only when the transcript points
+to it (or, for a Claude parent session, when it is in that session's own tool
+result directory) and the resolved file stays inside a source-owned directory.
+Missing files and files beyond the 100 MiB per-session sidecar budget are listed
+in the manifest but not uploaded.
+
 ## Bucket layout
 
 Each session is stored as one stable ZIP. Uploading a changed session overwrites
@@ -195,28 +217,6 @@ state, and logs. `--purge` also removes the configuration and state.
 a folder, `v` to view a selected transcript's ATIF in Vim, and `q` to quit. The
 viewer downloads the ATIF to a private temporary directory and removes it after
 Vim exits.
-
-## What is collected
-
-Only sources found on the local machine appear in the UI.
-
-| Source | Default location | Files |
-|---|---|---|
-| Claude Code | `~/.claude/projects/` | `<encoded-cwd>/<uuid>.jsonl` |
-| Codex | `~/.codex/sessions/` | `YYYY/MM/DD/rollout-*.jsonl` |
-| Cursor | `~/.cursor/projects/` | `<project>/agent-transcripts/**/*.jsonl` and legacy `.txt` files |
-| Pi | `~/.pi/agent/sessions/` | project session JSONL files and subagent `session.jsonl` files |
-
-Codex review, compaction, memory-maintenance, and other internal sessions are
-excluded. Cursor transcript files do not contain tool output unless Cursor
-stored it in a referenced external file.
-
-Claude Code and Cursor sometimes store agent-visible tool output outside the
-transcript. The collector includes such a file only when the transcript points
-to it (or, for a Claude parent session, when it is in that session's own tool
-result directory) and the resolved file stays inside a source-owned directory.
-Missing files and files beyond the 100 MiB per-session sidecar budget are listed
-in the manifest but not uploaded.
 
 ## Redaction and privacy
 
