@@ -1,4 +1,4 @@
-"""Turn one local transcript and its sidecars into a redacted ZIP archive."""
+"""Turn one local transcript and its attachments into a redacted ZIP archive."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ class ArchiveArtifact(TypedDict):
     path: str
     key: str
     source_hash: str
-    sidecar_count: int
+    attachment_count: int
     redactions: int
     zip_size_bytes: int
     filesystem_snapshot: list[FilesystemSnapshotEntry]
@@ -52,16 +52,16 @@ def _redact(text: str) -> tuple[str, int]:
     return text, redaction_count + identity_count
 
 
-def _redacted_sidecars(
+def _redacted_attachments(
     snapshot: TranscriptSnapshot,
 ) -> tuple[list[tuple[str, str]], int]:
     contents: list[tuple[str, str]] = []
     redaction_count = 0
-    for sidecar in snapshot.sidecars.files:
-        text = sidecar.path.read_text(encoding="utf-8", errors="replace")
+    for attachment in snapshot.attachments.files:
+        text = attachment.path.read_text(encoding="utf-8", errors="replace")
         text, count = _redact(text)
         redaction_count += count
-        contents.append((sidecar.arcname, text))
+        contents.append((attachment.arcname, text))
     return contents, redaction_count
 
 
@@ -72,7 +72,7 @@ def _archive_bytes(
     transcript, redaction_count = _redact(
         snapshot.raw_bytes.decode("utf-8", errors="replace")
     )
-    sidecar_contents, count = _redacted_sidecars(snapshot)
+    attachment_contents, count = _redacted_attachments(snapshot)
     redaction_count += count
     project_label, count = redact_identity(session.project_label)
     redaction_count += count
@@ -117,7 +117,7 @@ def _archive_bytes(
         archive.writestr("manifest.json", json.dumps(manifest, indent=2))
         if atif is not None:
             archive.writestr(ATIF_FILENAME, atif)
-        for arcname, text in sidecar_contents:
+        for arcname, text in attachment_contents:
             archive.writestr(arcname, text)
     return buffer.getvalue(), manifest
 
@@ -172,7 +172,7 @@ def prepare_archive(
         "path": temporary,
         "key": snapshot.key,
         "source_hash": snapshot.source_hash,
-        "sidecar_count": len(snapshot.sidecars.files),
+        "attachment_count": len(snapshot.attachments.files),
         "redactions": manifest["redaction"]["count"],
         "zip_size_bytes": len(archive),
         "filesystem_snapshot": filesystem_snapshot(snapshot),

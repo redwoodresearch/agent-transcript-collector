@@ -128,7 +128,7 @@ def upload_artifacts(
             key: artifact[key]
             for key in (
                 "source", "project", "session", "parent", "zip_size_bytes",
-                "redactions", "sidecar_count",
+                "redactions", "attachment_count",
             )
         } | {"s3_key": artifact["key"], "transcript_count": 1}
 

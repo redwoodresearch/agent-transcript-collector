@@ -5,7 +5,7 @@ behind ("Output too large. Full output saved to: <path>"), so a transcript on
 its own records that the agent saw something without recording what. Each
 source knows its own pointer syntax and folders; this module holds the rules
 they share: a pointer is followed only when it lands on a real file inside a
-directory that harness owns, and one session's side files are capped in total
+directory that harness owns, and one session's attachments are capped in total
 size.
 """
 
@@ -21,8 +21,8 @@ DEFAULT_BUDGET_BYTES = 100 * 1024 * 1024
 
 
 def budget_bytes() -> int:
-    """Total side-file bytes allowed per session before the rest are dropped."""
-    override = os.environ.get("CTC_SIDECAR_MAX_BYTES", "").strip()
+    """Total attachment bytes allowed per session before the rest are dropped."""
+    override = os.environ.get("CTC_ATTACHMENT_MAX_BYTES", "").strip()
     if not override:
         return DEFAULT_BUDGET_BYTES
     try:
@@ -32,7 +32,7 @@ def budget_bytes() -> int:
 
 
 @dataclass(frozen=True)
-class Sidecar:
+class Attachment:
     path: Path        # absolute path on this machine
     reference: str    # the path as the transcript writes it
     arcname: str      # path inside the uploaded ZIP
@@ -41,8 +41,8 @@ class Sidecar:
 
 
 @dataclass(frozen=True)
-class SidecarSet:
-    files: tuple[Sidecar, ...] = ()
+class AttachmentSet:
+    files: tuple[Attachment, ...] = ()
     missing: tuple[str, ...] = ()    # pointers whose target is already gone
     skipped: tuple[str, ...] = ()    # dropped once the size budget ran out
     directories: tuple[Path, ...] = ()  # folders whose membership is collected
@@ -52,11 +52,11 @@ class SidecarSet:
         return sum(f.size_bytes for f in self.files)
 
 
-EMPTY = SidecarSet()
+EMPTY = AttachmentSet()
 
 
-class SidecarBuilder:
-    """Gather one session's side files, then freeze them into a `SidecarSet`."""
+class AttachmentBuilder:
+    """Gather one session's attachments, then freeze them into an `AttachmentSet`."""
 
     def __init__(self, roots: Sequence[Path], budget: int | None = None):
         self._roots = []
@@ -87,7 +87,7 @@ class SidecarBuilder:
             self._missing.add(pointer)
             return
         # Transcript text is untrusted, and a pointer that leaves its own
-        # harness folder through a symlink is not this session's side file:
+        # harness folder through a symlink is not this session's attachment:
         # Claude Code, for one, points a finished task at the subagent
         # transcript the collector already uploads on its own.
         if real.is_file() and real.is_relative_to(claimed):
@@ -103,8 +103,8 @@ class SidecarBuilder:
         for entry in entries:
             self.add(str(entry), kind)
 
-    def build(self) -> SidecarSet:
-        files: list[Sidecar] = []
+    def build(self) -> AttachmentSet:
+        files: list[Attachment] = []
         skipped: list[str] = []
         used: set[str] = set()
         spent = 0
@@ -119,10 +119,10 @@ class SidecarBuilder:
                 skipped.append(reference)
                 continue
             files.append(
-                Sidecar(path, reference, self._arcname(path, kind, used), kind, size)
+                Attachment(path, reference, self._arcname(path, kind, used), kind, size)
             )
             spent += size
-        return SidecarSet(
+        return AttachmentSet(
             tuple(files),
             tuple(sorted(self._missing)),
             tuple(skipped),

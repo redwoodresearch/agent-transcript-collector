@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from ..paths import project_identity_cache_path
-from ..sidecars import SidecarSet
+from ..attachments import AttachmentSet
 
 _CODEX_WORKTREE_RE = re.compile(
     r"(?P<root>.*?/\.?codex/worktrees/[^/]+/(?P<name>[^/]+))(?:/|$)"
@@ -277,16 +277,16 @@ class Source(Protocol):
 
 
 @runtime_checkable
-class SidecarSource(Protocol):
+class AttachmentSource(Protocol):
     """A source whose transcripts point at agent-visible files stored elsewhere."""
 
-    def sidecars(self, session: Session, raw_text: str) -> SidecarSet:
-        """Resolve the side files an unredacted transcript points at."""
+    def attachments(self, session: Session, raw_text: str) -> AttachmentSet:
+        """Resolve the attachments an unredacted transcript points at."""
         ...
 
 
-def session_sidecars(source, session: Session, raw_text: str) -> SidecarSet:
-    """Return a source's side files, or none for harnesses that have no such files."""
-    if isinstance(source, SidecarSource):
-        return source.sidecars(session, raw_text)
-    return SidecarSet()
+def session_attachments(source, session: Session, raw_text: str) -> AttachmentSet:
+    """Return a source's attachments, or none when it has no external files."""
+    if isinstance(source, AttachmentSource):
+        return source.attachments(session, raw_text)
+    return AttachmentSet()

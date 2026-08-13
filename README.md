@@ -63,7 +63,7 @@ In the review UI:
 
 The watcher runs immediately and then once an hour. It uploads new transcripts
 and replaces an existing transcript ZIP when the local transcript or its
-sidecars have changed. Unchanged transcripts are skipped.
+attachments have changed. Unchanged transcripts are skipped.
 
 The watcher cannot open an interactive AWS login. If its status reports expired
 credentials, run `aws sso login --profile <profile>` yourself. `uv` must remain
@@ -115,8 +115,8 @@ Claude Code and Cursor sometimes store agent-visible tool output outside the
 transcript. The collector includes such a file only when the transcript points
 to it (or, for a Claude parent session, when it is in that session's own tool
 result directory) and the resolved file stays inside a source-owned directory.
-Missing files and files beyond the 100 MiB per-session sidecar budget are listed
-in the manifest but not uploaded.
+Missing files and files beyond the 100 MiB per-session attachment budget are
+omitted from the ZIP and reported in the local preview.
 
 ## Bucket layout
 
@@ -134,7 +134,7 @@ transcript ID segments are made S3-safe; project labels preserve their readable
 names with path separators percent-encoded.
 
 Each ZIP contains the redacted native transcript, a manifest, an optional ATIF
-trajectory, and any collected sidecars:
+trajectory, and any collected attachments:
 
 ```text
 transcript.zip
@@ -152,8 +152,8 @@ transcript.zip
 | Pi | `pi` | `transcript.jsonl` | `pi-session-jsonl-v3` | Unsupported |
 
 The native transcript is the canonical artifact. ATIF conversion is
-best-effort: a failed conversion is recorded in the manifest and does not block
-the upload. Parent and subagent ZIPs remain separate peer objects. Their
+best-effort: a failed conversion leaves the ATIF absent and does not block the
+upload. Parent and subagent ZIPs remain separate peer objects. Their
 relationship is stored in the manifest and S3 metadata rather than the object
 hierarchy. A child ATIF records its parent transcript ID in
 `extra.agent_transcript_collector.parent_transcript_id`.
@@ -188,7 +188,7 @@ listing the ZIP. Version 1 has this structure:
 `parent_id` is present only for a subagent. The fixed archive names identify the
 native transcript and optional ATIF; all other files are attachments. Their
 paths, sizes, and ZIP checksums are available from the ZIP directory and are not
-repeated in the manifest. Missing or size-limited sidecars are not recorded in
+repeated in the manifest. Missing or size-limited attachments are not recorded in
 the portable archive manifest.
 
 S3 object metadata contains:
@@ -199,7 +199,7 @@ S3 object metadata contains:
 | `mts-transcript-id` | Stable `<source>--<native-id>` transcript identity. |
 | `mts-parent-id` | Parent identity for a subagent; omitted otherwise. |
 | `mts-source` | Source adapter ID. |
-| `source-hash` | Hash of the original transcript and included sidecars. |
+| `source-hash` | Hash of the original transcript and included attachments. |
 | `source-hash-version` | Version of the source-hash algorithm. |
 | `redaction-version` | Version of the local redaction policy. |
 
@@ -247,14 +247,14 @@ Profile selection uses the first value set in this order:
 | `CTC_ARCHIVE_CONCURRENCY` | `8` | Concurrent redaction and archive jobs |
 | `CTC_UPLOAD_CONCURRENCY` | `8` | Concurrent S3 uploads |
 | `CTC_METADATA_CONCURRENCY` | `20` | Concurrent S3 metadata requests |
-| `CTC_SIDECAR_MAX_BYTES` | `104857600` | Sidecar budget for a foreground `rr-trans ui` process |
+| `CTC_ATTACHMENT_MAX_BYTES` | `104857600` | Attachment budget for a foreground `rr-trans ui` process |
 | `PORT` | `8899` | Starting port for `rr-trans ui` |
 
 Source paths, profile selection, concurrency settings, and the username stoplist
 are captured when background services are installed or enabled. Reinstall the UI
 service or watcher after changing them. The background UI always listens on
 `127.0.0.1:8123`; `PORT` only affects the foreground command. The installed
-services currently use the default sidecar budget.
+services currently use the default attachment budget.
 
 ### Local files
 

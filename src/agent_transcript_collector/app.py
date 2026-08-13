@@ -213,8 +213,8 @@ def preview_session(source: str, project: str, session: str, parent: str = "",
             {"error": "Session file is no longer available; try Refresh"},
             status_code=404,
         )
-    # Resolve side files before redaction rewrites their referenced paths.
-    sidecars = inputs.sidecars
+    # Resolve attachments before redaction rewrites their referenced paths.
+    attachments = inputs.attachments
     parsed = src.parse_messages(inputs.text)
     offset = max(0, offset)
     limit = max(1, min(limit, 100))
@@ -238,15 +238,15 @@ def preview_session(source: str, project: str, session: str, parent: str = "",
         "total_messages": len(parsed),
         "next_offset": offset + len(messages),
         "has_more": offset + len(messages) < len(parsed),
-        "sidecars": [
+        "attachments": [
             {
-                "name": sidecar.arcname,
-                "kind": sidecar.kind,
-                "size_human": human_size(sidecar.size_bytes),
+                "name": attachment.arcname,
+                "kind": attachment.kind,
+                "size_human": human_size(attachment.size_bytes),
             }
-            for sidecar in sidecars.files
+            for attachment in attachments.files
         ],
-        "sidecars_missing": len(sidecars.missing),
+        "attachments_missing": len(attachments.missing),
     }
 
 
