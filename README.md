@@ -65,6 +65,11 @@ The watcher runs immediately and then once an hour. It uploads new sessions and
 replaces an existing session ZIP when the local transcript or its sidecars have
 changed. Unchanged sessions are skipped.
 
+Each check also refreshes the watcher from the supported release branch. When
+that branch advances to a new Git revision, the watcher updates the installed
+`rr-trans` CLI. An update failure is recorded in watcher state but does not stop
+the transcript upload.
+
 The watcher cannot open an interactive AWS login. If its status reports expired
 credentials, run `aws sso login --profile <profile>` yourself. `uv` must remain
 at the path recorded when the watcher was enabled.
