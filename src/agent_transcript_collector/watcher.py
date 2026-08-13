@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import json
 import os
 import plistlib
@@ -32,6 +33,7 @@ from .uploader import (
 )
 
 PACKAGE_SPEC = "git+https://github.com/redwoodresearch/agent-transcript-collector@main"
+PACKAGE_NAME = "agent-transcript-collector"
 LAUNCHD_LABEL = "com.redwoodresearch.agent-transcript-collector"
 SYSTEMD_NAME = "agent-transcript-collector"
 WATCH_INTERVAL_SECONDS = 60 * 60
@@ -270,6 +272,7 @@ def run_once(
     s3: Any | None = None,
     state_path: Path | None = None,
     lock_path: Path | None = None,
+    run_command=subprocess.run,
 ) -> dict:
     """Run the shared pipeline and upload its ready artifacts."""
     previous_state = load_state(state_path)
@@ -281,6 +284,17 @@ def run_once(
         "sessions_uploaded": 0,
         "errors": [],
     }
+    previous_revision = previous_state.get("cli_revision")
+    cli_update = update_cli(
+        config,
+        previous_revision=previous_revision,
+        run_command=run_command,
+    )
+    result["cli_update"] = cli_update
+    if cli_update.get("revision"):
+        result["cli_revision"] = cli_update["revision"]
+    elif previous_revision:
+        result["cli_revision"] = previous_revision
     old_profile = os.environ.get("CTC_AWS_PROFILE")
     old_source_env = {name: os.environ.get(name) for name in config.source_env}
     os.environ["CTC_AWS_PROFILE"] = config.aws_profile
@@ -357,6 +371,63 @@ def _find_uv() -> str:
     if not uv:
         raise RuntimeError("uv is required to install the automatic watcher")
     return uv
+
+
+def _running_revision() -> str:
+    """Return the Git revision backing the currently running package."""
+    try:
+        direct_url = importlib.metadata.distribution(PACKAGE_NAME).read_text(
+            "direct_url.json"
+        )
+        data = json.loads(direct_url or "{}")
+        return str(data.get("vcs_info", {}).get("commit_id", ""))
+    except (
+        AttributeError,
+        importlib.metadata.PackageNotFoundError,
+        json.JSONDecodeError,
+        OSError,
+    ):
+        return ""
+
+
+def update_cli(
+    config: WatcherConfig,
+    *,
+    previous_revision: str | None,
+    run_command=subprocess.run,
+) -> dict:
+    """Install the refreshed watcher package when it advances to a new commit."""
+    revision = _running_revision()
+    if not revision:
+        return {
+            "status": "skipped",
+            "reason": "The running package does not expose a Git revision",
+        }
+    if revision == previous_revision:
+        return {"status": "current", "revision": revision}
+
+    try:
+        uv = config.uv_path or _find_uv()
+        completed = run_command(
+            [uv, "tool", "install", "--force", "--refresh", config.package_spec],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        return {
+            "status": "failed",
+            "revision": previous_revision or "",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    if completed.returncode:
+        detail = (completed.stderr or completed.stdout).strip()
+        return {
+            "status": "failed",
+            "revision": previous_revision or "",
+            "error": detail or f"uv tool install exited with {completed.returncode}",
+        }
+    return {"status": "updated", "revision": revision}
 
 
 def watcher_command(config: WatcherConfig, config_path: Path) -> list[str]:
