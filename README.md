@@ -161,11 +161,11 @@ hierarchy. A child ATIF records its parent transcript ID in
 ### `manifest.json`
 
 The manifest deliberately contains only information that cannot be learned by
-listing the ZIP. Version 1 has this structure:
+listing the ZIP. Version 7 has this structure:
 
 ```json
 {
-  "manifest_version": 1,
+  "manifest_version": 7,
   "id": "claude_code--child-id",
   "format": "claude-jsonl",
   "source": {

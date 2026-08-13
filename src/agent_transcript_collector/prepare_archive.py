@@ -25,7 +25,7 @@ from .transcript_snapshot import (
     snapshot_transcript,
 )
 
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 7
 
 
 class ArchiveArtifact(TypedDict):
