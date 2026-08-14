@@ -132,13 +132,14 @@ overwrites that object; it does not create a dated copy. Main and subagent
 transcripts are peers in the same flat project directory.
 
 ```text
-s3://rr-agent-transcripts/mts-trans/<contributor>/<project>/<source>--<native-id>.zip
+s3://rr-agent-transcripts/mts-trans/<contributor>/<project>/<transcript-id>.zip
 ```
 
-The `source` values are listed below. Including the source in the transcript ID
-prevents native IDs from different harnesses from colliding. Contributor and
-transcript ID segments are made S3-safe; project labels preserve their readable
-names with path separators percent-encoded.
+Main transcript IDs are `<source>--<native-id>`. Subagent IDs are
+`<source>--<parent-native-id>--<native-id>` because some harnesses reuse child
+IDs under different parents or between main and child transcripts. Contributor
+and transcript ID segments are made S3-safe; project labels preserve their
+readable names with path separators percent-encoded.
 
 Each ZIP contains the redacted native transcript, a manifest, an optional ATIF
 trajectory, and any collected attachments:
@@ -181,7 +182,7 @@ listing the ZIP. Version 7 has this structure:
 ```json
 {
   "manifest_version": 7,
-  "id": "claude_code--child-id",
+  "id": "claude_code--parent-id--child-id",
   "format": "claude-jsonl",
   "source": {
     "type": "claude_code",
@@ -211,7 +212,7 @@ S3 object metadata contains:
 | Field | Meaning |
 |---|---|
 | `mts-manifest-version` | Version of `manifest.json`. |
-| `mts-transcript-id` | Stable `<source>--<native-id>` transcript identity. |
+| `mts-transcript-id` | Stable source ID; parent-scoped for subagents. |
 | `mts-parent-id` | Parent identity for a subagent; omitted otherwise. |
 | `mts-source` | Source adapter ID. |
 | `source-hash` | Hash of the original transcript and included attachments. |

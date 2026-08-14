@@ -12,7 +12,7 @@ from .attachments import EMPTY as NO_ATTACHMENTS
 from .attachments import AttachmentSet
 from .sources.base import Session, Source
 
-SOURCE_HASH_VERSION = 5
+SOURCE_HASH_VERSION = 6
 
 
 class FilesystemSnapshotEntry(TypedDict, total=False):
@@ -38,6 +38,8 @@ def source_hash(
     raw_bytes: bytes,
     attachments: AttachmentSet,
     child_ids: tuple[str, ...] = (),
+    *,
+    child_refs: tuple[tuple[str, str | None], ...] = (),
 ) -> str:
     """Identify transcript, attachments, and derived subagent links."""
     digest = hashlib.sha256(f"source-v{SOURCE_HASH_VERSION}\0".encode())
@@ -50,11 +52,15 @@ def source_hash(
             digest.update(attachment.arcname.encode() + b"\0")
             digest.update(hashlib.sha256(raw).digest())
             digest.update(b"\0")
-    if child_ids:
+    links = child_refs or tuple((child_id, None) for child_id in child_ids)
+    if links:
         content_digest = digest.hexdigest()
-        digest = hashlib.sha256(f"subagent-links-v1\0{content_digest}".encode())
-        for child_id in sorted(set(child_ids)):
+        digest = hashlib.sha256(f"subagent-links-v2\0{content_digest}".encode())
+        for child_id, spawn_ref in sorted(
+            set(links), key=lambda item: (item[0], item[1] or "")
+        ):
             digest.update(child_id.encode() + b"\0")
+            digest.update((spawn_ref or "").encode() + b"\0")
     return digest.hexdigest()
 
 
@@ -112,6 +118,7 @@ def snapshot_transcript(
                 inputs.raw_bytes,
                 inputs.attachments,
                 session.child_ids,
+                child_refs=session.child_refs,
             )
         except OSError:
             continue

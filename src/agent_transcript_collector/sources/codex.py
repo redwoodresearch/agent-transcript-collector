@@ -137,6 +137,20 @@ def _parent_thread_id(first_obj: dict, source) -> str | None:
     return pid if isinstance(pid, str) else None
 
 
+def _agent_path(source) -> str | None:
+    """Return the task path shared by a spawn result and its child session."""
+    if not isinstance(source, dict):
+        return None
+    subagent = source.get("subagent")
+    if not isinstance(subagent, dict):
+        return None
+    thread_spawn = subagent.get("thread_spawn")
+    if not isinstance(thread_spawn, dict):
+        return None
+    value = thread_spawn.get("agent_path")
+    return value if isinstance(value, str) and value else None
+
+
 class CodexSource:
     id = "codex"
     label = "Codex"
@@ -171,6 +185,7 @@ class CodexSource:
                     if kind == "task" and first_obj is not None
                     else None
                 ),
+                spawn_ref=_agent_path(source) if kind == "task" else None,
                 first_message=first,
                 message_count=count,
                 modified=mtime(f),

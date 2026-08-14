@@ -231,7 +231,7 @@ def decode_existing_project_path(encoded: str) -> str | None:
 @dataclass
 class Session:
     source: str          # source id, e.g. "claude_code"
-    id: str              # session id, unique within (source, project)
+    id: str              # source-native session id; subagent IDs may be parent-scoped
     project_id: str      # canonical identity assigned by scan.py
     project_label: str   # human-readable project label
     project_directory: str | None
@@ -242,7 +242,9 @@ class Session:
     modified: datetime | None = None
     is_subagent: bool = False      # spawned task subagent, not a top-level session
     parent: str | None = None      # parent session id, when is_subagent
+    spawn_ref: str | None = None   # source-native name used by the spawn action
     child_ids: tuple[str, ...] = ()  # discovered direct children, for ATIF links
+    child_refs: tuple[tuple[str, str | None], ...] = ()
 
     @property
     def size_human(self) -> str:

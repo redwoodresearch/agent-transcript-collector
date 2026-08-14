@@ -207,15 +207,29 @@ def _merge_projects(transcripts: list[Session]) -> list[Project]:
 
 
 def _link_project_children(transcripts: list[Session]) -> tuple[Session, ...]:
-    """Record direct child IDs on each discovered parent transcript."""
-    children: dict[tuple[str, str], list[str]] = defaultdict(list)
+    """Record direct child IDs and source-native spawn names on each parent."""
+    children: dict[tuple[str, str], list[tuple[str, str | None]]] = defaultdict(list)
     for transcript in transcripts:
         if transcript.parent:
-            children[(transcript.source, transcript.parent)].append(transcript.id)
+            children[(transcript.source, transcript.parent)].append(
+                (transcript.id, transcript.spawn_ref)
+            )
     return tuple(
         replace(
             transcript,
-            child_ids=tuple(sorted(children.get((transcript.source, transcript.id), []))),
+            child_ids=tuple(
+                child_id
+                for child_id, _spawn_ref in sorted(
+                    children.get((transcript.source, transcript.id), []),
+                    key=lambda item: (item[0], item[1] or ""),
+                )
+            ),
+            child_refs=tuple(
+                sorted(
+                    children.get((transcript.source, transcript.id), []),
+                    key=lambda item: (item[0], item[1] or ""),
+                )
+            ),
         )
         for transcript in transcripts
     )

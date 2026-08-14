@@ -81,7 +81,7 @@ def _archive_bytes(
     if suffix not in {".jsonl", ".txt"}:
         suffix = ".txt"
     transcript_name = f"transcript{suffix}"
-    identity = transcript_id(source.id, session.id)
+    identity = transcript_id(source.id, session.id, session.parent)
     parent_identity = (
         transcript_id(source.id, session.parent) if session.parent else None
     )
@@ -93,11 +93,21 @@ def _archive_bytes(
         parent_identity,
         subagent_refs=[
             {
-                "trajectory_id": transcript_id(source.id, child_id),
+                "trajectory_id": transcript_id(source.id, child_id, session.id),
                 "session_id": child_id,
-                "trajectory_path": transcript_filename(source.id, child_id),
+                "trajectory_path": transcript_filename(
+                    source.id, child_id, session.id
+                ),
+                "match_ids": tuple(
+                    value
+                    for value in (child_id, spawn_ref)
+                    if value is not None
+                ),
             }
-            for child_id in session.child_ids
+            for child_id, spawn_ref in (
+                session.child_refs
+                or tuple((child_id, None) for child_id in session.child_ids)
+            )
         ],
     )
     manifest = {
@@ -150,7 +160,7 @@ def prepare_archive(
         raise RuntimeError("Transcript changed after Refresh; refresh and try again")
 
     archive, manifest = _archive_bytes(source, snapshot, contributor)
-    identity = transcript_id(source.id, session.id)
+    identity = transcript_id(source.id, session.id, session.parent)
     parent_identity = (
         transcript_id(source.id, session.parent) if session.parent else None
     )
