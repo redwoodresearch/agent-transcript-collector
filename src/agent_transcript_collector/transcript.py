@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
+from uuid import uuid4
 
 from .sources.base import Session, Source
 from .storage import transcript_key
@@ -24,6 +25,9 @@ class TranscriptRef:
     source: Source
     session: Session
     key: str
+    transcript_id: str
+    parent_transcript_id: str | None = None
+    child_transcript_ids: tuple[tuple[str, str], ...] = ()
 
     @property
     def identity(self) -> TranscriptIdentity:
@@ -56,11 +60,53 @@ class TranscriptStatus:
 
 
 def transcript_refs(
-    selections: TranscriptSelections, contributor: str
+    selections: TranscriptSelections,
+    contributor: str,
+    existing_records: Iterable[Mapping[str, object]] = (),
 ) -> list[TranscriptRef]:
-    """Attach stable S3 keys to selected local transcripts."""
-    return [
-        TranscriptRef(source, session, transcript_key(contributor, source.id, session))
-        for source, sessions in selections
-        for session in sessions
+    """Assign or reuse package IDs and attach their flat S3 keys."""
+    sessions = [
+        (source, session) for source, sessions in selections for session in sessions
     ]
+    transcript_ids = {
+        (
+            str(record.get("source") or ""),
+            str(record.get("project") or ""),
+            str(record.get("session") or ""),
+        ): transcript_id
+        for record in existing_records
+        if str(record.get("contributor") or "") == contributor
+        if (transcript_id := str(record.get("transcript_id") or ""))
+    }
+    for source, session in sessions:
+        transcript_ids.setdefault(
+            (source.id, session.project_id, session.id), str(uuid4())
+        )
+
+    refs = []
+    for source, session in sessions:
+        transcript_id = transcript_ids[
+            (source.id, session.project_id, session.id)
+        ]
+        parent_id = transcript_ids.get(
+            (source.id, session.project_id, session.parent or "")
+        )
+        child_ids = tuple(
+            (
+                child_id,
+                transcript_ids[(source.id, session.project_id, child_id)],
+            )
+            for child_id in session.child_ids
+            if (source.id, session.project_id, child_id) in transcript_ids
+        )
+        refs.append(
+            TranscriptRef(
+                source,
+                session,
+                transcript_key(contributor, session, transcript_id),
+                transcript_id,
+                parent_id,
+                child_ids,
+            )
+        )
+    return refs

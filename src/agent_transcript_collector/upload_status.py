@@ -64,8 +64,8 @@ def refresh_upload_status(
     cache_path: Path | None = None,
 ) -> dict[str, Any]:
     """Reuse valid cache entries and classify everything else against S3."""
-    refs = transcript_refs(selections, contributor)
     cache = get_cache(cache_path)
+    refs = transcript_refs(selections, contributor, cache["records"].values())
     cached: list[TranscriptStatus] = []
     unresolved: list[TranscriptRef] = []
     for ref in refs:

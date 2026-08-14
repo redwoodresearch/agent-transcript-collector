@@ -17,7 +17,7 @@ from .redactor import (
     redact_jsonl_content,
 )
 from .sources.base import Session, Source
-from .storage import transcript_filename, transcript_id
+from .storage import transcript_filename
 from .transcript_snapshot import (
     FilesystemSnapshotEntry,
     TranscriptSnapshot,
@@ -67,7 +67,12 @@ def _redacted_attachments(
 
 
 def _archive_bytes(
-    source: Source, snapshot: TranscriptSnapshot, contributor: str
+    source: Source,
+    snapshot: TranscriptSnapshot,
+    contributor: str,
+    transcript_id: str,
+    parent_transcript_id: str | None,
+    child_transcript_ids: tuple[tuple[str, str], ...],
 ) -> tuple[bytes, dict]:
     session = snapshot.session
     transcript, redaction_count = _redact(
@@ -81,28 +86,25 @@ def _archive_bytes(
     if suffix not in {".jsonl", ".txt"}:
         suffix = ".txt"
     transcript_name = f"transcript{suffix}"
-    identity = transcript_id(source.id, session.id)
-    parent_identity = (
-        transcript_id(source.id, session.parent) if session.parent else None
-    )
     atif, _atif_manifest = derive_atif(
         source.id,
         transcript,
         transcript_name,
-        identity,
-        parent_identity,
+        transcript_id,
+        parent_transcript_id,
         subagent_refs=[
             {
-                "trajectory_id": transcript_id(source.id, child_id),
-                "session_id": child_id,
-                "trajectory_path": transcript_filename(source.id, child_id),
+                "trajectory_id": child_transcript_id,
+                "session_id": child_transcript_id,
+                "trajectory_path": transcript_filename(child_transcript_id),
+                "match_id": child_id,
             }
-            for child_id in session.child_ids
+            for child_id, child_transcript_id in child_transcript_ids
         ],
     )
     manifest = {
         "manifest_version": MANIFEST_VERSION,
-        "id": identity,
+        "id": transcript_id,
         "format": source.source_format,
         "source": {
             "type": source.id,
@@ -118,8 +120,8 @@ def _archive_bytes(
             "count": redaction_count,
         },
     }
-    if parent_identity:
-        manifest["parent_id"] = parent_identity
+    if parent_transcript_id:
+        manifest["parent_id"] = parent_transcript_id
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
         archive.writestr(transcript_name, transcript)
@@ -135,6 +137,9 @@ def prepare_archive(
     source: Source,
     session: Session,
     key: str,
+    transcript_id: str,
+    parent_transcript_id: str | None,
+    child_transcript_ids: tuple[tuple[str, str], ...],
     contributor: str,
     directory: str | Path,
     *,
@@ -149,10 +154,13 @@ def prepare_archive(
     ):
         raise RuntimeError("Transcript changed after Refresh; refresh and try again")
 
-    archive, manifest = _archive_bytes(source, snapshot, contributor)
-    identity = transcript_id(source.id, session.id)
-    parent_identity = (
-        transcript_id(source.id, session.parent) if session.parent else None
+    archive, manifest = _archive_bytes(
+        source,
+        snapshot,
+        contributor,
+        transcript_id,
+        parent_transcript_id,
+        child_transcript_ids,
     )
     target_dir = Path(directory)
     target_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -176,8 +184,8 @@ def prepare_archive(
         "project": session.project_id,
         "session": session.id,
         "parent": session.parent,
-        "transcript_id": identity,
-        "parent_transcript_id": parent_identity,
+        "transcript_id": transcript_id,
+        "parent_transcript_id": parent_transcript_id,
         "child_ids": session.child_ids,
         "path": temporary,
         "key": snapshot.key,

@@ -47,7 +47,9 @@ def upload_candidates(
     cache = get_cache(cache_path)
     candidates: list[CacheRecord] = []
     stale: list[UploadItem] = []
-    for ref in transcript_refs(selections, contributor):
+    for ref in transcript_refs(
+        selections, contributor, cache["records"].values()
+    ):
         record = get_cache_for_transcript(
             cache, contributor, ref.source.id, ref.session
         )
@@ -68,10 +70,15 @@ def prepare_uploads(
     contributor: str,
     directory: str | Path,
     on_progress: PreparationCallback | None = None,
+    cache_path: Path | None = None,
 ) -> tuple[list[ArchiveArtifact], list[dict[str, str]]]:
     """Prepare selected cached candidates concurrently."""
+    cached_records = get_cache(cache_path)["records"].values()
     refs = {
-        ref.identity: ref for ref in transcript_refs(selections, contributor)
+        ref.identity: ref
+        for ref in transcript_refs(
+            selections, contributor, [*cached_records, *candidates]
+        )
     }
     work: list[tuple[TranscriptRef, CacheRecord]] = []
     errors: list[dict[str, str]] = []
@@ -136,6 +143,7 @@ def record_uploaded(
             format_version=MANIFEST_VERSION,
             filesystem_snapshot=artifact["filesystem_snapshot"],
             key=artifact["key"],
+            transcript_id=artifact["transcript_id"],
             child_ids=list(artifact["child_ids"]),
         )
         record.pop("error", None)
@@ -153,6 +161,9 @@ def _prepare_candidate(
         ref.source,
         ref.session,
         ref.key,
+        ref.transcript_id,
+        ref.parent_transcript_id,
+        ref.child_transcript_ids,
         contributor,
         directory,
         expected_hash=candidate.get("source_hash") if previously_hashed else None,

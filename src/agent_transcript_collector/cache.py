@@ -30,6 +30,7 @@ class CacheRecord(TypedDict, total=False):
     project: str
     parent: str | None
     session: str
+    transcript_id: str
     child_ids: list[str]
     filesystem_snapshot: list[FilesystemSnapshotEntry]
     source_hash_version: int
@@ -113,6 +114,7 @@ def store_status(
         "project": ref.session.project_id,
         "parent": ref.session.parent,
         "session": ref.session.id,
+        "transcript_id": ref.transcript_id,
         "key": ref.key,
         "state": status.state,
     }
@@ -138,6 +140,7 @@ def _record_matches(record: CacheRecord, ref: TranscriptRef) -> bool:
         and record.get("project") == ref.session.project_id
         and record.get("parent") == ref.session.parent
         and record.get("session") == ref.session.id
+        and record.get("transcript_id") == ref.transcript_id
         and record.get("child_ids") == list(ref.session.child_ids)
         and record.get("key") == ref.key
         and record.get("source_hash_version") == SOURCE_HASH_VERSION

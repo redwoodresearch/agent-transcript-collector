@@ -26,6 +26,7 @@ class ExternalSubagentRef(TypedDict):
     trajectory_id: str
     session_id: str
     trajectory_path: str
+    match_id: str
 
 
 _SUBAGENT_ID_FIELDS = frozenset({
@@ -129,7 +130,7 @@ def _enrich_subagent_references(
 
     aliases: dict[str, ExternalSubagentRef | None] = {}
     for reference in subagent_refs:
-        for alias in _reference_aliases(source_id, reference["session_id"]):
+        for alias in _reference_aliases(source_id, reference["match_id"]):
             if alias not in aliases:
                 aliases[alias] = reference
             elif aliases[alias] != reference:
@@ -165,7 +166,13 @@ def _enrich_subagent_references(
             for trajectory_id, reference in sorted(matched.items()):
                 if trajectory_id in existing_ids:
                     continue
-                references.append(SubagentTrajectoryRef(**reference))
+                references.append(
+                    SubagentTrajectoryRef(
+                        trajectory_id=reference["trajectory_id"],
+                        session_id=reference["session_id"],
+                        trajectory_path=reference["trajectory_path"],
+                    )
+                )
                 existing_ids.add(trajectory_id)
                 added += 1
             result.subagent_trajectory_ref = references

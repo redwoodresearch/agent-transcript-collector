@@ -132,13 +132,16 @@ overwrites that object; it does not create a dated copy. Main and subagent
 transcripts are peers in the same flat project directory.
 
 ```text
-s3://rr-agent-transcripts/mts-trans/<contributor>/<project>/<source>--<native-id>.zip
+s3://rr-agent-transcripts/mts-trans/<contributor>/<project>/<transcript-id>.zip
 ```
 
-The `source` values are listed below. Including the source in the transcript ID
-prevents native IDs from different harnesses from colliding. Contributor and
-transcript ID segments are made S3-safe; project labels preserve their readable
-names with path separators percent-encoded.
+`transcript-id` is a random UUID assigned during the first status refresh and
+retained in the existing local upload cache. The source's native ID remains in
+`manifest.json` as `source.id`; it is not used to construct the portable
+transcript ID. Contributor and transcript ID segments are made S3-safe; project
+labels preserve their readable names with path separators percent-encoded.
+Clearing the disposable upload cache causes a later upload to receive a new
+UUID.
 
 Each ZIP contains the redacted native transcript, a manifest, an optional ATIF
 trajectory, and any collected attachments:
@@ -181,7 +184,7 @@ listing the ZIP. Version 7 has this structure:
 ```json
 {
   "manifest_version": 7,
-  "id": "claude_code--child-id",
+  "id": "808c7d1e-f0c5-4d2f-8273-c803fb71c000",
   "format": "claude-jsonl",
   "source": {
     "type": "claude_code",
@@ -192,7 +195,7 @@ listing the ZIP. Version 7 has this structure:
     "contributor": "example-contributor",
     "name": "example-project"
   },
-  "parent_id": "claude_code--parent-id",
+  "parent_id": "1766f296-4332-465f-a53b-8bf43bf88972",
   "redaction": {
     "policy": "agent-transcript-collector/1",
     "count": 3
@@ -211,7 +214,7 @@ S3 object metadata contains:
 | Field | Meaning |
 |---|---|
 | `mts-manifest-version` | Version of `manifest.json`. |
-| `mts-transcript-id` | Stable `<source>--<native-id>` transcript identity. |
+| `mts-transcript-id` | Random UUID used by the ZIP name and manifest. |
 | `mts-parent-id` | Parent identity for a subagent; omitted otherwise. |
 | `mts-source` | Source adapter ID. |
 | `source-hash` | Hash of the original transcript and included attachments. |
