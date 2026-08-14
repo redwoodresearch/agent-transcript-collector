@@ -24,14 +24,19 @@ def _project_segment(session: Session) -> str:
     return value.replace("%", "%25").replace("/", "%2F").replace("\\", "%5C")
 
 
-def transcript_id(source_id: str, native_id: str) -> str:
-    """Return an MTS identity that is unique across source adapters."""
-    return f"{source_id}--{native_id}"
+def transcript_id(
+    source_id: str, native_id: str, parent_id: str | None = None
+) -> str:
+    """Return an MTS identity unique across sources and parent-scoped agents."""
+    parts = (source_id, parent_id, native_id) if parent_id else (source_id, native_id)
+    return "--".join(parts)
 
 
-def transcript_filename(source_id: str, native_id: str) -> str:
+def transcript_filename(
+    source_id: str, native_id: str, parent_id: str | None = None
+) -> str:
     """Return the portable sibling filename for one transcript archive."""
-    return f"{_safe_segment(transcript_id(source_id, native_id))}.zip"
+    return f"{_safe_segment(transcript_id(source_id, native_id, parent_id))}.zip"
 
 
 def transcript_prefix(contributor: str, session: Session) -> str:
@@ -44,4 +49,4 @@ def transcript_prefix(contributor: str, session: Session) -> str:
 
 def transcript_key(contributor: str, source_id: str, session: Session) -> str:
     prefix = transcript_prefix(contributor, session)
-    return f"{prefix}{transcript_filename(source_id, session.id)}"
+    return f"{prefix}{transcript_filename(source_id, session.id, session.parent)}"
