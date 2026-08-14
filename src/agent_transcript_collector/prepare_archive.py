@@ -98,8 +98,16 @@ def _archive_bytes(
                 "trajectory_path": transcript_filename(
                     source.id, child_id, session.id
                 ),
+                "match_ids": tuple(
+                    value
+                    for value in (child_id, spawn_ref)
+                    if value is not None
+                ),
             }
-            for child_id in session.child_ids
+            for child_id, spawn_ref in (
+                session.child_refs
+                or tuple((child_id, None) for child_id in session.child_ids)
+            )
         ],
     )
     manifest = {
