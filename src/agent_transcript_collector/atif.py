@@ -276,6 +276,7 @@ def convert_redacted_transcript(
     parent_session_id: str | None = None,
     *,
     subagent_refs: Iterable[ExternalSubagentRef] = (),
+    launch_kind_label: str | None = None,
 ) -> tuple[bytes | None, dict]:
     """Convert one redacted native transcript without reading neighboring files."""
     if source_id not in SUPPORTED_SOURCES:
@@ -319,7 +320,7 @@ def convert_redacted_transcript(
         "agent_transcript_collector": {
             "transcript_id": session_id,
             "parent_transcript_id": parent_session_id,
-            "launch_kind": launch_kind(raw),
+            "launch_kind": launch_kind_label or launch_kind(raw),
         },
     }
     _annotate_prompt_origins(trajectory, raw)
@@ -335,6 +336,7 @@ def derive_atif(
     parent_session_id: str | None = None,
     *,
     subagent_refs: Iterable[ExternalSubagentRef] = (),
+    launch_kind_label: str | None = None,
 ) -> tuple[bytes | None, dict[str, Any]]:
     """Best-effort ATIF derivation that never drops the canonical transcript."""
     try:
@@ -345,6 +347,7 @@ def derive_atif(
             session_id,
             parent_session_id,
             subagent_refs=subagent_refs,
+            launch_kind_label=launch_kind_label,
         )
     except Exception as exc:  # noqa: BLE001 - ATIF is a derived archive artifact
         return None, conversion_manifest(
