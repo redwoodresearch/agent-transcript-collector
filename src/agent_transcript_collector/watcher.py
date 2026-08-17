@@ -68,7 +68,6 @@ class WatcherConfig:
     aws_profile: str = "rw-eng"
     all_projects: bool = False
     projects: list[AllowedProject] = field(default_factory=list)
-    excluded_projects: list[AllowedProject] = field(default_factory=list)
     source_env: dict[str, str] = field(default_factory=dict)
     package_spec: str = PACKAGE_SPEC
     uv_path: str = ""
@@ -95,17 +94,6 @@ class WatcherConfig:
             aws_profile=str(data.get("aws_profile", "rw-eng")),
             all_projects=bool(data.get("all_projects", False)),
             projects=projects,
-            excluded_projects=sorted(
-                {
-                    AllowedProject(
-                        identity=str(item["identity"]),
-                        label=str(item.get("label", "")),
-                    )
-                    for item in data.get("excluded_projects", [])
-                    if item.get("identity")
-                },
-                key=lambda item: (item.identity, item.label),
-            ),
             source_env={
                 str(key): str(value)
                 for key, value in data.get("source_env", {}).items()
@@ -223,10 +211,6 @@ def save_config(config: WatcherConfig, path: Path | None = None) -> Path:
             {"identity": project.identity, "label": project.label}
             for project in config.projects
         ],
-        "excluded_projects": [
-            {"identity": project.identity, "label": project.label}
-            for project in config.excluded_projects
-        ],
         "source_env": config.source_env,
         "package_spec": config.package_spec,
         "uv_path": config.uv_path,
@@ -271,8 +255,7 @@ def selected_project_identities(
     """Resolve project consent from one discovery snapshot."""
     available = {project.identity for project in scan.projects}
     if config.all_projects:
-        # Everything on this machine, minus the projects opted out one by one.
-        return available - {project.identity for project in config.excluded_projects}
+        return available
     return {project.identity for project in config.projects} & available
 
 
@@ -688,10 +671,6 @@ def status(
                 "auto_uploader_version": config.auto_uploader_version,
                 "contributor": config.contributor,
                 "all_projects": config.all_projects,
-                "excluded_projects": [
-                    {"identity": project.identity, "label": project.label}
-                    for project in config.excluded_projects
-                ],
                 "projects": [
                     {"identity": project.identity, "label": project.label}
                     for project in config.projects

@@ -553,14 +553,6 @@ function selectedAutoUploadProjects() {
   return consentedProjects().map(projectDescriptor);
 }
 
-/** Projects opted out while "everything on this machine" is on. */
-function excludedAutoUploadProjects() {
-  if (!allProjectsChecked()) return [];
-  return Array.from(document.querySelectorAll('.project'))
-    .filter(project => !project.querySelector('.auto-upload-checkbox').checked)
-    .map(projectDescriptor);
-}
-
 function allProjectsChecked() {
   const cb = document.getElementById('all-projects-checkbox');
   return Boolean(cb && cb.checked);
@@ -594,7 +586,6 @@ async function updateAutoUploadConfig(enabled, removedProjects = []) {
       removed_projects: removedProjects,
       contributor_name: contributorName,
       all_projects: allProjectsChecked(),
-      excluded_projects: excludedAutoUploadProjects(),
       enabled,
     }),
   }));
@@ -704,19 +695,14 @@ async function loadWatcher(refreshPipeline = true) {
     }
     renderUnavailableProjects(configuredProjects);
     const everything = Boolean(data.config && data.config.all_projects);
-    const excludedProjects = (data.config && data.config.excluded_projects) || [];
     document.querySelectorAll('.project').forEach(project => {
       const cb = project.querySelector('.auto-upload-checkbox');
       const descriptor = projectDescriptor(project);
-      const consented = configuredProjects.some(item =>
+      // The override includes everything, so it shows as every box checked.
+      cb.checked = everything || configuredProjects.some(item =>
         item.identity === descriptor.identity);
-      const excluded = excludedProjects.some(item =>
-        item.identity === descriptor.identity);
-      // Under the override every project is included unless it was opted out,
-      // so the boxes read as "on by default" and unchecking one excludes it.
-      cb.checked = everything ? !excluded : consented;
       project.querySelector('.auto-upload').title = everything
-        ? 'Included by “everything on this machine”. Uncheck to leave this project out.'
+        ? 'Included by “everything on this machine”. Unchecking switches that off and keeps the rest.'
         : 'Automatically upload new transcripts from this project';
     });
     autoUploadEnabled = watcherEnabledOverride ?? Boolean(data.installed);
@@ -801,10 +787,14 @@ async function saveAutoUploadProjects(changed) {
   status.textContent = 'Saving project selection…';
   status.hidden = false;
   status.classList.remove('error');
+  // Leaving one project out contradicts "everything on this machine", so that
+  // switch turns off and the boxes as they now stand become the selection.
+  const narrowed = !changed.checked && allProjectsChecked();
+  if (narrowed) document.getElementById('all-projects-checkbox').checked = false;
   try {
     await updateAutoUploadConfig(autoUploadEnabled);
-    showToast(allProjectsChecked()
-      ? (changed.checked ? 'Project included in auto upload' : 'Project excluded from auto upload')
+    showToast(narrowed
+      ? 'Project removed; auto upload now covers the checked projects only'
       : (changed.checked ? 'Project added to auto upload' : 'Project removed from auto upload'));
     await loadWatcher();
   } catch (e) {
