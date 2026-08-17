@@ -671,6 +671,10 @@ def _put_watcher(body: dict):
         str(item.get("identity", "")) for item in body.get("removed_projects", [])
         if item.get("identity")
     }
+    excluded_ids = {
+        str(item.get("identity", "")) for item in body.get("excluded_projects", [])
+        if item.get("identity")
+    }
     requested_ids -= removed_ids
     with SCAN_LOCK:
         scan = SCAN_RESULT
@@ -705,11 +709,18 @@ def _put_watcher(body: dict):
             "all_projects",
             existing.all_projects if existing else False,
         ))
-        # The machine-wide override covers everything, so per-project consent is
-        # frozen while it is on: the saved list is what the user returns to when
-        # they switch it off.
+        # While the override is on the per-project boxes express exclusions, not
+        # consent, so the saved selection is frozen: it is what the user returns
+        # to when they switch the override off.
         if all_projects and existing:
             projects = list(existing.projects)
+        excluded = [
+            AllowedProject(
+                identity=identity,
+                label=discovered_projects.get(identity, ""),
+            )
+            for identity in sorted(excluded_ids)
+        ] if all_projects else list(existing.excluded_projects) if existing else []
         config = WatcherConfig(
             auto_uploader_version=(
                 existing.auto_uploader_version
@@ -720,6 +731,7 @@ def _put_watcher(body: dict):
             aws_profile=existing.aws_profile if existing else selected_profile(),
             all_projects=all_projects,
             projects=projects,
+            excluded_projects=excluded,
             source_env=capture_source_env(),
             package_spec=existing.package_spec if existing else WatcherConfig.package_spec,
             uv_path=existing.uv_path if existing else "",
