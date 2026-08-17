@@ -1,14 +1,18 @@
-"""Classify who drove a session: a person at a keyboard, or a program.
+"""Classify how a session was driven: an interactive agent session, or not.
 
 Claude Code stamps each prompt-initiating event with `origin.kind` ("human",
 "task-notification", ...), `promptSource` ("typed" | "queued" | "sdk" |
-"system") and `entrypoint` ("cli" | "sdk-cli"). Print/SDK mode (`claude -p`,
-the Agent SDK) is reliably marked, so an absence of human markers alongside SDK
-markers means the run was launched programmatically.
+"system") and `entrypoint` ("cli" | "sdk-cli"), so its label reflects where
+each message came from. Codex instead states how the process was launched once,
+in its `session_meta` header — "codex-tui"/"cli" for a terminal session,
+"codex_exec"/"exec" for `codex exec` — which is coarser: it says nothing about
+who supplied the prompt text.
 
-The label is evidence, not proof: a script that drives an *interactive* session
-by sending keystrokes looks exactly like a person to the CLI, so "human" can be
-produced by automation. Treat "programmatic" as the trustworthy direction.
+Neither direction is proof of who was present. A script driving an interactive
+session by sending keystrokes looks exactly like a person, so "human" is
+evidence rather than certainty; and "programmatic" only means the run was not
+interactive — a developer typing `claude -p` at their own shell lands there
+too. Treat the label as a description of how the agent was invoked.
 """
 
 from __future__ import annotations
