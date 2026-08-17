@@ -14,6 +14,7 @@ produced by automation. Treat "programmatic" as the trustworthy direction.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 HUMAN = "human"
 PROGRAMMATIC = "programmatic"
@@ -38,20 +39,54 @@ def _event_launch_kind(event: dict) -> str | None:
     return None
 
 
-def session_launch_kind(transcript: str, parent_path=None) -> str:
+def find_parent_transcript(path: Path, parent_id: str) -> Path | None:
+    """Locate a session's parent transcript near it on disk.
+
+    Layouts differ by source — Claude Code files a subagent under
+    ``<project>/<parent>/subagents/<child>.jsonl`` while the parent sits at
+    ``<project>/<parent>.jsonl`` — so rather than assume one shape, look for a
+    file named after the parent in the nearby directories and take the first
+    that exists. An id containing a path separator is not a filename and is
+    rejected outright.
+    """
+    if not parent_id or "\0" in parent_id or "/" in parent_id or "\\" in parent_id:
+        return None
+    filename = f"{parent_id}{path.suffix}"
+    seen = []
+    for ancestor in (path.parent, *list(path.parents)[1:3]):
+        if ancestor in seen:
+            continue
+        seen.append(ancestor)
+        candidate = ancestor / filename
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def session_launch_kind(
+    transcript: str,
+    path: Path | None = None,
+    parent_id: str | None = None,
+) -> str:
     """Classify a session, letting a subagent inherit its parent's label.
 
     A subagent has no prompts of its own — it is spawned by a tool call — so on
     its own it always reads "unknown". What matters for analysis is whether the
     run it belongs to was human-driven, so the parent's label is inherited when
-    the parent transcript is available.
+    the parent transcript can be found.
     """
     kind = launch_kind(transcript)
-    if kind != UNKNOWN or parent_path is None:
+    if kind != UNKNOWN or path is None or not parent_id:
         return kind
+    parent_path = find_parent_transcript(path, parent_id)
+    if parent_path is None:
+        return UNKNOWN
     try:
         return launch_kind(parent_path.read_text(encoding="utf-8", errors="replace"))
-    except OSError:
+    except (OSError, ValueError):
         return UNKNOWN
 
 
