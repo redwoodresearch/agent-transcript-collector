@@ -222,27 +222,46 @@ S3 object metadata contains:
 
 ### Launch kind
 
-Each archive records whether a person drove the run: `human`, `programmatic`,
-or `unknown` when neither can be established. Each source states this its own
-way.
+Each archive records how the run was driven: `human`, `programmatic`, or
+`unknown` when neither can be established. Read it as "was this an interactive
+agent session", which correlates with human involvement without being the same
+question — a developer who types `claude -p "..."` or `codex exec "..."` at
+their own shell is a person, but the run is recorded as `programmatic`.
 
-Claude Code stamps every prompt with `origin.kind`, `promptSource`, and
-`entrypoint`, so a session is `human` when any prompt was typed by a person and
+Each source states this its own way, and they answer slightly different
+questions.
+
+**Claude Code** stamps provenance on every prompt — `origin.kind`,
+`promptSource`, `entrypoint` — so the label reflects where each message came
+from: `human` when any prompt was typed into the interactive CLI,
 `programmatic` when every prompt arrived over the SDK (`claude -p`, the Agent
-SDK). Codex states it once in its `session_meta` header instead: an interactive
-terminal reports `originator: codex-tui` with `source: cli`, while `codex exec`
-reports `originator: codex_exec` with `source: exec`. Cursor and Pi carry no
-equivalent marker yet and classify as `unknown`.
+SDK). Because it is per prompt, a session that mixes both is detectable.
+
+**Codex** states only how the process was launched, once, in its `session_meta`
+header: an interactive terminal reports `originator: codex-tui` with
+`source: cli`, while `codex exec` reports `originator: codex_exec` with
+`source: exec`. It says nothing about who supplied the prompt text, so a Codex
+label is coarser than a Claude Code one — session launch mode, not message
+provenance.
+
+**Cursor** and **Pi** carry no equivalent marker yet and classify as
+`unknown`.
 
 A subagent has no prompts of its own and inherits the label of the run that
 spawned it.
 
-Treat `programmatic` as the trustworthy direction. Print and SDK mode are
-reliably marked, but a script that drives an *interactive* session by sending
-keystrokes is indistinguishable from a person at the keyboard, so `human` is
-evidence rather than proof. A session that mixes both — an interactive session
-later resumed with `claude -p` — reads as `human`, because a person did prompt
-it at some point.
+Neither direction is proof. A script that drives an interactive session by
+sending keystrokes is indistinguishable from a person at the keyboard, so
+`human` is evidence rather than certainty — and more easily so for Codex, where
+every TUI session counts as human regardless of who typed. In the other
+direction, `programmatic` does not mean no person was involved; it means the
+run was not an interactive session. For analysis, treat the label as a
+description of how the agent was invoked rather than a claim about who was
+present.
+
+Where a source records provenance per prompt, a session mixing both — an
+interactive run later resumed with `claude -p` — reads as `human`, because a
+person did prompt it at some point.
 
 The label lands in `manifest.json`, in the packaged ATIF trajectory (with
 per-message origins where the source records them, which today means Claude
