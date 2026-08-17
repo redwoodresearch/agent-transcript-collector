@@ -709,8 +709,13 @@ def _put_watcher(body: dict):
         # not a choice: freeze the saved selection instead of overwriting it with
         # them. Unchecking a box turns the override off (see the UI), which
         # arrives here as all_projects=false and saves the boxes as they stand.
+        # Explicit removals still apply: freezing consent must not resurrect a
+        # selection the user just cleaned up.
         if all_projects and existing:
-            projects = list(existing.projects)
+            projects = [
+                project for project in existing.projects
+                if project.identity not in removed_ids
+            ]
         config = WatcherConfig(
             auto_uploader_version=(
                 existing.auto_uploader_version
