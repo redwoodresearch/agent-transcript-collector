@@ -293,6 +293,11 @@
       <div class="auto-upload-setting-copy">
         <span class="setting-label">Automatic uploads <span id="watcher-version" title="Auto uploader version"></span></span>
         <span id="watcher-schedule">Checking last and next upload…</span>
+        <label class="all-projects-setting"
+               title="Automatically upload transcripts from every project on this machine, including projects created later. Overrides the per-project checkboxes below.">
+          <input type="checkbox" id="all-projects-checkbox" onchange="onAllProjectsChange(this)">
+          everything on this machine
+        </label>
       </div>
       <button id="upload-btn" onclick="uploadNow()"
               title="Redact and upload transcripts from projects selected for automatic upload" disabled>Upload 0 transcripts now</button>
@@ -486,6 +491,27 @@ function selectedAutoUploadProjects() {
   return consentedProjects().map(projectDescriptor);
 }
 
+function allProjectsChecked() {
+  const cb = document.getElementById('all-projects-checkbox');
+  return Boolean(cb && cb.checked);
+}
+
+async function onAllProjectsChange(cb) {
+  cb.disabled = true;
+  try {
+    await updateAutoUploadConfig(autoUploadEnabled);
+    showToast(cb.checked
+      ? 'Auto upload set to everything on this machine'
+      : 'Auto upload limited to the selected projects');
+    await loadWatcher();
+  } catch (e) {
+    cb.checked = !cb.checked;
+    showToast(e.message, true);
+  } finally {
+    cb.disabled = false;
+  }
+}
+
 async function updateAutoUploadConfig(enabled, removedProjects = []) {
   const submittedNameRevision = nameRevision;
   const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
@@ -497,6 +523,7 @@ async function updateAutoUploadConfig(enabled, removedProjects = []) {
       projects,
       removed_projects: removedProjects,
       contributor_name: contributorName,
+      all_projects: allProjectsChecked(),
       enabled,
     }),
   }));
@@ -600,6 +627,10 @@ async function loadWatcher(refreshPipeline = true) {
       }
     }
     const configuredProjects = (data.config && data.config.projects) || [];
+    const allProjectsCb = document.getElementById('all-projects-checkbox');
+    if (allProjectsCb && !allProjectsCb.disabled) {
+      allProjectsCb.checked = Boolean(data.config && data.config.all_projects);
+    }
     renderUnavailableProjects(configuredProjects);
     document.querySelectorAll('.project').forEach(project => {
       const cb = project.querySelector('.auto-upload-checkbox');
@@ -703,7 +734,7 @@ async function saveAutoUploadProjects(changed) {
 
 async function toggleAutoUpload() {
   const button = document.getElementById('auto-upload-toggle');
-  if (!autoUploadEnabled && !selectedAutoUploadProjects().length) {
+  if (!autoUploadEnabled && !selectedAutoUploadProjects().length && !allProjectsChecked()) {
     showToast('Select at least one project for auto upload', true);
     return;
   }

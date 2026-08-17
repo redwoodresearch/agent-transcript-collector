@@ -66,6 +66,7 @@ class WatcherConfig:
     auto_uploader_version: int = AUTO_UPLOADER_VERSION
     contributor: str = "anonymous"
     aws_profile: str = "rw-eng"
+    all_projects: bool = False
     projects: list[AllowedProject] = field(default_factory=list)
     source_env: dict[str, str] = field(default_factory=dict)
     package_spec: str = PACKAGE_SPEC
@@ -91,6 +92,7 @@ class WatcherConfig:
             auto_uploader_version=int(data.get("auto_uploader_version", 0)),
             contributor=str(data.get("contributor", "anonymous")),
             aws_profile=str(data.get("aws_profile", "rw-eng")),
+            all_projects=bool(data.get("all_projects", False)),
             projects=projects,
             source_env={
                 str(key): str(value)
@@ -204,6 +206,7 @@ def save_config(config: WatcherConfig, path: Path | None = None) -> Path:
         "auto_uploader_version": config.auto_uploader_version,
         "contributor": config.contributor,
         "aws_profile": config.aws_profile,
+        "all_projects": config.all_projects,
         "projects": [
             {"identity": project.identity, "label": project.label}
             for project in config.projects
@@ -251,6 +254,8 @@ def selected_project_identities(
 ) -> set[str]:
     """Resolve project consent from one discovery snapshot."""
     available = {project.identity for project in scan.projects}
+    if config.all_projects:
+        return available
     return {project.identity for project in config.projects} & available
 
 
@@ -665,6 +670,7 @@ def status(
             result["config"] = {
                 "auto_uploader_version": config.auto_uploader_version,
                 "contributor": config.contributor,
+                "all_projects": config.all_projects,
                 "projects": [
                     {"identity": project.identity, "label": project.label}
                     for project in config.projects

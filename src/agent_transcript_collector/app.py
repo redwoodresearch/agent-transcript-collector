@@ -697,6 +697,10 @@ def _put_watcher(body: dict):
                 if project.identity not in discovered_projects
                 and project.identity not in removed_ids
             )
+        all_projects = bool(body.get(
+            "all_projects",
+            existing.all_projects if existing else False,
+        ))
         config = WatcherConfig(
             auto_uploader_version=(
                 existing.auto_uploader_version
@@ -705,6 +709,7 @@ def _put_watcher(body: dict):
             ),
             contributor=_safe_name(body.get("contributor_name", "anonymous")),
             aws_profile=existing.aws_profile if existing else selected_profile(),
+            all_projects=all_projects,
             projects=projects,
             source_env=capture_source_env(),
             package_spec=WatcherConfig.package_spec,
