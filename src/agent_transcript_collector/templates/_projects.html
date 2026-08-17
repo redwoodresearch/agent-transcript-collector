@@ -6,7 +6,6 @@
 <div class="project-list">
 <div class="project-list-header">
   <h2>Projects</h2>
-  <span class="section-hint">tick “auto upload” on a project to include it in automatic uploads</span>
   <span class="upload-state-legend" aria-label="Transcript upload status legend">
     <span class="legend-item state-not-uploaded icon-tooltip" tabindex="0"
           data-tooltip="No S3 object exists for this transcript"><i></i> Not uploaded</span>
@@ -15,6 +14,7 @@
     <span class="legend-item state-current icon-tooltip" tabindex="0"
           data-tooltip="The uploaded object matches the current transcript and policy"><i></i> Current</span>
   </span>
+  <span class="auto-upload-column-hint">check to include in automatic uploads</span>
 </div>
 {% for project in projects %}
 <div class="project" data-project="{{ project.key }}"

@@ -304,7 +304,14 @@
     font-family: var(--mono); font-size: 0.72rem; font-weight: 600;
     letter-spacing: 0.16em; text-transform: uppercase; color: var(--text);
   }
-  .section-hint { color: var(--text-muted); font-size: 0.73rem; margin-right: auto; }
+  .section-hint { color: var(--text-muted); font-size: 0.73rem; }
+  .project-list-header h2 { margin-right: auto; }
+  .auto-upload-column-hint {
+    display: inline-flex; align-items: center; gap: 5px;
+    color: var(--text-muted); font-size: 0.72rem; white-space: nowrap;
+    padding-left: 14px; border-left: 1px solid var(--border);
+  }
+  .auto-upload-column-hint::before { content: "☑"; color: var(--accent); font-size: 0.8rem; }
   .empty { color: var(--text-muted); padding: 40px 0; text-align: center; }
   input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
   @media (max-width: 720px) {
