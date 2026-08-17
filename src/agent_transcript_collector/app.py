@@ -640,9 +640,13 @@ def get_watcher_status():
     projects = scan.project_dicts if scan else []
     visible_projects = {project["identity"]: project for project in projects}
     saved_config = load_watcher_config()
-    selected_ids = (
-        selected_project_identities(scan, saved_config) if scan else set()
-    )
+    # Report the explicit per-project consent only. Expanding this to every
+    # project while all_projects is on would make the UI check every box, and
+    # the next save would persist them as individual consent that outlives the
+    # machine-wide override.
+    selected_ids = {
+        project.identity for project in saved_config.projects
+    } & visible_projects.keys()
     selected = [
         {"identity": identity, "label": visible_projects[identity]["label"]}
         for identity in selected_ids
@@ -701,6 +705,11 @@ def _put_watcher(body: dict):
             "all_projects",
             existing.all_projects if existing else False,
         ))
+        # The machine-wide override covers everything, so per-project consent is
+        # frozen while it is on: the saved list is what the user returns to when
+        # they switch it off.
+        if all_projects and existing:
+            projects = list(existing.projects)
         config = WatcherConfig(
             auto_uploader_version=(
                 existing.auto_uploader_version
