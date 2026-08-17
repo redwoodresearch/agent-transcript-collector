@@ -3,15 +3,19 @@
 {% elif not projects %}
 <p class="empty">No transcripts found for any supported agent (Claude Code, Codex, Cursor, Pi) on this machine.</p>
 {% else %}
-<div class="upload-state-legend" aria-label="Transcript upload status legend">
-  <span class="legend-item state-not-uploaded icon-tooltip" tabindex="0"
-        data-tooltip="No S3 object exists for this transcript"><i></i> Not uploaded</span>
-  <span class="legend-item state-changed icon-tooltip" tabindex="0"
-        data-tooltip="An upload exists, but its source or processing version differs"><i></i> Uploaded, changed</span>
-  <span class="legend-item state-current icon-tooltip" tabindex="0"
-        data-tooltip="The uploaded object matches the current transcript and policy"><i></i> Current</span>
-</div>
 <div class="project-list">
+<div class="project-list-header">
+  <h2>Projects</h2>
+  <span class="section-hint">tick “auto upload” on a project to include it in automatic uploads</span>
+  <span class="upload-state-legend" aria-label="Transcript upload status legend">
+    <span class="legend-item state-not-uploaded icon-tooltip" tabindex="0"
+          data-tooltip="No S3 object exists for this transcript"><i></i> Not uploaded</span>
+    <span class="legend-item state-changed icon-tooltip" tabindex="0"
+          data-tooltip="An upload exists, but its source or processing version differs"><i></i> Uploaded, changed</span>
+    <span class="legend-item state-current icon-tooltip" tabindex="0"
+          data-tooltip="The uploaded object matches the current transcript and policy"><i></i> Current</span>
+  </span>
+</div>
 {% for project in projects %}
 <div class="project" data-project="{{ project.key }}"
      data-identity="{{ project.identity }}" data-label="{{ project.label }}">

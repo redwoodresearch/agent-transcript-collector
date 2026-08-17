@@ -160,8 +160,8 @@
   }
   .project-meta { color: var(--text-muted); font-size: 0.8rem; white-space: nowrap; }
   .upload-state-legend {
-    display: flex; justify-content: flex-end; gap: 16px; margin: 0 2px 8px;
-    color: var(--text-muted); font-size: 0.75rem;
+    display: inline-flex; justify-content: flex-end; gap: 14px;
+    color: var(--text-muted); font-size: 0.73rem;
   }
   .legend-item { display: inline-flex; align-items: center; gap: 5px; }
   .legend-item i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
@@ -295,11 +295,16 @@
     to { opacity: 1; transform: translateY(0); }
   }
 
-  .section-heading {
-    display: flex; align-items: baseline; gap: 12px; margin: 20px 2px 8px;
+  .project-list-header {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    padding: 11px 16px; border-bottom: 1px solid var(--border);
+    background: rgba(255,255,255,0.022);
   }
-  .section-heading h2 { font-size: 1.05rem; letter-spacing: -0.01em; }
-  .section-hint { color: var(--text-muted); font-size: 0.75rem; }
+  .project-list-header h2 {
+    font-family: var(--mono); font-size: 0.72rem; font-weight: 600;
+    letter-spacing: 0.16em; text-transform: uppercase; color: var(--text);
+  }
+  .section-hint { color: var(--text-muted); font-size: 0.73rem; margin-right: auto; }
   .empty { color: var(--text-muted); padding: 40px 0; text-align: center; }
   input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
   @media (max-width: 720px) {
@@ -367,10 +372,6 @@
   </div>
 </div>
 <div id="pipeline-status" class="inline-status" hidden></div>
-<div class="section-heading">
-  <h2>Projects</h2>
-  <span class="section-hint">tick “auto upload” on a project to include it in automatic uploads</span>
-</div>
 <div id="projects-container">{% include "_projects.html" %}</div>
 
 <div class="preview-pane" id="preview-pane">
