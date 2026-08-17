@@ -24,8 +24,36 @@ _HUMAN_PROMPT_SOURCES = {"typed", "queued"}
 _PROGRAMMATIC_PROMPT_SOURCES = {"sdk"}
 _PROGRAMMATIC_ENTRYPOINTS = {"sdk-cli"}
 
+# Codex records how a session started once, in its session_meta header, rather
+# than per prompt: an interactive terminal reports originator "codex-tui" with
+# source "cli", while `codex exec` reports "codex_exec" with source "exec".
+_HUMAN_CODEX_ORIGINATORS = {"codex-tui", "codex_tui", "codex-vscode", "codex_vscode"}
+_PROGRAMMATIC_CODEX_SOURCES = {"exec"}
+_PROGRAMMATIC_CODEX_ORIGINATOR_MARKERS = ("exec", "mcp", "sdk", "api")
+
+
+def _codex_launch_kind(event: dict) -> str | None:
+    """Read Codex's session header, which states how the session was started."""
+    if event.get("type") != "session_meta":
+        return None
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    originator = str(payload.get("originator") or "").casefold()
+    source = str(payload.get("source") or "").casefold()
+    if source in _PROGRAMMATIC_CODEX_SOURCES or any(
+        marker in originator for marker in _PROGRAMMATIC_CODEX_ORIGINATOR_MARKERS
+    ):
+        return PROGRAMMATIC
+    if originator in _HUMAN_CODEX_ORIGINATORS:
+        return HUMAN
+    return None
+
 
 def _event_launch_kind(event: dict) -> str | None:
+    codex = _codex_launch_kind(event)
+    if codex is not None:
+        return codex
     origin = event.get("origin")
     if isinstance(origin, dict) and origin.get("kind") == HUMAN:
         return HUMAN
@@ -61,6 +89,11 @@ def find_parent_transcript(path: Path, parent_id: str) -> Path | None:
         try:
             if candidate.is_file():
                 return candidate
+            # Codex names a session file rollout-<timestamp>-<id>.jsonl, so the
+            # id is a suffix of the name rather than the whole of it.
+            match = next(ancestor.glob(f"*-{parent_id}{path.suffix}"), None)
+            if match is not None and match.is_file():
+                return match
         except OSError:
             continue
     return None

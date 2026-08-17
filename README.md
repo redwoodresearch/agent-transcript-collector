@@ -222,12 +222,20 @@ S3 object metadata contains:
 
 ### Launch kind
 
-Each archive records whether a person drove the run. Claude Code stamps every
-prompt with `origin.kind`, `promptSource`, and `entrypoint`; a session counts as
-`human` when any prompt was typed by a person, `programmatic` when every prompt
-arrived over the SDK (`claude -p`, the Agent SDK), and `unknown` when neither
-marker is present. A subagent has no prompts of its own and inherits the label
-of the run that spawned it.
+Each archive records whether a person drove the run: `human`, `programmatic`,
+or `unknown` when neither can be established. Each source states this its own
+way.
+
+Claude Code stamps every prompt with `origin.kind`, `promptSource`, and
+`entrypoint`, so a session is `human` when any prompt was typed by a person and
+`programmatic` when every prompt arrived over the SDK (`claude -p`, the Agent
+SDK). Codex states it once in its `session_meta` header instead: an interactive
+terminal reports `originator: codex-tui` with `source: cli`, while `codex exec`
+reports `originator: codex_exec` with `source: exec`. Cursor and Pi carry no
+equivalent marker yet and classify as `unknown`.
+
+A subagent has no prompts of its own and inherits the label of the run that
+spawned it.
 
 Treat `programmatic` as the trustworthy direction. Print and SDK mode are
 reliably marked, but a script that drives an *interactive* session by sending
@@ -236,8 +244,9 @@ evidence rather than proof. A session that mixes both — an interactive session
 later resumed with `claude -p` — reads as `human`, because a person did prompt
 it at some point.
 
-The label lands in `manifest.json`, in the packaged ATIF trajectory (per-message
-origins included), and in the `launch-kind` S3 object metadata so it can be read
+The label lands in `manifest.json`, in the packaged ATIF trajectory (with
+per-message origins where the source records them, which today means Claude
+Code), and in the `launch-kind` S3 object metadata so it can be read
 without downloading the archive. Archives uploaded before this existed carry no
 label; `tools/backfill_launch_kind.py <contributor>` adds it to them (dry run by
 default, `--apply` to write).
