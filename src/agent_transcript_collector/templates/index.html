@@ -550,7 +550,11 @@ function projectDescriptor(project) {
 }
 
 function selectedAutoUploadProjects() {
-  return consentedProjects().map(projectDescriptor);
+  // Disabled boxes are the override's doing, not a choice the user made, so
+  // they must not be saved as explicit per-project consent.
+  return consentedProjects()
+    .filter(project => !project.querySelector('.auto-upload-checkbox').disabled)
+    .map(projectDescriptor);
 }
 
 function allProjectsChecked() {
@@ -694,11 +698,20 @@ async function loadWatcher(refreshPipeline = true) {
       allProjectsCb.checked = Boolean(data.config && data.config.all_projects);
     }
     renderUnavailableProjects(configuredProjects);
+    const everything = Boolean(data.config && data.config.all_projects);
     document.querySelectorAll('.project').forEach(project => {
       const cb = project.querySelector('.auto-upload-checkbox');
       const descriptor = projectDescriptor(project);
-      cb.checked = configuredProjects.some(item =>
+      const consented = configuredProjects.some(item =>
         item.identity === descriptor.identity);
+      // While the machine-wide override is on every project uploads, so the
+      // boxes show that but cannot be edited: toggling one would claim a change
+      // the uploader ignores. The saved selection is kept underneath.
+      cb.checked = everything || consented;
+      cb.disabled = everything;
+      project.querySelector('.auto-upload').title = everything
+        ? 'Covered by “everything on this machine”. Turn that off to choose individual projects.'
+        : 'Automatically upload new transcripts from this project';
     });
     autoUploadEnabled = watcherEnabledOverride ?? Boolean(data.installed);
     watcherRunning = Boolean(data.running);
