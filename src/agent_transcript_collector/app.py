@@ -727,7 +727,7 @@ def _put_watcher(body: dict):
             all_projects=all_projects,
             projects=projects,
             source_env=capture_source_env(),
-            package_spec=WatcherConfig.package_spec,
+            package_spec=existing.package_spec if existing else WatcherConfig.package_spec,
             uv_path=existing.uv_path if existing else "",
         )
         enabled = bool(body.get("enabled", True))
