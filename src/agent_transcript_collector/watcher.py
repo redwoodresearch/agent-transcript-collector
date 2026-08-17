@@ -54,11 +54,6 @@ SOURCE_ENV_VARS = (
 )
 
 
-def is_local_project(spec: str) -> bool:
-    """True when package_spec names a working tree instead of a published package."""
-    return spec.startswith("/") or spec.startswith("~") or spec.startswith("./")
-
-
 @dataclass(frozen=True)
 class AllowedProject:
     identity: str
@@ -403,11 +398,6 @@ def update_cli(
     run_command=subprocess.run,
 ) -> dict:
     """Install the refreshed watcher package when it advances to a new commit."""
-    if is_local_project(config.package_spec):
-        return {
-            "status": "skipped",
-            "reason": "Running from a local checkout; no package update",
-        }
     revision = _running_revision()
     if not revision:
         return {
@@ -443,20 +433,6 @@ def update_cli(
 
 def watcher_command(config: WatcherConfig, config_path: Path) -> list[str]:
     uv = config.uv_path or _find_uv()
-    # A local checkout in package_spec means "run my working tree", so the
-    # generated unit keeps pointing at it instead of the published package.
-    if is_local_project(config.package_spec):
-        return [
-            uv,
-            "run",
-            "--project",
-            str(Path(config.package_spec).expanduser()),
-            "rr-trans",
-            "watcher",
-            "run",
-            "--config",
-            str(config_path),
-        ]
     return [
         uv,
         "tool",
@@ -557,11 +533,8 @@ def install(
     config.auto_uploader_version = AUTO_UPLOADER_VERSION
     # Scheduled installs must follow the supported release branch. Persisting a
     # development-branch package spec can permanently break the watcher once
-    # that temporary branch is removed. A local checkout is exempt: it is chosen
-    # deliberately for development and cannot be deleted out from under the user
-    # by an upstream branch cleanup.
-    if not is_local_project(config.package_spec):
-        config.package_spec = PACKAGE_SPEC
+    # that temporary branch is removed.
+    config.package_spec = PACKAGE_SPEC
     config.uv_path = config.uv_path or _find_uv()
     target = save_config(config, config_path)
     if platform == "darwin":
