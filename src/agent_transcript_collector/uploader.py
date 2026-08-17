@@ -36,6 +36,7 @@ class S3UploadClient(Protocol):
 MTS_TRANSCRIPT_ID_METADATA = "mts-transcript-id"
 MTS_PARENT_ID_METADATA = "mts-parent-id"
 MTS_SOURCE_METADATA = "mts-source"
+LAUNCH_KIND_METADATA = "launch-kind"
 
 
 def upload_concurrency() -> int:
@@ -112,6 +113,7 @@ def upload_artifacts(
             SOURCE_HASH_METADATA: artifact["source_hash"],
             SOURCE_HASH_VERSION_METADATA: str(SOURCE_HASH_VERSION),
             REDACTION_VERSION_METADATA: str(REDACTION_VERSION),
+            LAUNCH_KIND_METADATA: artifact.get("launch_kind", "unknown"),
         }
         if artifact["parent_transcript_id"]:
             metadata[MTS_PARENT_ID_METADATA] = artifact[
