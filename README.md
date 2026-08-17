@@ -196,7 +196,8 @@ listing the ZIP. Version 7 has this structure:
   "redaction": {
     "policy": "agent-transcript-collector/1",
     "count": 3
-  }
+  },
+  "launch_kind": "human"
 }
 ```
 
@@ -217,6 +218,29 @@ S3 object metadata contains:
 | `source-hash` | Hash of the original transcript and included attachments. |
 | `source-hash-version` | Version of the source-hash algorithm. |
 | `redaction-version` | Version of the local redaction policy. |
+| `launch-kind` | `human`, `programmatic`, or `unknown` — see below. |
+
+### Launch kind
+
+Each archive records whether a person drove the run. Claude Code stamps every
+prompt with `origin.kind`, `promptSource`, and `entrypoint`; a session counts as
+`human` when any prompt was typed by a person, `programmatic` when every prompt
+arrived over the SDK (`claude -p`, the Agent SDK), and `unknown` when neither
+marker is present. A subagent has no prompts of its own and inherits the label
+of the run that spawned it.
+
+Treat `programmatic` as the trustworthy direction. Print and SDK mode are
+reliably marked, but a script that drives an *interactive* session by sending
+keystrokes is indistinguishable from a person at the keyboard, so `human` is
+evidence rather than proof. A session that mixes both — an interactive session
+later resumed with `claude -p` — reads as `human`, because a person did prompt
+it at some point.
+
+The label lands in `manifest.json`, in the packaged ATIF trajectory (per-message
+origins included), and in the `launch-kind` S3 object metadata so it can be read
+without downloading the archive. Archives uploaded before this existed carry no
+label; `tools/backfill_launch_kind.py <contributor>` adds it to them (dry run by
+default, `--apply` to write).
 
 The source hash covers the unredacted transcript bundle and its discovered
 direct-child IDs, and is used to detect content or link changes. Anyone who can
