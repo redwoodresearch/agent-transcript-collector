@@ -88,10 +88,7 @@ def _archive_bytes(
         transcript_id(source.id, session.parent) if session.parent else None
     )
     resolved_launch_kind = session_launch_kind(
-        transcript,
-        # The parent transcript sits beside this one in the project folder.
-        session.path.with_name(f"{session.parent}{session.path.suffix}")
-        if session.parent else None,
+        transcript, session.path, session.parent
     )
     atif, _atif_manifest = derive_atif(
         source.id,
@@ -125,11 +122,6 @@ def _archive_bytes(
         "redaction": {
             "policy": f"agent-transcript-collector/{REDACTION_VERSION}",
             "count": redaction_count,
-        },
-        "session": {
-            "id": session.id,
-            "is_subagent": session.is_subagent,
-            "parent": session.parent,
         },
         "launch_kind": resolved_launch_kind,
     }

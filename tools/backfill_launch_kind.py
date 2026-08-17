@@ -22,6 +22,7 @@ import zipfile
 from agent_transcript_collector.atif import ATIF_FILENAME
 from agent_transcript_collector.launch_kind import launch_kind
 from agent_transcript_collector.s3client import make_s3_client
+from agent_transcript_collector.storage import transcript_filename
 from agent_transcript_collector.uploader import LAUNCH_KIND_METADATA, S3_BUCKET
 
 TRANSCRIPT_NAMES = ("transcript.jsonl", "transcript.txt")
@@ -91,7 +92,9 @@ def _parent_kind(s3, payload: bytes, key: str) -> str | None:
     parent_id = manifest.get("parent_id")
     if not parent_id:
         return None
-    parent_key = f"{key.rsplit('/', 1)[0]}/{parent_id}.zip"
+    source = str(manifest.get("source", {}).get("type") or "")
+    parent_session = parent_id.split("--", 1)[-1]
+    parent_key = f"{key.rsplit('/', 1)[0]}/{transcript_filename(source, parent_session)}"
     try:
         parent_payload = s3.get_object(Bucket=S3_BUCKET, Key=parent_key)["Body"].read()
         parent_raw = _transcript_bytes(zipfile.ZipFile(io.BytesIO(parent_payload)))
@@ -131,14 +134,29 @@ def main() -> int:
                 print(f"  skip    {key} (already {existing[LAUNCH_KIND_METADATA]})")
                 skipped += 1
                 continue
-            payload = s3.get_object(Bucket=S3_BUCKET, Key=key)["Body"].read()
+            fetched = s3.get_object(Bucket=S3_BUCKET, Key=key)
+            payload = fetched["Body"].read()
+            etag = fetched.get("ETag")
             rebuilt, kind = rebuild(payload, inherited=_parent_kind(s3, payload, key))
+            if rebuilt == payload and existing.get(LAUNCH_KIND_METADATA) == kind:
+                print(f"  skip    {key} (already {kind}, archive unchanged)")
+                skipped += 1
+                continue
             print(f"  {'write ' if args.apply else 'would '} {key} -> {kind}")
             if args.apply:
+                # The watcher uploads to this same prefix on a timer. Without a
+                # precondition a re-collected archive could be reverted, or its
+                # body paired with this run's stale metadata.
+                current = s3.head_object(Bucket=S3_BUCKET, Key=key)
+                if current.get("ETag") != etag:
+                    print(f"  SKIP    {key}: changed while this ran; rerun to pick it up")
+                    skipped += 1
+                    continue
                 s3.put_object(
                     Bucket=S3_BUCKET, Key=key, Body=rebuilt,
                     ContentType="application/zip",
                     Metadata={**existing, LAUNCH_KIND_METADATA: kind},
+                    **({"StorageClass": current["StorageClass"]} if current.get("StorageClass") else {}),
                 )
             changed += 1
         except Exception as exc:  # keep going; one bad archive should not stop the run
