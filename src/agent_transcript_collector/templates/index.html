@@ -295,6 +295,11 @@
     to { opacity: 1; transform: translateY(0); }
   }
 
+  .section-heading {
+    display: flex; align-items: baseline; gap: 12px; margin: 20px 2px 8px;
+  }
+  .section-heading h2 { font-size: 1.05rem; letter-spacing: -0.01em; }
+  .section-hint { color: var(--text-muted); font-size: 0.75rem; }
   .empty { color: var(--text-muted); padding: 40px 0; text-align: center; }
   input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
   @media (max-width: 720px) {
@@ -362,6 +367,10 @@
   </div>
 </div>
 <div id="pipeline-status" class="inline-status" hidden></div>
+<div class="section-heading">
+  <h2>Projects</h2>
+  <span class="section-hint">tick “auto upload” on a project to include it in automatic uploads</span>
+</div>
 <div id="projects-container">{% include "_projects.html" %}</div>
 
 <div class="preview-pane" id="preview-pane">
