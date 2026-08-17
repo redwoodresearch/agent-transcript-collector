@@ -57,12 +57,15 @@ def _annotate_atif(trajectory: dict, raw: str, kind: str) -> dict:
     return trajectory
 
 
-def rebuild(payload: bytes) -> tuple[bytes, str]:
+def rebuild(payload: bytes, inherited: str | None = None) -> tuple[bytes, str]:
     source = zipfile.ZipFile(io.BytesIO(payload))
     raw = _transcript_bytes(source)
     if raw is None:
         raise ValueError("archive has no transcript member")
     kind = launch_kind(raw)
+    # A subagent has no prompts of its own; it belongs to its parent's run.
+    if kind == "unknown" and inherited:
+        kind = inherited
 
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as target:
@@ -77,6 +80,24 @@ def rebuild(payload: bytes) -> tuple[bytes, str]:
                 data = (json.dumps(trajectory, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
             target.writestr(item.filename, data)
     return buffer.getvalue(), kind
+
+
+def _parent_kind(s3, payload: bytes, key: str) -> str | None:
+    """Classify the parent run of a subagent archive, if there is one."""
+    try:
+        manifest = json.loads(zipfile.ZipFile(io.BytesIO(payload)).read("manifest.json"))
+    except (KeyError, ValueError):
+        return None
+    parent_id = manifest.get("parent_id")
+    if not parent_id:
+        return None
+    parent_key = f"{key.rsplit('/', 1)[0]}/{parent_id}.zip"
+    try:
+        parent_payload = s3.get_object(Bucket=S3_BUCKET, Key=parent_key)["Body"].read()
+        parent_raw = _transcript_bytes(zipfile.ZipFile(io.BytesIO(parent_payload)))
+    except Exception:
+        return None
+    return launch_kind(parent_raw) if parent_raw else None
 
 
 def main() -> int:
@@ -105,12 +126,13 @@ def main() -> int:
         try:
             head = s3.head_object(Bucket=S3_BUCKET, Key=key)
             existing = head.get("Metadata", {})
-            if existing.get(LAUNCH_KIND_METADATA):
+            # "unknown" is worth retrying: a subagent can inherit its parent now.
+            if existing.get(LAUNCH_KIND_METADATA) in {"human", "programmatic"}:
                 print(f"  skip    {key} (already {existing[LAUNCH_KIND_METADATA]})")
                 skipped += 1
                 continue
             payload = s3.get_object(Bucket=S3_BUCKET, Key=key)["Body"].read()
-            rebuilt, kind = rebuild(payload)
+            rebuilt, kind = rebuild(payload, inherited=_parent_kind(s3, payload, key))
             print(f"  {'write ' if args.apply else 'would '} {key} -> {kind}")
             if args.apply:
                 s3.put_object(

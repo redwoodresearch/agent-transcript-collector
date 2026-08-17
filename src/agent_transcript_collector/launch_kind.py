@@ -38,6 +38,23 @@ def _event_launch_kind(event: dict) -> str | None:
     return None
 
 
+def session_launch_kind(transcript: str, parent_path=None) -> str:
+    """Classify a session, letting a subagent inherit its parent's label.
+
+    A subagent has no prompts of its own — it is spawned by a tool call — so on
+    its own it always reads "unknown". What matters for analysis is whether the
+    run it belongs to was human-driven, so the parent's label is inherited when
+    the parent transcript is available.
+    """
+    kind = launch_kind(transcript)
+    if kind != UNKNOWN or parent_path is None:
+        return kind
+    try:
+        return launch_kind(parent_path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return UNKNOWN
+
+
 def launch_kind(transcript: str) -> str:
     """Return "human" when any prompt in the transcript came from a person."""
     saw_programmatic = False
