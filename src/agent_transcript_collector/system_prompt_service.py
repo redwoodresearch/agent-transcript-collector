@@ -10,10 +10,13 @@ it sees is read once, its system prompt filed under the session id the body
 carries in `metadata.user_id`, and the body deleted immediately. Nothing else
 is retained, and the conversation content never leaves the temporary directory.
 
-    python tools/system_prompt_watcher.py run       # watch until stopped
-    python tools/system_prompt_watcher.py drain     # process what is there, exit
-    python tools/system_prompt_watcher.py install   # settings + background service
-    python tools/system_prompt_watcher.py uninstall
+Enabling automatic uploads installs this; disabling removes it. It can also be
+driven directly:
+
+    rr-trans system-prompts run       # watch until stopped
+    rr-trans system-prompts drain     # process what is there, exit
+    rr-trans system-prompts install   # settings + background service
+    rr-trans system-prompts uninstall
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ import sys
 import time
 from pathlib import Path
 
-from agent_transcript_collector.system_prompt import capture_path, digest_of
+from .system_prompt import capture_path, digest_of
 
 DUMP_DIR = Path(
     os.environ.get("CTC_SYSTEM_PROMPT_DUMP_DIR")
@@ -132,9 +135,35 @@ def _settings_path() -> Path:
     ) / "settings.json"
 
 
-def install() -> int:
+def service_command(package_spec: str, uv_path: str = "") -> list[str]:
+    from .watcher import package_command
+
+    return package_command(package_spec, uv_path, ["system-prompts", "run"])
+
+
+def status() -> dict:
+    """Whether prompts are being recorded, for the UI to show."""
+    unit = Path.home() / ".config" / "systemd" / "user" / f"{SERVICE_NAME}.service"
+    active = False
+    if unit.exists() and sys.platform.startswith("linux"):
+        active = subprocess.run(
+            ["systemctl", "--user", "is-active", "--quiet", f"{SERVICE_NAME}.service"],
+            check=False,
+        ).returncode == 0
+    try:
+        settings = json.loads(_settings_path().read_text())
+        configured = all(
+            settings.get("env", {}).get(key) == value
+            for key, value in SETTINGS_ENV.items()
+        )
+    except (OSError, ValueError):
+        configured = False
+    return {"installed": unit.exists(), "running": active, "configured": configured}
+
+
+def install(package_spec: str = "", uv_path: str = "") -> int:
     """Turn on body logging for every session and start the watcher."""
-    if sys.platform != "linux":
+    if not sys.platform.startswith("linux"):
         print("automatic install currently supports Linux (systemd)", file=sys.stderr)
         return 1
     DUMP_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -151,13 +180,14 @@ def install() -> int:
 
     unit_dir = Path.home() / ".config" / "systemd" / "user"
     unit_dir.mkdir(parents=True, exist_ok=True)
-    project = Path(__file__).resolve().parent.parent
     unit = unit_dir / f"{SERVICE_NAME}.service"
+    command = " ".join(f'"{part}"' for part in service_command(package_spec, uv_path))
     unit.write_text(
         "[Unit]\n"
         "Description=Keep Claude Code system prompts, discard raw API bodies\n\n"
         "[Service]\n"
-        f"ExecStart=uv run --project {project} python {Path(__file__).resolve()} run\n"
+        f"ExecStart={command}\n"
+        f'Environment="HOME={Path.home()}"\n'
         "Restart=always\n"
         "RestartSec=5\n\n"
         "[Install]\n"
@@ -200,10 +230,13 @@ def uninstall() -> int:
     return 0
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("run", "drain", "install", "uninstall"))
-    args = parser.parse_args(argv[1:])
+    parser.add_argument("action", choices=("run", "drain", "install", "uninstall", "status"))
+    args = parser.parse_args((argv or sys.argv)[1:])
+    if args.action == "status":
+        print(json.dumps(status(), indent=2))
+        return 0
     if args.action == "run":
         return run()
     if args.action == "drain":
