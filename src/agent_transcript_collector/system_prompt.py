@@ -24,6 +24,7 @@ SYSTEM_PROMPT_FILENAME = "system_prompt.txt"
 
 INCLUDED = "included"      # full text is in this archive
 UNCHANGED = "unchanged"    # same text was sent with an earlier archive
+IN_TRANSCRIPT = "in_transcript"  # the source recorded it; the transcript already has it
 UNAVAILABLE = "unavailable"  # the source does not record it and none was captured
 
 
@@ -123,6 +124,16 @@ def describe(
     if not text:
         return {"status": UNAVAILABLE, "origin": origin}
     digest = digest_of(text)
+    if origin == "session_meta":
+        # Codex writes its instructions into the transcript, which this archive
+        # already carries, and Harbor renders them as steps. Record the hash so
+        # the prompt is still identifiable, but do not store a second copy.
+        return {
+            "status": IN_TRANSCRIPT,
+            "origin": origin,
+            "sha256": digest,
+            "chars": len(text),
+        }
     status = UNCHANGED if digest in already_sent else INCLUDED
     record = {
         "status": status,

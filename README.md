@@ -226,10 +226,12 @@ An archive records the instructions the session ran under, in
 `manifest.json` under `system_prompt` and as the first step of the packaged
 ATIF trajectory, so it reads as part of the conversation.
 
-The text is content-addressed. Identical prompts are the common case — every
-session on one CLI version and tool set shares one — so an archive carries the
-full text (`system_prompt.txt`) only the first time that hash is uploaded, and
-afterwards records `status: "unchanged"` with the hash. What has already been
+Where a source records the prompt itself, the archive already contains it and
+the manifest just identifies it (`status: "in_transcript"` with the hash).
+Otherwise the text is content-addressed: identical prompts are the common case
+— every session on one CLI version and tool set shares one — so an archive
+carries the full text (`system_prompt.txt`) only the first time that hash is
+uploaded, and afterwards records `status: "unchanged"` with the hash. What has already been
 sent is tracked per contributor in the state directory, and only after an
 upload succeeds. Prompts go through the same redaction as transcripts.
 
@@ -245,9 +247,13 @@ python tools/system_prompt_watcher.py install
 
 That adds an `env` block to `~/.claude/settings.json` turning on OpenTelemetry
 raw-body logging, and starts a small background service. Every Claude Code
-session from then on is covered — interactive, `-p`, IDE, scripts — with no
-wrapper to remember and no change to how you launch anything. Undo it with
-`uninstall`.
+session is then covered — interactive, `-p`, IDE, scripts — with no wrapper to
+remember and no change to how you launch anything. Sessions already running
+pick it up on their next request, without restarting. Undo it with `uninstall`.
+
+Enabling automatic uploads does this for you, and disabling removes it: the
+prompt is part of what an upload describes, so it shares the same consent and
+the same lifetime.
 
 The service exists because raw bodies cannot simply be left on disk: each one
 contains the whole conversation so far and is written per turn, so a long
