@@ -29,6 +29,7 @@ import sys
 import time
 from pathlib import Path
 
+from .memory_injection import memory_from_request
 from .system_prompt import capture_path, digest_of
 
 DUMP_DIR = Path(
@@ -64,26 +65,31 @@ def _system_text(body: dict) -> str | None:
     return None
 
 
-def _store(session_id: str, text: str) -> bool:
-    """Keep the longest prompt seen for a session.
+def _store(session_id: str, text: str, memory: str | None) -> bool:
+    """Keep the longest prompt and memory seen for a session.
 
     A session makes small side calls — naming the conversation, for one — whose
-    prompts are not the agent's. The agent's is the longest by a wide margin.
+    prompts are not the agent's. The agent's is the longest by a wide margin,
+    and the same holds for the injected memory that rides with it.
     """
     target = capture_path("claude_code", session_id)
     try:
         existing = json.loads(target.read_text())
-        if len(existing.get("text") or "") >= len(text):
-            return False
     except (OSError, ValueError):
-        pass
-    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    target.write_text(json.dumps({
+        existing = {}
+    keep_prompt = len(text) > len(existing.get("text") or "")
+    keep_memory = bool(memory) and len(memory or "") > len(existing.get("memory") or "")
+    if not keep_prompt and not keep_memory:
+        return False
+    record = {
         "session_id": session_id,
-        "sha256": digest_of(text),
-        "chars": len(text),
-        "text": text,
-    }, indent=2))
+        "text": text if keep_prompt else existing.get("text", ""),
+        "memory": memory if keep_memory else existing.get("memory"),
+    }
+    record["sha256"] = digest_of(record["text"])
+    record["chars"] = len(record["text"])
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    target.write_text(json.dumps(record, indent=2))
     target.chmod(0o600)
     return True
 
@@ -99,7 +105,8 @@ def drain(directory: Path = DUMP_DIR, *, verbose: bool = False) -> int:
                 body = json.loads(path.read_text())
                 session_id = _session_id(body)
                 text = _system_text(body)
-                if session_id and text and _store(session_id, text):
+                memory = memory_from_request(body)
+                if session_id and text and _store(session_id, text, memory):
                     kept += 1
                     if verbose:
                         print(f"kept {len(text)} chars for session {session_id}")
