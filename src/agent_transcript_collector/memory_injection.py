@@ -6,9 +6,10 @@ does not keep it in the saved transcript. It is visible on the API request, so
 the same watcher that reads request bodies for the system prompt takes this
 from them too; no extra capture and no extra disk cost.
 
-Memory changes as work happens, so unlike a system prompt its hash rarely
-repeats. The text is still content-addressed, and the files it came from are
-recorded separately so a reader can see what was in scope without opening it.
+Every archive carries the memory it describes. The files it came from are
+recorded separately so a reader can see what was in scope without opening the
+text, and the sha256 is recorded so the corpus can be deduplicated later if
+that turns out to be worth doing.
 """
 
 from __future__ import annotations
@@ -16,13 +17,7 @@ from __future__ import annotations
 import json
 import re
 
-from .system_prompt import (
-    INCLUDED,
-    UNAVAILABLE,
-    UNCHANGED,
-    capture_path,
-    digest_of,
-)
+from .system_prompt import INCLUDED, UNAVAILABLE, capture_path, digest_of
 
 MEMORY_FILENAME = "injected_memory.txt"
 
@@ -68,25 +63,15 @@ def sources_in(text: str) -> list[dict]:
     return list(seen.values())
 
 
-def describe(text: str | None, *, already_sent: set[str]) -> dict:
+def describe(text: str | None) -> dict:
     """Build the manifest block describing what memory a session was given."""
     if not text:
         return {"status": UNAVAILABLE}
-    digest = digest_of(text)
-    record = {
-        "status": UNCHANGED if digest in already_sent else INCLUDED,
-        "sha256": digest,
+    return {
+        "status": INCLUDED,
+        "sha256": digest_of(text),
         "chars": len(text),
         "sources": sources_in(text),
+        "artifact": MEMORY_FILENAME,
     }
-    if record["status"] == INCLUDED:
-        record["artifact"] = MEMORY_FILENAME
-    return record
 
-
-def trajectory_note(record: dict) -> str:
-    return (
-        "[injected memory not repeated in this archive: "
-        f"sha256 {record.get('sha256', 'unknown')}, {record.get('chars', 0)} chars, "
-        "first sent with an earlier upload from this contributor]"
-    )
