@@ -273,6 +273,23 @@ CTC_SYSTEM_PROMPT_DUMP_DIR=/tmp/bodies python tools/system_prompt_watcher.py dra
 
 Sessions run without any of this record `status: "unavailable"`.
 
+### Injected memory
+
+Claude Code injects CLAUDE.md files and the user's auto-memory into the first
+user message and, like the system prompt, does not keep them in the saved
+transcript. The same watcher takes them from the same request bodies, so this
+costs no extra capture and no extra disk.
+
+`manifest.json` records it under `injected_memory`: the hash, the size, and the
+files it quotes (`sources`), so a reader can see what was in scope without
+opening the text. The text itself is content-addressed like the system prompt —
+stored as `injected_memory.txt` the first time a hash is uploaded — and appears
+as a step ahead of the conversation. Expect less deduplication here than for
+prompts: memory changes as work happens, so its hash rarely repeats.
+
+Codex records its own `AGENTS.md` injection in the transcript, inside the first
+user message, so nothing extra is needed there.
+
 ### Launch kind
 
 Each archive records how the run was driven: `human`, `programmatic`, or

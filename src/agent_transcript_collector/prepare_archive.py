@@ -12,6 +12,9 @@ from typing import TypedDict
 
 from .atif import ATIF_FILENAME, derive_atif
 from .launch_kind import session_launch_kind
+from .memory_injection import MEMORY_FILENAME, captured_memory
+from .memory_injection import describe as describe_memory
+from .memory_injection import trajectory_note as memory_note
 from .system_prompt import (
     INCLUDED,
     UNCHANGED,
@@ -60,6 +63,8 @@ class ArchiveArtifact(TypedDict):
     launch_kind: str
     system_prompt_sha256: str
     system_prompt_included: bool
+    memory_sha256: str
+    memory_included: bool
     filesystem_snapshot: list[FilesystemSnapshotEntry]
 
 
@@ -112,12 +117,18 @@ def _archive_bytes(
     if prompt_text:
         prompt_text, count = _redact(prompt_text)
         redaction_count += count
+    already_sent = set(load_sent_hashes().get(contributor, []))
     system_prompt = describe_system_prompt(
         prompt_text,
         prompt_origin,
         contributor=contributor,
-        already_sent=set(load_sent_hashes().get(contributor, [])),
+        already_sent=already_sent,
     )
+    memory_text = captured_memory(source.id, session.id)
+    if memory_text:
+        memory_text, count = _redact(memory_text)
+        redaction_count += count
+    memory = describe_memory(memory_text, already_sent=already_sent)
     atif, _atif_manifest = derive_atif(
         source.id,
         transcript,
@@ -140,6 +151,10 @@ def _archive_bytes(
             else trajectory_note(system_prompt)
             if system_prompt["status"] == UNCHANGED else None
         ),
+        memory_text=(
+            memory_text if memory["status"] == INCLUDED
+            else memory_note(memory) if memory["status"] == UNCHANGED else None
+        ),
     )
     manifest = {
         "manifest_version": MANIFEST_VERSION,
@@ -160,6 +175,7 @@ def _archive_bytes(
         },
         "launch_kind": resolved_launch_kind,
         "system_prompt": system_prompt,
+        "injected_memory": memory,
     }
     if parent_identity:
         manifest["parent_id"] = parent_identity
@@ -169,6 +185,8 @@ def _archive_bytes(
         archive.writestr("manifest.json", json.dumps(manifest, indent=2))
         if system_prompt["status"] == INCLUDED and prompt_text:
             archive.writestr(SYSTEM_PROMPT_FILENAME, prompt_text)
+        if memory["status"] == INCLUDED and memory_text:
+            archive.writestr(MEMORY_FILENAME, memory_text)
         if atif is not None:
             archive.writestr(ATIF_FILENAME, atif)
         for arcname, text in attachment_contents:
@@ -233,5 +251,7 @@ def prepare_archive(
         "launch_kind": manifest["launch_kind"],
         "system_prompt_sha256": manifest["system_prompt"].get("sha256", ""),
         "system_prompt_included": manifest["system_prompt"]["status"] == INCLUDED,
+        "memory_sha256": manifest["injected_memory"].get("sha256", ""),
+        "memory_included": manifest["injected_memory"]["status"] == INCLUDED,
         "filesystem_snapshot": filesystem_snapshot(snapshot),
     }
