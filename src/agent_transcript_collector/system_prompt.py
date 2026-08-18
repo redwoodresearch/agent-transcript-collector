@@ -76,6 +76,15 @@ def captured_system_prompt(source_id: str, session_id: str) -> str | None:
     return text if isinstance(text, str) and text else None
 
 
+def captured_variant_count(source_id: str, session_id: str) -> int:
+    """How many substantively different prompts a session was seen using."""
+    try:
+        record = json.loads(capture_path(source_id, session_id).read_text())
+    except (OSError, ValueError):
+        return 0
+    return len(record.get("prompt_variants") or [])
+
+
 def resolve(source_id: str, raw: str, session_id: str) -> tuple[str | None, str]:
     """Return the session's system prompt text and where it came from."""
     if source_id == "codex":
@@ -88,11 +97,24 @@ def resolve(source_id: str, raw: str, session_id: str) -> tuple[str | None, str]
     return None, "unavailable"
 
 
+# Every request carries a fresh id in this header, so two prompts that are
+# otherwise identical never hash the same. Comparisons ignore it.
+_VOLATILE_PREFIX = "x-anthropic-billing-header:"
+
+
+def stable_text(text: str) -> str:
+    """The prompt with its per-request header removed, for comparing turns."""
+    return "\n".join(
+        line for line in text.splitlines()
+        if not line.lstrip().startswith(_VOLATILE_PREFIX)
+    )
+
+
 def digest_of(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def describe(text: str | None, origin: str) -> dict:
+def describe(text: str | None, origin: str, variants: int = 0) -> dict:
     """Build the manifest block for a session's system prompt."""
     if not text:
         return {"status": UNAVAILABLE, "origin": origin}
@@ -107,11 +129,15 @@ def describe(text: str | None, origin: str) -> dict:
             "sha256": digest,
             "chars": len(text),
         }
-    return {
+    record = {
         "status": INCLUDED,
         "origin": origin,
         "sha256": digest,
         "chars": len(text),
         "artifact": SYSTEM_PROMPT_FILENAME,
     }
+    if variants > 1:
+        # The stored text is one of several the session ran under.
+        record["variants_seen"] = variants
+    return record
 

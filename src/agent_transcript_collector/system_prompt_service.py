@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 
 from .memory_injection import memory_from_request
-from .system_prompt import capture_path, digest_of
+from .system_prompt import capture_path, digest_of, stable_text
 
 DUMP_DIR = Path(
     os.environ.get("CTC_SYSTEM_PROMPT_DUMP_DIR")
@@ -77,14 +77,25 @@ def _store(session_id: str, text: str, memory: str | None) -> bool:
         existing = json.loads(target.read_text())
     except (OSError, ValueError):
         existing = {}
+    # A session's prompt can change partway — a different model, a skill
+    # loaded — so note when the substantive text differs from what was seen
+    # before, ignoring the per-request header that always differs.
+    variants = set(existing.get("prompt_variants") or [])
+    if existing.get("text"):
+        variants.add(digest_of(stable_text(existing["text"])))
+    variants.add(digest_of(stable_text(text)))
     keep_prompt = len(text) > len(existing.get("text") or "")
     keep_memory = bool(memory) and len(memory or "") > len(existing.get("memory") or "")
-    if not keep_prompt and not keep_memory:
+    # A turn that adds nothing longer can still reveal that the prompt changed,
+    # which is worth recording even when the stored text stays as it was.
+    new_variant = variants != set(existing.get("prompt_variants") or [])
+    if not keep_prompt and not keep_memory and not new_variant:
         return False
     record = {
         "session_id": session_id,
         "text": text if keep_prompt else existing.get("text", ""),
         "memory": memory if keep_memory else existing.get("memory"),
+        "prompt_variants": sorted(variants),
     }
     record["sha256"] = digest_of(record["text"])
     record["chars"] = len(record["text"])

@@ -15,6 +15,7 @@ from .launch_kind import session_launch_kind
 from .memory_injection import MEMORY_FILENAME, captured_memory
 from .memory_injection import describe as describe_memory
 from .system_prompt import INCLUDED, SYSTEM_PROMPT_FILENAME
+from .system_prompt import captured_variant_count
 from .system_prompt import describe as describe_system_prompt
 from .system_prompt import resolve as resolve_system_prompt
 from .redactor import (
@@ -103,7 +104,9 @@ def _archive_bytes(
     if prompt_text:
         prompt_text, count = _redact(prompt_text)
         redaction_count += count
-    system_prompt = describe_system_prompt(prompt_text, prompt_origin)
+    system_prompt = describe_system_prompt(
+        prompt_text, prompt_origin, captured_variant_count(source.id, session.id)
+    )
     memory_text = captured_memory(source.id, session.id)
     if memory_text:
         memory_text, count = _redact(memory_text)
