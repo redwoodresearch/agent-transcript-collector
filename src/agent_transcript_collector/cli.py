@@ -39,6 +39,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"S3 prefix to browse (default: {STORAGE_PREFIX}/).",
     )
 
+    prompts = commands.add_parser(
+        "system-prompts", help="Record the system prompt each session ran under."
+    )
+    prompts.add_argument(
+        "action", choices=("run", "drain", "install", "uninstall", "status")
+    )
+
     watcher = commands.add_parser("watcher", help="Manage automatic uploads.")
     watcher_commands = watcher.add_subparsers(dest="watcher_command", required=True)
     run = watcher_commands.add_parser("run", help="Run one upload check.")
@@ -77,6 +84,11 @@ def main(argv: list[str] | None = None) -> int:
         }[args.action]
         print(json.dumps(operation(), indent=2))
         return 0
+    if args.command == "system-prompts":
+        from .system_prompt_service import main as system_prompts_main
+
+        return system_prompts_main(["rr-trans", args.action])
+
     if args.command == "watcher":
         from .watcher import main as run_watcher
 
