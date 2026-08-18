@@ -136,13 +136,9 @@ def _settings_path() -> Path:
 
 
 def service_command(package_spec: str, uv_path: str = "") -> list[str]:
-    from .watcher import PACKAGE_SPEC, _find_uv
+    from .watcher import package_command
 
-    uv = uv_path or _find_uv()
-    return [
-        uv, "tool", "run", "--from", package_spec or PACKAGE_SPEC,
-        "rr-trans", "system-prompts", "run",
-    ]
+    return package_command(package_spec, uv_path, ["system-prompts", "run"])
 
 
 def status() -> dict:
