@@ -24,24 +24,40 @@ MEMORY_FILENAME = "injected_memory.txt"
 # The reminder that carries memory announces itself; the others in the same
 # message carry tool, skill and budget scaffolding, which is not memory.
 _MEMORY_MARKER = "# claudeMd"
+_REMINDER_OPEN = "<system-reminder>"
 # "Contents of /path/to/CLAUDE.md (project instructions, checked into the codebase):"
 _SOURCE_RE = re.compile(r"Contents of (?P<path>\S+?) \((?P<kind>[^)]*)\)", re.MULTILINE)
 
 
 def memory_from_request(body: dict) -> str | None:
-    """Pull the injected-memory reminder out of an API request body."""
+    """Pull the injected-memory reminders out of an API request body.
+
+    Injection is not limited to the first message — memory can be re-injected
+    later in a session, after an edit — so every message is scanned and each
+    distinct block kept, in order.
+
+    A block must be an actual reminder, not merely mention one: a conversation
+    about memory injection quotes these markers, and matching on the marker
+    alone would capture the discussion instead of the thing discussed.
+    """
     messages = body.get("messages")
-    if not isinstance(messages, list) or not messages:
+    if not isinstance(messages, list):
         return None
-    content = (messages[0] or {}).get("content")
-    if not isinstance(content, list):
-        return None
-    blocks = [
-        block.get("text", "")
-        for block in content
-        if isinstance(block, dict) and isinstance(block.get("text"), str)
-        and _MEMORY_MARKER in block.get("text", "")
-    ]
+    blocks: list[str] = []
+    for message in messages:
+        content = (message or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            text = block.get("text")
+            if not isinstance(text, str):
+                continue
+            if not text.lstrip().startswith(_REMINDER_OPEN):
+                continue
+            if _MEMORY_MARKER in text and text not in blocks:
+                blocks.append(text)
     return "\n\n".join(blocks) if blocks else None
 
 
