@@ -12,6 +12,17 @@ from typing import TypedDict
 
 from .atif import ATIF_FILENAME, derive_atif
 from .launch_kind import session_launch_kind
+from .system_prompt import (
+    INCLUDED,
+    SYSTEM_PROMPT_FILENAME,
+    describe as describe_system_prompt,
+)
+from .system_prompt import (
+    load_sent_hashes,
+    remember_sent_hash,
+    resolve as resolve_system_prompt,
+    trajectory_note,
+)
 from .redactor import (
     REDACTION_VERSION,
     redact_identity,
@@ -46,6 +57,8 @@ class ArchiveArtifact(TypedDict):
     redactions: int
     zip_size_bytes: int
     launch_kind: str
+    system_prompt_sha256: str
+    system_prompt_included: bool
     filesystem_snapshot: list[FilesystemSnapshotEntry]
 
 
@@ -90,6 +103,20 @@ def _archive_bytes(
     resolved_launch_kind = session_launch_kind(
         transcript, session.path, session.parent
     )
+    # The prompt goes through the same redaction as the transcript; it can carry
+    # project-specific instructions.
+    prompt_text, prompt_origin = resolve_system_prompt(
+        source.id, transcript, session.id
+    )
+    if prompt_text:
+        prompt_text, count = _redact(prompt_text)
+        redaction_count += count
+    system_prompt = describe_system_prompt(
+        prompt_text,
+        prompt_origin,
+        contributor=contributor,
+        already_sent=set(load_sent_hashes().get(contributor, [])),
+    )
     atif, _atif_manifest = derive_atif(
         source.id,
         transcript,
@@ -105,6 +132,10 @@ def _archive_bytes(
             for child_id in session.child_ids
         ],
         launch_kind_label=resolved_launch_kind,
+        system_prompt_text=(
+            prompt_text if system_prompt["status"] == INCLUDED
+            else trajectory_note(system_prompt) if prompt_text else None
+        ),
     )
     manifest = {
         "manifest_version": MANIFEST_VERSION,
@@ -124,6 +155,7 @@ def _archive_bytes(
             "count": redaction_count,
         },
         "launch_kind": resolved_launch_kind,
+        "system_prompt": system_prompt,
     }
     if parent_identity:
         manifest["parent_id"] = parent_identity
@@ -131,6 +163,8 @@ def _archive_bytes(
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
         archive.writestr(transcript_name, transcript)
         archive.writestr("manifest.json", json.dumps(manifest, indent=2))
+        if system_prompt["status"] == INCLUDED and prompt_text:
+            archive.writestr(SYSTEM_PROMPT_FILENAME, prompt_text)
         if atif is not None:
             archive.writestr(ATIF_FILENAME, atif)
         for arcname, text in attachment_contents:
@@ -193,5 +227,7 @@ def prepare_archive(
         "redactions": manifest["redaction"]["count"],
         "zip_size_bytes": len(archive),
         "launch_kind": manifest["launch_kind"],
+        "system_prompt_sha256": manifest["system_prompt"].get("sha256", ""),
+        "system_prompt_included": manifest["system_prompt"]["status"] == INCLUDED,
         "filesystem_snapshot": filesystem_snapshot(snapshot),
     }
