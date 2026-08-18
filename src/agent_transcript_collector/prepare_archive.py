@@ -14,19 +14,9 @@ from .atif import ATIF_FILENAME, derive_atif
 from .launch_kind import session_launch_kind
 from .memory_injection import MEMORY_FILENAME, captured_memory
 from .memory_injection import describe as describe_memory
-from .memory_injection import trajectory_note as memory_note
-from .system_prompt import (
-    INCLUDED,
-    UNCHANGED,
-    SYSTEM_PROMPT_FILENAME,
-    describe as describe_system_prompt,
-)
-from .system_prompt import (
-    load_sent_hashes,
-    remember_sent_hash,
-    resolve as resolve_system_prompt,
-    trajectory_note,
-)
+from .system_prompt import INCLUDED, SYSTEM_PROMPT_FILENAME
+from .system_prompt import describe as describe_system_prompt
+from .system_prompt import resolve as resolve_system_prompt
 from .redactor import (
     REDACTION_VERSION,
     redact_identity,
@@ -61,10 +51,6 @@ class ArchiveArtifact(TypedDict):
     redactions: int
     zip_size_bytes: int
     launch_kind: str
-    system_prompt_sha256: str
-    system_prompt_included: bool
-    memory_sha256: str
-    memory_included: bool
     filesystem_snapshot: list[FilesystemSnapshotEntry]
 
 
@@ -117,18 +103,12 @@ def _archive_bytes(
     if prompt_text:
         prompt_text, count = _redact(prompt_text)
         redaction_count += count
-    already_sent = set(load_sent_hashes().get(contributor, []))
-    system_prompt = describe_system_prompt(
-        prompt_text,
-        prompt_origin,
-        contributor=contributor,
-        already_sent=already_sent,
-    )
+    system_prompt = describe_system_prompt(prompt_text, prompt_origin)
     memory_text = captured_memory(source.id, session.id)
     if memory_text:
         memory_text, count = _redact(memory_text)
         redaction_count += count
-    memory = describe_memory(memory_text, already_sent=already_sent)
+    memory = describe_memory(memory_text)
     atif, _atif_manifest = derive_atif(
         source.id,
         transcript,
@@ -147,14 +127,9 @@ def _archive_bytes(
         # Only a captured prompt needs adding to the trajectory; one the source
         # recorded is already in the transcript Harbor converts.
         system_prompt_text=(
-            prompt_text if system_prompt["status"] == INCLUDED
-            else trajectory_note(system_prompt)
-            if system_prompt["status"] == UNCHANGED else None
+            prompt_text if system_prompt["status"] == INCLUDED else None
         ),
-        memory_text=(
-            memory_text if memory["status"] == INCLUDED
-            else memory_note(memory) if memory["status"] == UNCHANGED else None
-        ),
+        memory_text=memory_text if memory["status"] == INCLUDED else None,
     )
     manifest = {
         "manifest_version": MANIFEST_VERSION,
@@ -249,9 +224,5 @@ def prepare_archive(
         "redactions": manifest["redaction"]["count"],
         "zip_size_bytes": len(archive),
         "launch_kind": manifest["launch_kind"],
-        "system_prompt_sha256": manifest["system_prompt"].get("sha256", ""),
-        "system_prompt_included": manifest["system_prompt"]["status"] == INCLUDED,
-        "memory_sha256": manifest["injected_memory"].get("sha256", ""),
-        "memory_included": manifest["injected_memory"]["status"] == INCLUDED,
         "filesystem_snapshot": filesystem_snapshot(snapshot),
     }

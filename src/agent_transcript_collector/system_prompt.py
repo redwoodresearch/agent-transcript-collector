@@ -6,10 +6,13 @@ never writes its system prompt to the transcript at all; it can only be
 observed on the API request, so ``tools/capture_system_prompt.py`` records one
 alongside the session and this module reads what that left behind.
 
-Identical prompts are common — every session on one CLI version and tool set
-shares one — so the text is content-addressed: an archive carries the full text
-only the first time a hash is seen, and afterwards refers to it by hash. What
-was already sent is tracked per contributor in the state directory.
+Every archive carries the full text of what it describes. Prompts do repeat
+between sessions, but each one embeds per-session values — a prompt id, the
+working directory — so identical copies are rarer than they look, and an
+archive that refers to text stored in some other upload is only useful to a
+reader who can find that upload. Deduplicating is better done later, over the
+whole corpus, than guessed at one archive at a time. The recorded sha256 is
+there to make that possible.
 """
 
 from __future__ import annotations
@@ -23,7 +26,6 @@ from .paths import state_dir
 SYSTEM_PROMPT_FILENAME = "system_prompt.txt"
 
 INCLUDED = "included"      # full text is in this archive
-UNCHANGED = "unchanged"    # same text was sent with an earlier archive
 IN_TRANSCRIPT = "in_transcript"  # the source recorded it; the transcript already has it
 UNAVAILABLE = "unavailable"  # the source does not record it and none was captured
 
@@ -39,29 +41,6 @@ def capture_path(source_id: str, session_id: str) -> Path:
         for character in session_id
     )
     return captures_dir() / source_id / f"{safe_session}.json"
-
-
-def _sent_hashes_path() -> Path:
-    return state_dir() / "system-prompt-hashes.json"
-
-
-def load_sent_hashes() -> dict:
-    try:
-        data = json.loads(_sent_hashes_path().read_text())
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def remember_sent_hash(digest: str, contributor: str) -> None:
-    """Note that this text has been uploaded, so later archives can refer to it."""
-    path = _sent_hashes_path()
-    sent = load_sent_hashes()
-    sent.setdefault(contributor, [])
-    if digest not in sent[contributor]:
-        sent[contributor].append(digest)
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path.write_text(json.dumps(sent, indent=2, sort_keys=True) + "\n")
 
 
 def codex_system_prompt(raw: str) -> str | None:
@@ -113,13 +92,7 @@ def digest_of(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def describe(
-    text: str | None,
-    origin: str,
-    *,
-    contributor: str,
-    already_sent: set[str],
-) -> dict:
+def describe(text: str | None, origin: str) -> dict:
     """Build the manifest block for a session's system prompt."""
     if not text:
         return {"status": UNAVAILABLE, "origin": origin}
@@ -134,22 +107,11 @@ def describe(
             "sha256": digest,
             "chars": len(text),
         }
-    status = UNCHANGED if digest in already_sent else INCLUDED
-    record = {
-        "status": status,
+    return {
+        "status": INCLUDED,
         "origin": origin,
         "sha256": digest,
         "chars": len(text),
+        "artifact": SYSTEM_PROMPT_FILENAME,
     }
-    if status == INCLUDED:
-        record["artifact"] = SYSTEM_PROMPT_FILENAME
-    return record
 
-
-def trajectory_note(record: dict) -> str:
-    """One line standing in for a prompt an archive refers to but does not carry."""
-    return (
-        "[system prompt not repeated in this archive: "
-        f"sha256 {record.get('sha256', 'unknown')}, {record.get('chars', 0)} chars, "
-        f"first sent with an earlier upload from this contributor]"
-    )

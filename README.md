@@ -246,11 +246,16 @@ An archive records the instructions the session ran under, in
 ATIF trajectory, so it reads as part of the conversation.
 
 Where a source records the prompt itself, the archive already contains it and
-the manifest just identifies it (`status: "in_transcript"` with the hash).
-Otherwise the text is content-addressed: identical prompts are the common case
-— every session on one CLI version and tool set shares one — so an archive
-carries the full text (`system_prompt.txt`) only the first time that hash is
-uploaded, and afterwards records `status: "unchanged"` with the hash. What has already been
+the manifest just identifies it (`status: "in_transcript"`). Otherwise the full
+text is stored as `system_prompt.txt` in every archive that has one, so each
+archive stands alone.
+
+Storing it once and referring to it by hash was tried and removed: prompts
+embed per-session values (a prompt id, the working directory), so identical
+copies are rarer than they look, and an archive that points at text living in
+some other upload is only useful to a reader who can find that upload.
+Deduplicating is better done later across the whole corpus, which is what the
+recorded `sha256` is for. What has already been
 sent is tracked per contributor in the state directory, and only after an
 upload succeeds. Prompts go through the same redaction as transcripts.
 
@@ -301,10 +306,12 @@ costs no extra capture and no extra disk.
 
 `manifest.json` records it under `injected_memory`: the hash, the size, and the
 files it quotes (`sources`), so a reader can see what was in scope without
-opening the text. The text itself is content-addressed like the system prompt —
-stored as `injected_memory.txt` the first time a hash is uploaded — and appears
-as a step ahead of the conversation. Expect less deduplication here than for
-prompts: memory changes as work happens, so its hash rarely repeats.
+opening the text. The text is stored as `injected_memory.txt` and appears as a
+step ahead of the conversation.
+
+Note the size: memory runs to roughly the same length as a system prompt (~9 KB
+each here), which on a short session can exceed the conversation itself. The
+trajectory steps are tagged, so a reader that does not need them can skip them.
 
 Codex records its own `AGENTS.md` injection in the transcript, inside the first
 user message, so nothing extra is needed there.

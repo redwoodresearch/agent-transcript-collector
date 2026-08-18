@@ -15,7 +15,6 @@ from .cache import (
     reusable_status,
     save_cache,
 )
-from .system_prompt import remember_sent_hash
 from .prepare_archive import (
     MANIFEST_VERSION,
     ArchiveArtifact,
@@ -123,15 +122,6 @@ def record_uploaded(
     cache_path: Path | None = None,
 ) -> None:
     """Record successfully uploaded archives as current in the local cache."""
-    # Only now is a system prompt known to have left the machine; recording it
-    # earlier would let a failed upload suppress the text from every later one.
-    for artifact in artifacts:
-        for included, digest in (
-            ("system_prompt_included", "system_prompt_sha256"),
-            ("memory_included", "memory_sha256"),
-        ):
-            if artifact.get(included) and artifact.get(digest):
-                remember_sent_hash(artifact[digest], contributor)
     cache = get_cache(cache_path)
     uploaded = {_record_identity(item): item for item in artifacts}
     for record in cache["records"].values():
