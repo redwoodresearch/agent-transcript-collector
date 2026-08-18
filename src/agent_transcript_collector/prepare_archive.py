@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from .atif import ATIF_FILENAME, derive_atif
+from .agent_settings import describe as describe_settings
 from .launch_kind import session_launch_kind
 from .memory_injection import MEMORY_FILENAME, captured_memory
 from .memory_injection import describe as describe_memory
@@ -109,6 +110,10 @@ def _archive_bytes(
         memory_text, count = _redact(memory_text)
         redaction_count += count
     memory = describe_memory(memory_text)
+    # Redacted like everything else: rules name real paths.
+    settings = json.loads(_redact(json.dumps(
+        describe_settings(source.id, session.project_directory)
+    ))[0])
     atif, _atif_manifest = derive_atif(
         source.id,
         transcript,
@@ -151,6 +156,7 @@ def _archive_bytes(
         "launch_kind": resolved_launch_kind,
         "system_prompt": system_prompt,
         "injected_memory": memory,
+        "agent_settings": settings,
     }
     if parent_identity:
         manifest["parent_id"] = parent_identity
