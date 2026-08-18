@@ -300,6 +300,14 @@ def run_once(
     old_source_env = {name: os.environ.get(name) for name in config.source_env}
     os.environ["CTC_AWS_PROFILE"] = config.aws_profile
     os.environ.update(config.source_env)
+    # Second line of defence: if the prompt watcher is down, raw bodies would
+    # otherwise accumulate unread. Draining here bounds that to one interval.
+    try:
+        from . import system_prompt_service
+
+        system_prompt_service.drain()
+    except Exception:  # noqa: BLE001 - never let cleanup block an upload
+        pass
     try:
         with UploadLock(lock_path):
             client = s3 or make_s3_client()

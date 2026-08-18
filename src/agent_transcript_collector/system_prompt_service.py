@@ -168,16 +168,6 @@ def install(package_spec: str = "", uv_path: str = "") -> int:
         return 1
     DUMP_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
 
-    settings_path = _settings_path()
-    try:
-        settings = json.loads(settings_path.read_text())
-    except (OSError, ValueError):
-        settings = {}
-    settings.setdefault("env", {}).update(SETTINGS_ENV)
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(settings, indent=2) + "\n")
-    print(f"enabled raw-body logging in {settings_path}")
-
     unit_dir = Path.home() / ".config" / "systemd" / "user"
     unit_dir.mkdir(parents=True, exist_ok=True)
     unit = unit_dir / f"{SERVICE_NAME}.service"
@@ -198,9 +188,54 @@ def install(package_spec: str = "", uv_path: str = "") -> int:
         ["systemctl", "--user", "enable", "--now", f"{SERVICE_NAME}.service"],
     ):
         subprocess.run(command, check=False)
+
+    # Logging is only switched on once something is known to be consuming it.
+    # Raw bodies are large and written per turn, so enabling them with a dead
+    # watcher fills the disk with conversation content nobody reads.
+    if not _wait_until_running():
+        subprocess.run(
+            ["systemctl", "--user", "disable", "--now", f"{SERVICE_NAME}.service"],
+            check=False,
+        )
+        unit.unlink(missing_ok=True)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+        print(
+            f"{SERVICE_NAME}.service did not start; raw-body logging left off",
+            file=sys.stderr,
+        )
+        return 1
+
+    _write_settings_env(SETTINGS_ENV)
     print(f"started {SERVICE_NAME}.service (watching {DUMP_DIR})")
     print("New Claude Code sessions will have their system prompt recorded.")
     return 0
+
+
+def _wait_until_running(seconds: float = 20.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if status().get("running"):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _write_settings_env(values: dict[str, str] | None) -> None:
+    """Add or remove the env block Claude Code reads to enable body logging."""
+    settings_path = _settings_path()
+    try:
+        settings = json.loads(settings_path.read_text())
+    except (OSError, ValueError):
+        settings = {}
+    if values:
+        settings.setdefault("env", {}).update(values)
+    else:
+        for key in SETTINGS_ENV:
+            settings.get("env", {}).pop(key, None)
+        if not settings.get("env"):
+            settings.pop("env", None)
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps(settings, indent=2) + "\n")
 
 
 def uninstall() -> int:
@@ -213,17 +248,8 @@ def uninstall() -> int:
     )
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
 
-    settings_path = _settings_path()
-    try:
-        settings = json.loads(settings_path.read_text())
-        for key in SETTINGS_ENV:
-            settings.get("env", {}).pop(key, None)
-        if not settings.get("env"):
-            settings.pop("env", None)
-        settings_path.write_text(json.dumps(settings, indent=2) + "\n")
-        print(f"removed raw-body logging from {settings_path}")
-    except (OSError, ValueError):
-        pass
+    _write_settings_env(None)
+    print(f"removed raw-body logging from {_settings_path()}")
     # Anything still dumped is conversation content; do not leave it behind.
     drain()
     print("stopped; remaining API bodies discarded")
