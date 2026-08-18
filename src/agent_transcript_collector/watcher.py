@@ -571,7 +571,27 @@ def install(
         files = [str(service_path), str(timer_path)]
     else:
         raise RuntimeError("the watcher installer supports macOS and Linux")
-    return {"installed": True, "config_path": str(target), "service_files": files}
+    result = {"installed": True, "config_path": str(target), "service_files": files}
+    # Recording system prompts rides along with automatic uploads: it is the
+    # same consent and the same lifetime. A failure here must not stop uploads.
+    if platform.startswith("linux"):
+        from . import system_prompt_service
+
+        try:
+            system_prompt_service.install(config.package_spec, config.uv_path)
+        except Exception as exc:  # noqa: BLE001 - best effort, reported not raised
+            result["system_prompt_error"] = f"{type(exc).__name__}: {exc}"
+    return result
+
+
+def _uninstall_system_prompts() -> None:
+    """Stop recording system prompts when automatic uploads are turned off."""
+    from . import system_prompt_service
+
+    try:
+        system_prompt_service.uninstall()
+    except Exception:  # noqa: BLE001 - never block turning uploads off
+        pass
 
 
 def uninstall(
@@ -581,6 +601,7 @@ def uninstall(
     run_command=subprocess.run,
 ) -> dict:
     platform = platform or sys.platform
+    _uninstall_system_prompts()
     if platform == "darwin":
         domain = f"gui/{os.getuid()}"
         run_command(
@@ -659,6 +680,13 @@ def status(
         "interval_seconds": WATCH_INTERVAL_SECONDS,
         "state": load_state(),
     }
+    if platform.startswith("linux"):
+        from . import system_prompt_service
+
+        try:
+            result["system_prompts"] = system_prompt_service.status()
+        except Exception:  # noqa: BLE001 - a status probe must not break status
+            result["system_prompts"] = {"installed": False, "running": False}
     if config_path.exists():
         try:
             config = load_config(config_path)

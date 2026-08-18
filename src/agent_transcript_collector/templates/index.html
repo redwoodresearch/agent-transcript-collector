@@ -293,6 +293,7 @@
       <div class="auto-upload-setting-copy">
         <span class="setting-label">Automatic uploads <span id="watcher-version" title="Auto uploader version"></span></span>
         <span id="watcher-schedule">Checking last and next upload…</span>
+        <span id="system-prompt-state" hidden></span>
       </div>
       <button id="upload-btn" onclick="uploadNow()"
               title="Redact and upload transcripts from projects selected for automatic upload" disabled>Upload 0 transcripts now</button>
@@ -618,6 +619,17 @@ async function loadWatcher(refreshPipeline = true) {
     reinstall.hidden = !data.needs_reinstall;
     toggle.disabled = false;
     toggle.textContent = autoUploadEnabled ? 'Disable' : 'Enable';
+    const prompts = data.system_prompts || {};
+    const promptState = document.getElementById('system-prompt-state');
+    // Enabling uploads also starts recording the system prompt each session
+    // ran under, so say so rather than letting it happen quietly.
+    promptState.hidden = !autoUploadEnabled;
+    promptState.textContent = prompts.running
+      ? 'also recording the system prompt each session runs under'
+      : 'system prompts are not being recorded on this machine';
+    promptState.title = prompts.running
+      ? 'Claude Code writes API request bodies to a cache; a background service keeps only the system prompt from each and deletes the rest. Codex records its own.'
+      : 'Turn automatic uploads off and on to set this up, or run: rr-trans system-prompts install';
     const last = data.state || {};
     const lastError = (last.errors || [])[0];
     const lastUploaded = formatUploadTime(last.last_uploaded_at);
