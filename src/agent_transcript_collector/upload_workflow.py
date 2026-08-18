@@ -126,8 +126,12 @@ def record_uploaded(
     # Only now is a system prompt known to have left the machine; recording it
     # earlier would let a failed upload suppress the text from every later one.
     for artifact in artifacts:
-        if artifact.get("system_prompt_included") and artifact.get("system_prompt_sha256"):
-            remember_sent_hash(artifact["system_prompt_sha256"], contributor)
+        for included, digest in (
+            ("system_prompt_included", "system_prompt_sha256"),
+            ("memory_included", "memory_sha256"),
+        ):
+            if artifact.get(included) and artifact.get(digest):
+                remember_sent_hash(artifact[digest], contributor)
     cache = get_cache(cache_path)
     uploaded = {_record_identity(item): item for item in artifacts}
     for record in cache["records"].values():
