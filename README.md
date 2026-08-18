@@ -316,6 +316,19 @@ trajectory steps are tagged, so a reader that does not need them can skip them.
 Codex records its own `AGENTS.md` injection in the transcript, inside the first
 user message, so nothing extra is needed there.
 
+### Permission rules
+
+`manifest.json` records under `agent_settings` what the session was permitted
+to do: the `permissions` blocks from the user settings file and from the
+project's `.claude/settings.json` and `settings.local.json`, plus the count of
+allow rules in force. A transcript shows refusals but not pre-approvals, so
+without this a reader cannot tell an authorised command from one the user was
+asked about.
+
+Environment variables are recorded by name only. A settings file is a plausible
+place for an API key to sit, and the names are enough to know what was
+configured.
+
 ### Launch kind
 
 Each archive records how the run was driven: `human`, `programmatic`, or
