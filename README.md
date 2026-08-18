@@ -226,10 +226,12 @@ An archive records the instructions the session ran under, in
 `manifest.json` under `system_prompt` and as the first step of the packaged
 ATIF trajectory, so it reads as part of the conversation.
 
-The text is content-addressed. Identical prompts are the common case — every
-session on one CLI version and tool set shares one — so an archive carries the
-full text (`system_prompt.txt`) only the first time that hash is uploaded, and
-afterwards records `status: "unchanged"` with the hash. What has already been
+Where a source records the prompt itself, the archive already contains it and
+the manifest just identifies it (`status: "in_transcript"` with the hash).
+Otherwise the text is content-addressed: identical prompts are the common case
+— every session on one CLI version and tool set shares one — so an archive
+carries the full text (`system_prompt.txt`) only the first time that hash is
+uploaded, and afterwards records `status: "unchanged"` with the hash. What has already been
 sent is tracked per contributor in the state directory, and only after an
 upload succeeds. Prompts go through the same redaction as transcripts.
 

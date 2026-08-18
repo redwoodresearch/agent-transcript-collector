@@ -14,6 +14,7 @@ from .atif import ATIF_FILENAME, derive_atif
 from .launch_kind import session_launch_kind
 from .system_prompt import (
     INCLUDED,
+    UNCHANGED,
     SYSTEM_PROMPT_FILENAME,
     describe as describe_system_prompt,
 )
@@ -132,9 +133,12 @@ def _archive_bytes(
             for child_id in session.child_ids
         ],
         launch_kind_label=resolved_launch_kind,
+        # Only a captured prompt needs adding to the trajectory; one the source
+        # recorded is already in the transcript Harbor converts.
         system_prompt_text=(
             prompt_text if system_prompt["status"] == INCLUDED
-            else trajectory_note(system_prompt) if prompt_text else None
+            else trajectory_note(system_prompt)
+            if system_prompt["status"] == UNCHANGED else None
         ),
     )
     manifest = {
