@@ -1,11 +1,12 @@
 """S3 key layout and identities for collected transcripts."""
 
 import hashlib
+import os
 import re
 
 from .sources.base import Session
 
-STORAGE_PREFIX = "mts-trans"
+STORAGE_PREFIX = os.environ.get("CTC_STORAGE_PREFIX") or "mts-trans"
 
 
 def _safe_segment(value: str) -> str:
