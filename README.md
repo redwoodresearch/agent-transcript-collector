@@ -234,21 +234,38 @@ sent is tracked per contributor in the state directory, and only after an
 upload succeeds. Prompts go through the same redaction as transcripts.
 
 **Codex** writes its instructions into the transcript's `session_meta` header,
-so nothing extra is needed. **Claude Code** never writes its system prompt to
-the transcript; it is visible only on the API request. To record one, launch
-through the wrapper:
+so nothing extra is needed.
+
+**Claude Code** never writes its system prompt to the transcript; it appears
+only on the API request. One command sets that up, once:
 
 ```bash
-python tools/capture_system_prompt.py -- -p "explain this repo"
-python tools/capture_system_prompt.py --          # interactive
+python tools/system_prompt_watcher.py install
 ```
 
-The wrapper enables OpenTelemetry raw-body logging to a temporary directory,
-keeps the largest `system` block it sees, and deletes each body as it is read.
-That pruning matters: a raw body contains the whole conversation so far and is
-written per turn, so an unattended dump of a long session reaches hundreds of
-megabytes, while what is kept is a few kilobytes. Sessions launched without the
-wrapper record `status: "unavailable"`.
+That adds an `env` block to `~/.claude/settings.json` turning on OpenTelemetry
+raw-body logging, and starts a small background service. Every Claude Code
+session from then on is covered — interactive, `-p`, IDE, scripts — with no
+wrapper to remember and no change to how you launch anything. Undo it with
+`uninstall`.
+
+The service exists because raw bodies cannot simply be left on disk: each one
+contains the whole conversation so far and is written per turn, so a long
+session dumps hundreds of megabytes. The watcher reads each body once, files
+its system prompt under the session id the body carries in `metadata.user_id`,
+and deletes the body immediately, keeping a few kilobytes per session and no
+conversation content.
+
+For a single session without enabling any of that, set the same three
+variables yourself and collect afterwards:
+
+```bash
+CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_LOGS_EXPORTER=otlp \
+  OTEL_LOG_RAW_API_BODIES=file:/tmp/bodies claude -p "explain this repo"
+CTC_SYSTEM_PROMPT_DUMP_DIR=/tmp/bodies python tools/system_prompt_watcher.py drain
+```
+
+Sessions run without any of this record `status: "unavailable"`.
 
 ### Launch kind
 
