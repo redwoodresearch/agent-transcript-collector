@@ -436,22 +436,38 @@ def update_cli(
     return {"status": "updated", "revision": revision}
 
 
-def watcher_command(config: WatcherConfig, config_path: Path) -> list[str]:
-    uv = config.uv_path or _find_uv()
+def package_command(
+    package_spec: str,
+    uv_path: str,
+    arguments: list[str],
+    *,
+    refresh: bool = False,
+) -> list[str]:
+    """Build the command a generated unit runs, for any rr-trans subcommand.
+
+    Both background services go through here so they always launch the same
+    package the same way.
+    """
+    uv = uv_path or _find_uv()
     return [
         uv,
         "tool",
         "run",
-        "--refresh-package",
-        "agent-transcript-collector",
+        *(["--refresh-package", PACKAGE_NAME] if refresh else []),
         "--from",
-        config.package_spec,
+        package_spec or PACKAGE_SPEC,
         "rr-trans",
-        "watcher",
-        "run",
-        "--config",
-        str(config_path),
+        *arguments,
     ]
+
+
+def watcher_command(config: WatcherConfig, config_path: Path) -> list[str]:
+    return package_command(
+        config.package_spec,
+        config.uv_path,
+        ["watcher", "run", "--config", str(config_path)],
+        refresh=True,
+    )
 
 
 def launchd_path() -> Path:
