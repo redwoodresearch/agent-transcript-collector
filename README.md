@@ -220,6 +220,25 @@ S3 object metadata contains:
 | `redaction-version` | Version of the local redaction policy. |
 | `launch-kind` | `human`, `programmatic`, or `unknown` — see below. |
 
+### Storage backend
+
+Uploads go to Redwood's `rr-agent-transcripts` bucket on AWS by default, using
+the SSO profile. The same code drives any S3-compatible store — Google Cloud
+Storage, Cloudflare R2, MinIO — which is useful for keeping a private copy or
+testing without writing to the shared bucket. Point it elsewhere with:
+
+| Variable | Purpose |
+| --- | --- |
+| `CTC_S3_BUCKET` | Bucket name. |
+| `CTC_S3_REGION` | Region. |
+| `CTC_S3_ENDPOINT_URL` | Endpoint for a non-AWS store, e.g. `https://storage.googleapis.com`. |
+| `CTC_S3_ACCESS_KEY_ID` | HMAC access key, for stores that authenticate that way. |
+| `CTC_S3_SECRET_ACCESS_KEY` | HMAC secret. Keep it in a file only you can read, not in a shell profile. |
+
+When both HMAC variables are set they take precedence over the AWS profile.
+Non-AWS endpoints reject the SDK's default checksum headers, which the client
+accounts for.
+
 ### System prompt
 
 An archive records the instructions the session ran under, in
