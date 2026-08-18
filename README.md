@@ -220,6 +220,36 @@ S3 object metadata contains:
 | `redaction-version` | Version of the local redaction policy. |
 | `launch-kind` | `human`, `programmatic`, or `unknown` — see below. |
 
+### System prompt
+
+An archive records the instructions the session ran under, in
+`manifest.json` under `system_prompt` and as the first step of the packaged
+ATIF trajectory, so it reads as part of the conversation.
+
+The text is content-addressed. Identical prompts are the common case — every
+session on one CLI version and tool set shares one — so an archive carries the
+full text (`system_prompt.txt`) only the first time that hash is uploaded, and
+afterwards records `status: "unchanged"` with the hash. What has already been
+sent is tracked per contributor in the state directory, and only after an
+upload succeeds. Prompts go through the same redaction as transcripts.
+
+**Codex** writes its instructions into the transcript's `session_meta` header,
+so nothing extra is needed. **Claude Code** never writes its system prompt to
+the transcript; it is visible only on the API request. To record one, launch
+through the wrapper:
+
+```bash
+python tools/capture_system_prompt.py -- -p "explain this repo"
+python tools/capture_system_prompt.py --          # interactive
+```
+
+The wrapper enables OpenTelemetry raw-body logging to a temporary directory,
+keeps the largest `system` block it sees, and deletes each body as it is read.
+That pruning matters: a raw body contains the whole conversation so far and is
+written per turn, so an unattended dump of a long session reaches hundreds of
+megabytes, while what is kept is a few kilobytes. Sessions launched without the
+wrapper record `status: "unavailable"`.
+
 ### Launch kind
 
 Each archive records how the run was driven: `human`, `programmatic`, or
