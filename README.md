@@ -245,9 +245,13 @@ python tools/system_prompt_watcher.py install
 
 That adds an `env` block to `~/.claude/settings.json` turning on OpenTelemetry
 raw-body logging, and starts a small background service. Every Claude Code
-session from then on is covered — interactive, `-p`, IDE, scripts — with no
-wrapper to remember and no change to how you launch anything. Undo it with
-`uninstall`.
+session is then covered — interactive, `-p`, IDE, scripts — with no wrapper to
+remember and no change to how you launch anything. Sessions already running
+pick it up on their next request, without restarting. Undo it with `uninstall`.
+
+Enabling automatic uploads does this for you, and disabling removes it: the
+prompt is part of what an upload describes, so it shares the same consent and
+the same lifetime.
 
 The service exists because raw bodies cannot simply be left on disk: each one
 contains the whole conversation so far and is written per turn, so a long
