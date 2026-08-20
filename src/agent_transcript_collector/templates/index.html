@@ -67,6 +67,7 @@
   #watcher-schedule.running { color: var(--accent); }
   #watcher-version { color: var(--text-muted); font-size: 0.68rem; font-weight: 400; }
   #watcher-version.mismatch { color: var(--yellow); }
+  #system-prompt-state.warn { color: var(--yellow); }
   #unavailable-watcher-groups {
     margin: 0 16px 12px; color: var(--yellow); font-size: 0.75rem;
   }
@@ -722,12 +723,23 @@ async function loadWatcher(refreshPipeline = true) {
     // Enabling uploads also starts recording the system prompt each session
     // ran under, so say so rather than letting it happen quietly.
     promptState.hidden = !autoUploadEnabled;
-    promptState.textContent = prompts.running
+    // Recording takes both halves: Claude Code writing request bodies
+    // (configured) and the service reading and deleting them (running). Bodies
+    // written with nothing draining them is the state worth warning about —
+    // each one holds a whole conversation, and they arrive every turn.
+    const recording = Boolean(prompts.running && prompts.configured);
+    const undrained = Boolean(prompts.configured && !prompts.running);
+    promptState.classList.toggle('warn', undrained);
+    promptState.textContent = recording
       ? 'also recording the system prompt each session runs under'
-      : 'system prompts are not being recorded on this machine';
-    promptState.title = prompts.running
+      : undrained
+        ? 'Claude Code is writing raw API bodies that nothing is deleting'
+        : 'system prompts are not being recorded on this machine';
+    promptState.title = recording
       ? 'Claude Code writes API request bodies to a cache; a background service keeps only the system prompt from each and deletes the rest. Codex records its own.'
-      : 'Turn automatic uploads off and on to set this up, or run: rr-trans system-prompts install';
+      : undrained
+        ? 'Raw-body logging is still on in settings.json but the service that keeps only the system prompt and deletes the rest is not running, so bodies are accumulating. Run: rr-trans system-prompts install'
+        : 'Turn automatic uploads off and on to set this up, or run: rr-trans system-prompts install';
     const last = data.state || {};
     const lastError = (last.errors || [])[0];
     const lastUploaded = formatUploadTime(last.last_uploaded_at);
