@@ -45,7 +45,9 @@ def memory_from_request(body: dict) -> str | None:
         return None
     blocks: list[str] = []
     for message in messages:
-        content = (message or {}).get("content")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
         if not isinstance(content, list):
             continue
         for block in content:

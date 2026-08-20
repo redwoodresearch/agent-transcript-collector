@@ -42,13 +42,21 @@ POLL_SECONDS = 2.0
 
 def _session_id(body: dict) -> str | None:
     """Claude Code embeds the session id in the request's metadata."""
-    raw = (body.get("metadata") or {}).get("user_id")
+    metadata = body.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    raw = metadata.get("user_id")
     if not isinstance(raw, str):
         return None
     try:
-        return json.loads(raw).get("session_id")
+        decoded = json.loads(raw)
     except ValueError:
         return None
+    if not isinstance(decoded, dict):
+        return None
+    session_id = decoded.get("session_id")
+    # The id becomes a filename, so anything but a string is not usable.
+    return session_id if isinstance(session_id, str) and session_id else None
 
 
 def _system_text(body: dict) -> str | None:
@@ -76,6 +84,8 @@ def _store(session_id: str, text: str, memory: str | None) -> bool:
     try:
         existing = json.loads(target.read_text())
     except (OSError, ValueError):
+        existing = {}
+    if not isinstance(existing, dict):
         existing = {}
     # A session's prompt can change partway — a different model, a skill
     # loaded — so note when the substantive text differs from what was seen
@@ -114,15 +124,21 @@ def drain(directory: Path = DUMP_DIR, *, verbose: bool = False) -> int:
         try:
             if path.name.endswith(".request.json"):
                 body = json.loads(path.read_text())
-                session_id = _session_id(body)
-                text = _system_text(body)
-                memory = memory_from_request(body)
-                if session_id and text and _store(session_id, text, memory):
-                    kept += 1
-                    if verbose:
-                        print(f"kept {len(text)} chars for session {session_id}")
-        except (OSError, ValueError):
-            pass
+                # Every reader below assumes an object; a body is whatever the
+                # dump directory happens to hold.
+                if isinstance(body, dict):
+                    session_id = _session_id(body)
+                    text = _system_text(body)
+                    memory = memory_from_request(body)
+                    if session_id and text and _store(session_id, text, memory):
+                        kept += 1
+                        if verbose:
+                            print(f"kept {len(text)} chars for session {session_id}")
+        # One unreadable body must not end `run`'s loop, which would leave
+        # bodies accumulating unread until systemd restarts the service.
+        except Exception as error:  # noqa: BLE001
+            # The type only; the message could quote conversation content.
+            print(f"skipped {path.name}: {type(error).__name__}", file=sys.stderr)
         finally:
             # Bodies hold whole conversations; they are never kept.
             try:
@@ -170,12 +186,14 @@ def status() -> dict:
         ).returncode == 0
     try:
         settings = json.loads(_settings_path().read_text())
-        configured = all(
-            settings.get("env", {}).get(key) == value
-            for key, value in SETTINGS_ENV.items()
-        )
     except (OSError, ValueError):
-        configured = False
+        settings = {}
+    # settings.json is hand-edited, so neither it nor its env block is
+    # guaranteed to be an object.
+    env = settings.get("env") if isinstance(settings, dict) else None
+    configured = isinstance(env, dict) and all(
+        env.get(key) == value for key, value in SETTINGS_ENV.items()
+    )
     return {"installed": unit.exists(), "running": active, "configured": configured}
 
 
@@ -245,6 +263,10 @@ def _write_settings_env(values: dict[str, str] | None) -> None:
         settings = json.loads(settings_path.read_text())
     except (OSError, ValueError):
         settings = {}
+    if not isinstance(settings, dict):
+        settings = {}
+    if not isinstance(settings.get("env"), dict):
+        settings.pop("env", None)
     if values:
         settings.setdefault("env", {}).update(values)
     else:
