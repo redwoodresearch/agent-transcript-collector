@@ -15,7 +15,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from .native_service import replace_launchd_service
+from .native_service import replace_launchd_service, service_environment
 from .paths import installation_lock_path, ui_log_path, watcher_config_path
 
 PACKAGE_NAME = "agent-transcript-collector"
@@ -26,22 +26,6 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8123
 LAUNCHD_LABEL = "com.redwoodresearch.agent-transcript-collector.ui"
 SYSTEMD_NAME = "agent-transcript-collector-ui"
-FORWARDED_ENV_VARS = (
-    "AWS_PROFILE",
-    "AWS_DEFAULT_PROFILE",
-    "CTC_AWS_PROFILE",
-    "CLAUDE_CONFIG_DIR",
-    "CODEX_HOME",
-    "CURSOR_HOME",
-    "CURSOR_USER_DATA_DIR",
-    "PI_CODING_AGENT_SESSION_DIR",
-    "PI_CODING_AGENT_DIR",
-    "CTC_HASH_CONCURRENCY",
-    "CTC_ARCHIVE_CONCURRENCY",
-    "CTC_UPLOAD_CONCURRENCY",
-    "CTC_METADATA_CONCURRENCY",
-    "CTC_USERNAME_STOPLIST",
-)
 
 
 def _find_uv() -> str:
@@ -89,14 +73,10 @@ def _installation_lock():
 
 
 def _environment() -> dict[str, str]:
-    environment = {
-        "HOME": str(Path.home()),
-        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-    }
-    environment.update(
-        {name: os.environ[name] for name in FORWARDED_ENV_VARS if os.environ.get(name)}
+    return service_environment(
+        HOME=str(Path.home()),
+        PATH=os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
     )
-    return environment
 
 
 def server_command(uv_path: str | None = None) -> list[str]:

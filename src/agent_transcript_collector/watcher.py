@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .native_service import replace_launchd_service
+from .native_service import replace_launchd_service, service_environment
 from .paths import (
     log_path,
     watcher_config_path,
@@ -491,10 +491,10 @@ def systemd_paths() -> tuple[Path, Path]:
 def render_launchd(config: WatcherConfig, config_path: Path) -> bytes:
     log = log_path()
     _ensure_private_dir(log.parent)
-    environment = {
-        "HOME": str(Path.home()),
-        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-    }
+    environment = service_environment(
+        HOME=str(Path.home()),
+        PATH=os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+    )
     payload = {
         "Label": LAUNCHD_LABEL,
         "ProgramArguments": watcher_command(config, config_path),
@@ -515,9 +515,7 @@ def render_systemd(config: WatcherConfig, config_path: Path) -> tuple[bytes, byt
     command = " ".join(
         _systemd_quote(arg) for arg in watcher_command(config, config_path)
     )
-    environment = {
-        "HOME": str(Path.home()),
-    }
+    environment = service_environment(HOME=str(Path.home()))
     env_lines = "\n".join(
         f"Environment={_systemd_quote(f'{key}={value}')}"
         for key, value in environment.items()

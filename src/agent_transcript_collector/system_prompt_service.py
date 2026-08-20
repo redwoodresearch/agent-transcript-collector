@@ -30,6 +30,7 @@ import time
 from pathlib import Path
 
 from .memory_injection import memory_from_request
+from .native_service import SYSTEM_PROMPT_ENV_VARS, service_environment
 from .system_prompt import capture_path, digest_of, stable_text
 
 DUMP_DIR = Path(
@@ -208,17 +209,29 @@ def install(package_spec: str = "", uv_path: str = "") -> int:
     unit_dir.mkdir(parents=True, exist_ok=True)
     unit = unit_dir / f"{SERVICE_NAME}.service"
     command = " ".join(f'"{part}"' for part in service_command(package_spec, uv_path))
+    # The unit starts from a near-empty environment. Without the dump
+    # directory the service would watch the default path while Claude Code
+    # writes to the configured one, and raw conversation bodies would pile up
+    # there unread - the exact thing this service exists to prevent.
+    from .watcher import _systemd_quote
+
+    environment = service_environment(SYSTEM_PROMPT_ENV_VARS, HOME=str(Path.home()))
+    env_lines = "".join(
+        f"Environment={_systemd_quote(f'{key}={value}')}\n"
+        for key, value in environment.items()
+    )
     unit.write_text(
         "[Unit]\n"
         "Description=Keep Claude Code system prompts, discard raw API bodies\n\n"
         "[Service]\n"
         f"ExecStart={command}\n"
-        f'Environment="HOME={Path.home()}"\n'
+        f"{env_lines}"
         "Restart=always\n"
         "RestartSec=5\n\n"
         "[Install]\n"
         "WantedBy=default.target\n"
     )
+    unit.chmod(0o600)
     for command in (
         ["systemctl", "--user", "daemon-reload"],
         ["systemctl", "--user", "enable", "--now", f"{SERVICE_NAME}.service"],

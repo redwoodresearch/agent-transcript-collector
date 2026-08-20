@@ -240,6 +240,13 @@ When both HMAC variables are set they take precedence over the AWS profile.
 Non-AWS endpoints reject the SDK's default checksum headers, which the client
 accounts for.
 
+A background service does not inherit your shell, so installing the watcher or
+the background UI copies these variables out of the environment that ran the
+install and into the generated launchd/systemd unit. Change one and reinstall
+(`rr-trans watcher install`), or the scheduled run keeps using the target it was
+installed with. The units are written owner-readable only, because the HMAC
+secret is among the values they carry.
+
 ### System prompt
 
 An archive records the instructions the session ran under, in
@@ -279,6 +286,11 @@ pick it up on their next request, without restarting. Undo it with `uninstall`.
 Enabling automatic uploads does this for you, and disabling removes it: the
 prompt is part of what an upload describes, so it shares the same consent and
 the same lifetime.
+
+`CTC_SYSTEM_PROMPT_DUMP_DIR` overrides where raw bodies are staged. Install
+reads it from your shell and writes it into both the settings block and the
+service unit, so reinstall after changing it — the two have to name the same
+directory or the bodies are written where nothing is reading them.
 
 The service exists because raw bodies cannot simply be left on disk: each one
 contains the whole conversation so far and is written per turn, so a long
