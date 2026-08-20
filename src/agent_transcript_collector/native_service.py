@@ -60,6 +60,19 @@ def service_environment(
     return environment
 
 
+def systemd_user_dir() -> Path:
+    """Where ``systemd --user`` looks for this user's units.
+
+    An empty XDG_CONFIG_HOME means unset, the same reading systemd takes.
+    """
+    root = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
+    return Path(root) / "systemd" / "user"
+
+
+def systemd_quote(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def replace_launchd_service(
     label: str,
     service_path: Path,

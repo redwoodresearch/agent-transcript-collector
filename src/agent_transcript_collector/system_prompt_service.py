@@ -30,7 +30,12 @@ import time
 from pathlib import Path
 
 from .memory_injection import memory_from_request
-from .native_service import SYSTEM_PROMPT_ENV_VARS, service_environment
+from .native_service import (
+    SYSTEM_PROMPT_ENV_VARS,
+    service_environment,
+    systemd_quote,
+    systemd_user_dir,
+)
 from .system_prompt import capture_path, digest_of, stable_text
 
 DUMP_DIR = Path(
@@ -170,6 +175,18 @@ def _settings_path() -> Path:
     ) / "settings.json"
 
 
+def unit_path() -> Path:
+    """The unit file, where systemd actually looks for it."""
+    return systemd_user_dir() / f"{SERVICE_NAME}.service"
+
+
+def _is_active() -> bool:
+    return subprocess.run(
+        ["systemctl", "--user", "is-active", "--quiet", f"{SERVICE_NAME}.service"],
+        check=False,
+    ).returncode == 0
+
+
 def service_command(package_spec: str, uv_path: str = "") -> list[str]:
     from .watcher import package_command
 
@@ -178,13 +195,8 @@ def service_command(package_spec: str, uv_path: str = "") -> list[str]:
 
 def status() -> dict:
     """Whether prompts are being recorded, for the UI to show."""
-    unit = Path.home() / ".config" / "systemd" / "user" / f"{SERVICE_NAME}.service"
-    active = False
-    if unit.exists() and sys.platform.startswith("linux"):
-        active = subprocess.run(
-            ["systemctl", "--user", "is-active", "--quiet", f"{SERVICE_NAME}.service"],
-            check=False,
-        ).returncode == 0
+    unit = unit_path()
+    active = unit.exists() and sys.platform.startswith("linux") and _is_active()
     try:
         settings = json.loads(_settings_path().read_text())
     except (OSError, ValueError):
@@ -205,26 +217,25 @@ def install(package_spec: str = "", uv_path: str = "") -> int:
         return 1
     DUMP_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
 
-    unit_dir = Path.home() / ".config" / "systemd" / "user"
-    unit_dir.mkdir(parents=True, exist_ok=True)
-    unit = unit_dir / f"{SERVICE_NAME}.service"
-    command = " ".join(f'"{part}"' for part in service_command(package_spec, uv_path))
+    unit = unit_path()
+    unit.parent.mkdir(parents=True, exist_ok=True)
+    exec_start = " ".join(
+        systemd_quote(part) for part in service_command(package_spec, uv_path)
+    )
     # The unit starts from a near-empty environment. Without the dump
     # directory the service would watch the default path while Claude Code
     # writes to the configured one, and raw conversation bodies would pile up
     # there unread - the exact thing this service exists to prevent.
-    from .watcher import _systemd_quote
-
     environment = service_environment(SYSTEM_PROMPT_ENV_VARS, HOME=str(Path.home()))
     env_lines = "".join(
-        f"Environment={_systemd_quote(f'{key}={value}')}\n"
+        f"Environment={systemd_quote(f'{key}={value}')}\n"
         for key, value in environment.items()
     )
     unit.write_text(
         "[Unit]\n"
         "Description=Keep Claude Code system prompts, discard raw API bodies\n\n"
         "[Service]\n"
-        f"ExecStart={command}\n"
+        f"ExecStart={exec_start}\n"
         f"{env_lines}"
         "Restart=always\n"
         "RestartSec=5\n\n"
@@ -232,11 +243,15 @@ def install(package_spec: str = "", uv_path: str = "") -> int:
         "WantedBy=default.target\n"
     )
     unit.chmod(0o600)
-    for command in (
+    # `enable --now` will not touch a service that is already up, so a
+    # reinstall would leave the old process running with the old environment
+    # and the old code. Restart is what actually adopts the unit just written.
+    for argv in (
         ["systemctl", "--user", "daemon-reload"],
-        ["systemctl", "--user", "enable", "--now", f"{SERVICE_NAME}.service"],
+        ["systemctl", "--user", "enable", f"{SERVICE_NAME}.service"],
+        ["systemctl", "--user", "restart", f"{SERVICE_NAME}.service"],
     ):
-        subprocess.run(command, check=False)
+        subprocess.run(argv, check=False)
 
     # Logging is only switched on once something is known to be consuming it.
     # Raw bodies are large and written per turn, so enabling them with a dead
@@ -248,13 +263,22 @@ def install(package_spec: str = "", uv_path: str = "") -> int:
         )
         unit.unlink(missing_ok=True)
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+        # An earlier install may have already switched logging on. Leaving it
+        # on with the service now torn down is the disk-filling state this
+        # whole dance exists to avoid, so take it back off.
+        _write_settings_env(None)
         print(
             f"{SERVICE_NAME}.service did not start; raw-body logging left off",
             file=sys.stderr,
         )
         return 1
 
+    previous_dump_dir = _configured_dump_dir()
     _write_settings_env(SETTINGS_ENV)
+    # Bodies already written under a previous dump directory are whole
+    # conversations that nothing will look at again once the setting moves.
+    if previous_dump_dir is not None and previous_dump_dir != DUMP_DIR:
+        drain(previous_dump_dir)
     print(f"started {SERVICE_NAME}.service (watching {DUMP_DIR})")
     print("New Claude Code sessions will have their system prompt recorded.")
     return 0
@@ -263,10 +287,23 @@ def install(package_spec: str = "", uv_path: str = "") -> int:
 def _wait_until_running(seconds: float = 20.0) -> bool:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
-        if status().get("running"):
+        if _is_active():
             return True
         time.sleep(0.5)
     return False
+
+
+def _configured_dump_dir() -> Path | None:
+    """The directory the settings file currently points Claude Code at."""
+    try:
+        settings = json.loads(_settings_path().read_text())
+    except (OSError, ValueError):
+        return None
+    env = settings.get("env") if isinstance(settings, dict) else None
+    value = env.get("OTEL_LOG_RAW_API_BODIES") if isinstance(env, dict) else None
+    if not isinstance(value, str) or not value.startswith("file:"):
+        return None
+    return Path(value[len("file:"):])
 
 
 def _write_settings_env(values: dict[str, str] | None) -> None:
@@ -296,15 +333,18 @@ def uninstall() -> int:
         ["systemctl", "--user", "disable", "--now", f"{SERVICE_NAME}.service"],
         check=False,
     )
-    (Path.home() / ".config" / "systemd" / "user" / f"{SERVICE_NAME}.service").unlink(
-        missing_ok=True
-    )
+    unit_path().unlink(missing_ok=True)
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
 
+    # Where the settings said to dump is the truth about where bodies landed;
+    # this process's own environment need not agree with the shell that
+    # installed it.
+    dumped = {DUMP_DIR, _configured_dump_dir()} - {None}
     _write_settings_env(None)
     print(f"removed raw-body logging from {_settings_path()}")
     # Anything still dumped is conversation content; do not leave it behind.
-    drain()
+    for directory in sorted(dumped):
+        drain(directory)
     print("stopped; remaining API bodies discarded")
     return 0
 

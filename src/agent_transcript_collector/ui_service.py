@@ -15,7 +15,12 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from .native_service import replace_launchd_service, service_environment
+from .native_service import (
+    replace_launchd_service,
+    service_environment,
+    systemd_quote,
+    systemd_user_dir,
+)
 from .paths import installation_lock_path, ui_log_path, watcher_config_path
 
 PACKAGE_NAME = "agent-transcript-collector"
@@ -105,8 +110,7 @@ def launchd_path() -> Path:
 
 
 def systemd_path() -> Path:
-    root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    return root / "systemd" / "user" / f"{SYSTEMD_NAME}.service"
+    return systemd_user_dir() / f"{SYSTEMD_NAME}.service"
 
 
 def render_launchd(uv_path: str | None = None) -> bytes:
@@ -127,16 +131,12 @@ def render_launchd(uv_path: str | None = None) -> bytes:
     )
 
 
-def _systemd_quote(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
 def render_systemd(uv_path: str | None = None) -> bytes:
     log = ui_log_path()
     _ensure_private_dir(log.parent)
-    command = " ".join(_systemd_quote(arg) for arg in server_command(uv_path))
+    command = " ".join(systemd_quote(arg) for arg in server_command(uv_path))
     env_lines = "\n".join(
-        f"Environment={_systemd_quote(f'{key}={value}')}"
+        f"Environment={systemd_quote(f'{key}={value}')}"
         for key, value in _environment().items()
     )
     return (

@@ -289,8 +289,9 @@ the same lifetime.
 
 `CTC_SYSTEM_PROMPT_DUMP_DIR` overrides where raw bodies are staged. Install
 reads it from your shell and writes it into both the settings block and the
-service unit, so reinstall after changing it — the two have to name the same
-directory or the bodies are written where nothing is reading them.
+service unit, which have to name the same directory or bodies collect where
+nothing is reading them. Reinstalling after a change restarts the service onto
+the unit just written and drains whatever the previous directory still held.
 
 The service exists because raw bodies cannot simply be left on disk: each one
 contains the whole conversation so far and is written per turn, so a long

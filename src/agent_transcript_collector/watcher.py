@@ -16,7 +16,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .native_service import replace_launchd_service, service_environment
+from .native_service import (
+    replace_launchd_service,
+    service_environment,
+    systemd_quote,
+    systemd_user_dir,
+)
 from .paths import (
     log_path,
     watcher_config_path,
@@ -483,8 +488,7 @@ def launchd_path() -> Path:
 
 
 def systemd_paths() -> tuple[Path, Path]:
-    root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    user = root / "systemd" / "user"
+    user = systemd_user_dir()
     return user / f"{SYSTEMD_NAME}.service", user / f"{SYSTEMD_NAME}.timer"
 
 
@@ -507,17 +511,13 @@ def render_launchd(config: WatcherConfig, config_path: Path) -> bytes:
     return plistlib.dumps(payload, sort_keys=True)
 
 
-def _systemd_quote(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
 def render_systemd(config: WatcherConfig, config_path: Path) -> tuple[bytes, bytes]:
     command = " ".join(
-        _systemd_quote(arg) for arg in watcher_command(config, config_path)
+        systemd_quote(arg) for arg in watcher_command(config, config_path)
     )
     environment = service_environment(HOME=str(Path.home()))
     env_lines = "\n".join(
-        f"Environment={_systemd_quote(f'{key}={value}')}"
+        f"Environment={systemd_quote(f'{key}={value}')}"
         for key, value in environment.items()
     )
     service = (
@@ -713,7 +713,11 @@ def status(
         try:
             result["system_prompts"] = system_prompt_service.status()
         except Exception:  # noqa: BLE001 - a status probe must not break status
-            result["system_prompts"] = {"installed": False, "running": False}
+            result["system_prompts"] = {
+                "installed": False,
+                "running": False,
+                "configured": False,
+            }
     if config_path.exists():
         try:
             config = load_config(config_path)
