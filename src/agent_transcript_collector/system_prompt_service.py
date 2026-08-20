@@ -44,6 +44,12 @@ DUMP_DIR = Path(
 )
 SERVICE_NAME = "agent-transcript-collector-system-prompt"
 POLL_SECONDS = 2.0
+# The agent creates each body at its final name and fills it afterwards, so a
+# body caught in that window is unreadable but about to be complete, and looks
+# exactly like a corrupt one. Anything still unreadable this long after its last
+# write is genuinely broken and gets discarded: these are whole conversations,
+# and letting them collect is the failure this service exists to prevent.
+INCOMPLETE_GRACE_SECONDS = 5.0
 
 
 def _session_id(body: dict) -> str | None:
@@ -121,12 +127,27 @@ def _store(session_id: str, text: str, memory: str | None) -> bool:
     return True
 
 
-def drain(directory: Path = DUMP_DIR, *, verbose: bool = False) -> int:
-    """Read and delete every body currently in the dump directory."""
+def _still_being_written(path: Path) -> bool:
+    try:
+        return time.time() - path.stat().st_mtime < INCOMPLETE_GRACE_SECONDS
+    except OSError:
+        return False
+
+
+def drain(
+    directory: Path = DUMP_DIR, *, verbose: bool = False, patient: bool = True
+) -> int:
+    """Read and delete every body currently in the dump directory.
+
+    ``patient`` gives a body that would not parse another pass when it was
+    written moments ago, rather than deleting a prompt the agent was midway
+    through writing. Teardown passes ``False``, where nothing may be left.
+    """
     kept = 0
     if not directory.exists():
         return 0
     for path in sorted(directory.glob("*.json")):
+        discard = True
         try:
             if path.name.endswith(".request.json"):
                 body = json.loads(path.read_text())
@@ -143,14 +164,18 @@ def drain(directory: Path = DUMP_DIR, *, verbose: bool = False) -> int:
         # One unreadable body must not end `run`'s loop, which would leave
         # bodies accumulating unread until systemd restarts the service.
         except Exception as error:  # noqa: BLE001
-            # The type only; the message could quote conversation content.
-            print(f"skipped {path.name}: {type(error).__name__}", file=sys.stderr)
+            if patient and _still_being_written(path):
+                discard = False
+            else:
+                # The type only; the message could quote conversation content.
+                print(f"skipped {path.name}: {type(error).__name__}", file=sys.stderr)
         finally:
             # Bodies hold whole conversations; they are never kept.
-            try:
-                path.unlink()
-            except OSError:
-                pass
+            if discard:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
     return kept
 
 
@@ -344,7 +369,7 @@ def uninstall() -> int:
     print(f"removed raw-body logging from {_settings_path()}")
     # Anything still dumped is conversation content; do not leave it behind.
     for directory in sorted(dumped):
-        drain(directory)
+        drain(directory, patient=False)
     print("stopped; remaining API bodies discarded")
     return 0
 
