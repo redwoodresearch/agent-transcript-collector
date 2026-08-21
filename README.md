@@ -196,7 +196,8 @@ listing the ZIP. Version 7 has this structure:
   "redaction": {
     "policy": "agent-transcript-collector/1",
     "count": 3
-  }
+  },
+  "launch_kind": "human"
 }
 ```
 
@@ -217,6 +218,61 @@ S3 object metadata contains:
 | `source-hash` | Hash of the original transcript and included attachments. |
 | `source-hash-version` | Version of the source-hash algorithm. |
 | `redaction-version` | Version of the local redaction policy. |
+| `launch-kind` | `human`, `programmatic`, or `unknown` — see below. |
+
+### Launch kind
+
+Each archive records how the run was driven: `human`, `programmatic`, or
+`unknown` when neither can be established. Read it as "was this an interactive
+agent session", which correlates with human involvement without being the same
+question — a developer who types `claude -p "..."` or `codex exec "..."` at
+their own shell is a person, but the run is recorded as `programmatic`.
+
+Each source states this its own way, and they answer slightly different
+questions.
+
+**Claude Code** stamps provenance on every prompt — `origin.kind`,
+`promptSource`, `entrypoint` — so the label reflects where each message came
+from: `human` when any prompt was typed into the interactive CLI,
+`programmatic` when every prompt arrived over the SDK (`claude -p`, the Agent
+SDK). Because it is per prompt, a session that mixes both is detectable.
+Only the headless CLI marks its prompts that way, though: the Python and
+TypeScript SDKs are recognised by their session `entrypoint` (`sdk-py`,
+`sdk-ts`), so for those the label is session-wide rather than per message.
+
+**Codex** states only how the process was launched, once, in its `session_meta`
+header: an interactive terminal reports `originator: codex-tui` with
+`source: cli`, while `codex exec` reports `originator: codex_exec` with
+`source: exec`. The `source` decides, because it is the field Codex defines —
+`cli` and `vscode` are interactive, `exec` and `mcp` are not — and the
+originator is only consulted for a source that names none of them. It says
+nothing about who supplied the prompt text, so a Codex label is coarser than a
+Claude Code one — session launch mode, not message provenance.
+
+**Cursor** and **Pi** carry no equivalent marker yet and classify as
+`unknown`.
+
+A subagent has no prompts of its own and inherits the label of the run that
+spawned it.
+
+Neither direction is proof. A script that drives an interactive session by
+sending keystrokes is indistinguishable from a person at the keyboard, so
+`human` is evidence rather than certainty — and more easily so for Codex, where
+every TUI session counts as human regardless of who typed. In the other
+direction, `programmatic` does not mean no person was involved; it means the
+run was not an interactive session. For analysis, treat the label as a
+description of how the agent was invoked rather than a claim about who was
+present.
+
+Where a source records provenance per prompt, a session mixing both — an
+interactive run later resumed with `claude -p` — reads as `human`, because a
+person did prompt it at some point.
+
+The label lands in `manifest.json`, in the packaged ATIF trajectory (with
+per-message origins where the source records them, which today means Claude
+Code), and in the `launch-kind` S3 object metadata so it can be read
+without downloading the archive. Archives uploaded before this existed carry no
+label.
 
 The source hash covers the unredacted transcript bundle and its discovered
 direct-child IDs, and is used to detect content or link changes. Anyone who can

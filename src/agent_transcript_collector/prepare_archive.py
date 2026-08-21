@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from .atif import ATIF_FILENAME, derive_atif
+from .launch_kind import session_launch_kind
 from .redactor import (
     REDACTION_VERSION,
     redact_identity,
@@ -44,6 +45,7 @@ class ArchiveArtifact(TypedDict):
     attachment_count: int
     redactions: int
     zip_size_bytes: int
+    launch_kind: str
     filesystem_snapshot: list[FilesystemSnapshotEntry]
 
 
@@ -85,6 +87,9 @@ def _archive_bytes(
     parent_identity = (
         transcript_id(source.id, session.parent) if session.parent else None
     )
+    resolved_launch_kind = session_launch_kind(
+        transcript, session.path, session.parent
+    )
     atif, _atif_manifest = derive_atif(
         source.id,
         transcript,
@@ -99,6 +104,7 @@ def _archive_bytes(
             }
             for child_id in session.child_ids
         ],
+        launch_kind_label=resolved_launch_kind,
     )
     manifest = {
         "manifest_version": MANIFEST_VERSION,
@@ -117,6 +123,7 @@ def _archive_bytes(
             "policy": f"agent-transcript-collector/{REDACTION_VERSION}",
             "count": redaction_count,
         },
+        "launch_kind": resolved_launch_kind,
     }
     if parent_identity:
         manifest["parent_id"] = parent_identity
@@ -185,5 +192,6 @@ def prepare_archive(
         "attachment_count": len(snapshot.attachments.files),
         "redactions": manifest["redaction"]["count"],
         "zip_size_bytes": len(archive),
+        "launch_kind": manifest["launch_kind"],
         "filesystem_snapshot": filesystem_snapshot(snapshot),
     }

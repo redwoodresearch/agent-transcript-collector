@@ -10,6 +10,8 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 
+from .launch_kind import launch_kind
+
 if TYPE_CHECKING:
     from harbor.models.trajectories.trajectory import Trajectory
 
@@ -205,6 +207,67 @@ def conversion_manifest(
     return section
 
 
+def _prompt_origin_index(raw: str) -> dict[str, dict[str, str]]:
+    """Map each prompt's text to how it was submitted, from the native events.
+
+    Harbor's conversion drops the per-event `origin` / `promptSource` /
+    `entrypoint` fields, so they are recovered here by prompt text: the same
+    text submitted twice carries the same origin, which is all the label needs.
+    """
+    index: dict[str, dict[str, str]] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "user":
+            continue
+        origin = event.get("origin")
+        annotation = {
+            **({"origin_kind": str(origin["kind"])}
+               if isinstance(origin, dict) and origin.get("kind") else {}),
+            **({"prompt_source": str(event["promptSource"])}
+               if event.get("promptSource") else {}),
+            **({"entrypoint": str(event["entrypoint"])}
+               if event.get("entrypoint") else {}),
+        }
+        if not annotation:
+            continue
+        content = (event.get("message") or {}).get("content")
+        if isinstance(content, list):
+            content = " ".join(
+                str(block.get("text", ""))
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+        key = " ".join(str(content or "").split())
+        if key:
+            index.setdefault(key, annotation)
+    return index
+
+
+def _annotate_prompt_origins(trajectory: Trajectory, raw: str) -> None:
+    """Carry each prompt's origin onto the matching user step."""
+    index = _prompt_origin_index(raw)
+    if not index:
+        return
+    for step in trajectory.steps:
+        if str(getattr(step, "source", "")) not in {"user", "Source.USER"}:
+            continue
+        message = step.message
+        if isinstance(message, list):
+            message = " ".join(
+                str(getattr(part, "text", "") or (part.get("text", "") if isinstance(part, dict) else ""))
+                for part in message
+            )
+        annotation = index.get(" ".join(str(message or "").split()))
+        if annotation:
+            step.extra = {**(step.extra or {}), **annotation}
+
+
 def convert_redacted_transcript(
     source_id: str,
     raw: str,
@@ -213,6 +276,7 @@ def convert_redacted_transcript(
     parent_session_id: str | None = None,
     *,
     subagent_refs: Iterable[ExternalSubagentRef] = (),
+    launch_kind_label: str | None = None,
 ) -> tuple[bytes | None, dict]:
     """Convert one redacted native transcript without reading neighboring files."""
     if source_id not in SUPPORTED_SOURCES:
@@ -256,8 +320,10 @@ def convert_redacted_transcript(
         "agent_transcript_collector": {
             "transcript_id": session_id,
             "parent_transcript_id": parent_session_id,
+            "launch_kind": launch_kind_label or launch_kind(raw),
         },
     }
+    _annotate_prompt_origins(trajectory, raw)
     _enrich_subagent_references(trajectory, source_id, subagent_refs)
     return _serialize(trajectory), conversion_manifest(source_id, status="complete")
 
@@ -270,6 +336,7 @@ def derive_atif(
     parent_session_id: str | None = None,
     *,
     subagent_refs: Iterable[ExternalSubagentRef] = (),
+    launch_kind_label: str | None = None,
 ) -> tuple[bytes | None, dict[str, Any]]:
     """Best-effort ATIF derivation that never drops the canonical transcript."""
     try:
@@ -280,6 +347,7 @@ def derive_atif(
             session_id,
             parent_session_id,
             subagent_refs=subagent_refs,
+            launch_kind_label=launch_kind_label,
         )
     except Exception as exc:  # noqa: BLE001 - ATIF is a derived archive artifact
         return None, conversion_manifest(
