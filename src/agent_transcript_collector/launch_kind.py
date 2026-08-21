@@ -35,8 +35,15 @@ _PROGRAMMATIC_ENTRYPOINTS = {"sdk-cli", "sdk-py", "sdk-ts"}
 # Codex records how a session started once, in its session_meta header, rather
 # than per prompt: an interactive terminal reports originator "codex-tui" with
 # source "cli", while `codex exec` reports "codex_exec" with source "exec".
+#
+# `source` is the field Codex defines (the bare SessionSource strings listed in
+# sources/codex.py), so both sets below are keyed on it first. The originator is
+# a free-form host string — new ones appear without warning, and a session that
+# names itself something we have never seen should still be classified by the
+# source it reports rather than falling through to unknown.
+_HUMAN_CODEX_SOURCES = {"cli", "vscode"}
+_PROGRAMMATIC_CODEX_SOURCES = {"exec", "mcp"}
 _HUMAN_CODEX_ORIGINATORS = {"codex-tui", "codex_tui", "codex-vscode", "codex_vscode"}
-_PROGRAMMATIC_CODEX_SOURCES = {"exec"}
 _PROGRAMMATIC_CODEX_ORIGINATOR_MARKERS = ("exec", "mcp", "sdk", "api")
 
 
@@ -53,7 +60,7 @@ def _codex_launch_kind(event: dict) -> str | None:
         marker in originator for marker in _PROGRAMMATIC_CODEX_ORIGINATOR_MARKERS
     ):
         return PROGRAMMATIC
-    if originator in _HUMAN_CODEX_ORIGINATORS:
+    if source in _HUMAN_CODEX_SOURCES or originator in _HUMAN_CODEX_ORIGINATORS:
         return HUMAN
     return None
 

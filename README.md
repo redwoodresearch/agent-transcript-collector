@@ -243,9 +243,11 @@ TypeScript SDKs are recognised by their session `entrypoint` (`sdk-py`,
 **Codex** states only how the process was launched, once, in its `session_meta`
 header: an interactive terminal reports `originator: codex-tui` with
 `source: cli`, while `codex exec` reports `originator: codex_exec` with
-`source: exec`. It says nothing about who supplied the prompt text, so a Codex
-label is coarser than a Claude Code one — session launch mode, not message
-provenance.
+`source: exec`. The `source` decides, because it is the field Codex defines —
+`cli` and `vscode` are interactive, `exec` and `mcp` are not — and the
+originator is only consulted for a source that names none of them. It says
+nothing about who supplied the prompt text, so a Codex label is coarser than a
+Claude Code one — session launch mode, not message provenance.
 
 **Cursor** and **Pi** carry no equivalent marker yet and classify as
 `unknown`.
