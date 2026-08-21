@@ -11,8 +11,13 @@ from .scan import load_transcript_inputs
 from .attachments import EMPTY as NO_ATTACHMENTS
 from .attachments import AttachmentSet
 from .sources.base import Session, Source
+from .system_prompt import capture_path as prompt_capture_path
 
-SOURCE_HASH_VERSION = 5
+# 6: the captured system prompt and injected memory are archive content, so a
+# session whose capture arrives or changes after an upload has to be recognised
+# as stale. Bumping this re-uploads everything once, which is the only way an
+# archive sent before its prompt was captured ever gets one.
+SOURCE_HASH_VERSION = 6
 
 
 class FilesystemSnapshotEntry(TypedDict, total=False):
@@ -32,14 +37,28 @@ class TranscriptSnapshot:
     key: str
     attachments: AttachmentSet = NO_ATTACHMENTS
     filesystem_snapshot: list[FilesystemSnapshotEntry] | None = None
+    capture: Path | None = None
+
+
+def capture_bytes(source_id: str, session_id: str) -> bytes:
+    """The captured prompt and memory for a session, as hash input.
+
+    Absent is a value: a session with no capture yet hashes differently from
+    the same session once one arrives, which is what makes the archive stale.
+    """
+    try:
+        return prompt_capture_path(source_id, session_id).read_bytes()
+    except OSError:
+        return b""
 
 
 def source_hash(
     raw_bytes: bytes,
     attachments: AttachmentSet,
     child_ids: tuple[str, ...] = (),
+    capture: bytes = b"",
 ) -> str:
-    """Identify transcript, attachments, and derived subagent links."""
+    """Identify transcript, attachments, subagent links, and captured prompt."""
     digest = hashlib.sha256(f"source-v{SOURCE_HASH_VERSION}\0".encode())
     digest.update(raw_bytes)
     if attachments.files:
@@ -55,6 +74,10 @@ def source_hash(
         digest = hashlib.sha256(f"subagent-links-v1\0{content_digest}".encode())
         for child_id in sorted(set(child_ids)):
             digest.update(child_id.encode() + b"\0")
+    if capture:
+        linked_digest = digest.hexdigest()
+        digest = hashlib.sha256(f"capture-v1\0{linked_digest}".encode())
+        digest.update(capture)
     return digest.hexdigest()
 
 
@@ -76,6 +99,8 @@ def filesystem_snapshot(snapshot: TranscriptSnapshot) -> list[FilesystemSnapshot
     paths.extend(snapshot.attachments.missing)
     paths.extend(snapshot.attachments.skipped)
     paths.extend(snapshot.attachments.directories)
+    if snapshot.capture is not None:
+        paths.append(snapshot.capture)
     return [_path_signature(path) for path in dict.fromkeys(paths)]
 
 
@@ -94,6 +119,7 @@ def snapshot_transcript(
 ) -> TranscriptSnapshot:
     """Read and hash one stable transcript/attachment snapshot."""
     path = Path(session.path)
+    capture = prompt_capture_path(source.id, session.id)
     for _attempt in range(2):
         transcript_before = _path_signature(path)
         inputs = load_transcript_inputs(source, session)
@@ -105,6 +131,7 @@ def snapshot_transcript(
             source_hash="",
             key=key,
             attachments=inputs.attachments,
+            capture=capture,
         )
         snapshot_before_hash = filesystem_snapshot(probe)
         try:
@@ -112,6 +139,7 @@ def snapshot_transcript(
                 inputs.raw_bytes,
                 inputs.attachments,
                 session.child_ids,
+                capture_bytes(source.id, session.id),
             )
         except OSError:
             continue
@@ -124,6 +152,7 @@ def snapshot_transcript(
             source_hash=hashed,
             key=key,
             attachments=inputs.attachments,
+            capture=capture,
             filesystem_snapshot=snapshot_after_hash,
         )
         if snapshot_after_hash == filesystem_snapshot(snapshot_data):

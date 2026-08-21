@@ -215,7 +215,12 @@ def _is_active() -> bool:
 def service_command(package_spec: str, uv_path: str = "") -> list[str]:
     from .watcher import package_command
 
-    return package_command(package_spec, uv_path, ["system-prompts", "run"])
+    # Refresh like the watcher does. This service is long-lived, so without it
+    # a process started once keeps running whatever revision uv had cached at
+    # the time — the watcher beside it would update while this one did not.
+    return package_command(
+        package_spec, uv_path, ["system-prompts", "run"], refresh=True
+    )
 
 
 def status() -> dict:

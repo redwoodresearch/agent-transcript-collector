@@ -576,6 +576,19 @@ async function onAllProjectsChange(cb) {
   }
 }
 
+// Turning uploads on also sets up prompt recording, and that half can fail on
+// its own without failing the request. Saying so is the only way the person
+// who just enabled it finds out; the status line below only refreshes later.
+function warnIfPromptSetupFailed(data) {
+  if (data && data.system_prompt_error) {
+    showToast(
+      'Uploads are on, but system prompts are not being recorded. '
+      + 'Run: rr-trans system-prompts install',
+      true,
+    );
+  }
+}
+
 async function updateAutoUploadConfig(enabled, removedProjects = []) {
   const submittedNameRevision = nameRevision;
   const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
@@ -593,6 +606,7 @@ async function updateAutoUploadConfig(enabled, removedProjects = []) {
   }));
   const data = await resp.json();
   if (!resp.ok) throw new Error(data.error || 'Could not update auto upload');
+  warnIfPromptSetupFailed(data);
   const currentName = document.getElementById('contributor-name').value.trim() || 'anonymous';
   if (nameRevision === submittedNameRevision && currentName === contributorName) {
     syncedNameRevision = submittedNameRevision;
@@ -796,6 +810,7 @@ async function reinstallWatcher() {
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Reinstall failed');
     showToast('Auto uploader reinstalled');
+    warnIfPromptSetupFailed(data);
     await loadWatcher();
   } catch (e) {
     showToast(e.message, true);

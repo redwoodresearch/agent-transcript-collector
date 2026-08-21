@@ -620,8 +620,15 @@ def install(
     return result
 
 
-def _uninstall_system_prompts() -> None:
-    """Stop recording system prompts when automatic uploads are turned off."""
+def _uninstall_system_prompts(platform: str) -> None:
+    """Stop recording system prompts when automatic uploads are turned off.
+
+    Only where installing it was possible. `uninstall` strips the raw-body keys
+    out of settings.json, and on a platform this never set them up they can
+    only have come from the person using it — removing those is not ours to do.
+    """
+    if not platform.startswith("linux"):
+        return
     from . import system_prompt_service
 
     try:
@@ -637,7 +644,7 @@ def uninstall(
     run_command=subprocess.run,
 ) -> dict:
     platform = platform or sys.platform
-    _uninstall_system_prompts()
+    _uninstall_system_prompts(platform)
     if platform == "darwin":
         domain = f"gui/{os.getuid()}"
         run_command(
