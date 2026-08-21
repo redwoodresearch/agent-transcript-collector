@@ -67,6 +67,7 @@
   #watcher-schedule.running { color: var(--accent); }
   #watcher-version { color: var(--text-muted); font-size: 0.68rem; font-weight: 400; }
   #watcher-version.mismatch { color: var(--yellow); }
+  #system-prompt-state.warn { color: var(--yellow); }
   #unavailable-watcher-groups {
     margin: 0 16px 12px; color: var(--yellow); font-size: 0.75rem;
   }
@@ -357,6 +358,7 @@
       <div class="auto-upload-setting-copy">
         <span class="setting-label">Automatic uploads <span id="watcher-version" title="Auto uploader version"></span></span>
         <span id="watcher-schedule">Checking last and next upload…</span>
+        <span id="system-prompt-state" hidden></span>
       </div>
       <label class="all-projects-setting"
              title="Automatically upload transcripts from every project on this machine, including projects created later. Overrides the per-project checkboxes below.">
@@ -574,6 +576,19 @@ async function onAllProjectsChange(cb) {
   }
 }
 
+// Turning uploads on also sets up prompt recording, and that half can fail on
+// its own without failing the request. Saying so is the only way the person
+// who just enabled it finds out; the status line below only refreshes later.
+function warnIfPromptSetupFailed(data) {
+  if (data && data.system_prompt_error) {
+    showToast(
+      'Uploads are on, but system prompts are not being recorded. '
+      + 'Run: rr-trans system-prompts install',
+      true,
+    );
+  }
+}
+
 async function updateAutoUploadConfig(enabled, removedProjects = []) {
   const submittedNameRevision = nameRevision;
   const contributorName = document.getElementById('contributor-name').value.trim() || 'anonymous';
@@ -591,6 +606,7 @@ async function updateAutoUploadConfig(enabled, removedProjects = []) {
   }));
   const data = await resp.json();
   if (!resp.ok) throw new Error(data.error || 'Could not update auto upload');
+  warnIfPromptSetupFailed(data);
   const currentName = document.getElementById('contributor-name').value.trim() || 'anonymous';
   if (nameRevision === submittedNameRevision && currentName === contributorName) {
     syncedNameRevision = submittedNameRevision;
@@ -716,6 +732,28 @@ async function loadWatcher(refreshPipeline = true) {
     reinstall.hidden = !data.needs_reinstall;
     toggle.disabled = false;
     toggle.textContent = autoUploadEnabled ? 'Disable' : 'Enable';
+    const prompts = data.system_prompts || {};
+    const promptState = document.getElementById('system-prompt-state');
+    // Enabling uploads also starts recording the system prompt each session
+    // ran under, so say so rather than letting it happen quietly.
+    promptState.hidden = !autoUploadEnabled;
+    // Recording takes both halves: Claude Code writing request bodies
+    // (configured) and the service reading and deleting them (running). Bodies
+    // written with nothing draining them is the state worth warning about —
+    // each one holds a whole conversation, and they arrive every turn.
+    const recording = Boolean(prompts.running && prompts.configured);
+    const undrained = Boolean(prompts.configured && !prompts.running);
+    promptState.classList.toggle('warn', undrained);
+    promptState.textContent = recording
+      ? 'also recording the system prompt each session runs under'
+      : undrained
+        ? 'Claude Code is writing raw API bodies that nothing is deleting'
+        : 'system prompts are not being recorded on this machine';
+    promptState.title = recording
+      ? 'Claude Code writes API request bodies to a cache; a background service keeps only the system prompt from each and deletes the rest. Codex records its own.'
+      : undrained
+        ? 'Raw-body logging is still on in settings.json but the service that keeps only the system prompt and deletes the rest is not running, so bodies are accumulating. Run: rr-trans system-prompts install'
+        : 'Turn automatic uploads off and on to set this up, or run: rr-trans system-prompts install';
     const last = data.state || {};
     const lastError = (last.errors || [])[0];
     const lastUploaded = formatUploadTime(last.last_uploaded_at);
@@ -772,6 +810,7 @@ async function reinstallWatcher() {
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Reinstall failed');
     showToast('Auto uploader reinstalled');
+    warnIfPromptSetupFailed(data);
     await loadWatcher();
   } catch (e) {
     showToast(e.message, true);

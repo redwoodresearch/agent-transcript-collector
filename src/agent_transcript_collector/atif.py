@@ -207,6 +207,31 @@ def conversion_manifest(
     return section
 
 
+def _prepend_leading_step(trajectory: Trajectory, text: str | None, kind: str) -> None:
+    """Put context the session was given ahead of the conversation.
+
+    Harbor's conversion starts at the first recorded message; the instructions
+    and memory the session actually ran under belong before it. When the
+    archive refers to something it does not carry, a note stands in so the
+    shape of the trajectory is the same either way.
+    """
+    if not text:
+        return
+    from harbor.models.trajectories.step import Step
+
+    first = trajectory.steps[0] if trajectory.steps else None
+    step = Step(
+        step_id=1,  # renumbered below; the model rejects 0
+        source="system",
+        message=text,
+        timestamp=getattr(first, "timestamp", None),
+        extra={"agent_transcript_collector": {kind: True}},
+    )
+    trajectory.steps.insert(0, step)
+    for position, existing in enumerate(trajectory.steps, start=1):
+        existing.step_id = position
+
+
 def _prompt_origin_index(raw: str) -> dict[str, dict[str, str]]:
     """Map each prompt's text to how it was submitted, from the native events.
 
@@ -277,6 +302,8 @@ def convert_redacted_transcript(
     *,
     subagent_refs: Iterable[ExternalSubagentRef] = (),
     launch_kind_label: str | None = None,
+    system_prompt_text: str | None = None,
+    memory_text: str | None = None,
 ) -> tuple[bytes | None, dict]:
     """Convert one redacted native transcript without reading neighboring files."""
     if source_id not in SUPPORTED_SOURCES:
@@ -325,6 +352,9 @@ def convert_redacted_transcript(
     }
     _annotate_prompt_origins(trajectory, raw)
     _enrich_subagent_references(trajectory, source_id, subagent_refs)
+    # Memory first so the prompt still ends up ahead of it once both insert.
+    _prepend_leading_step(trajectory, memory_text, "memory")
+    _prepend_leading_step(trajectory, system_prompt_text, "system_prompt")
     return _serialize(trajectory), conversion_manifest(source_id, status="complete")
 
 
@@ -337,6 +367,8 @@ def derive_atif(
     *,
     subagent_refs: Iterable[ExternalSubagentRef] = (),
     launch_kind_label: str | None = None,
+    system_prompt_text: str | None = None,
+    memory_text: str | None = None,
 ) -> tuple[bytes | None, dict[str, Any]]:
     """Best-effort ATIF derivation that never drops the canonical transcript."""
     try:
@@ -348,6 +380,8 @@ def derive_atif(
             parent_session_id,
             subagent_refs=subagent_refs,
             launch_kind_label=launch_kind_label,
+            system_prompt_text=system_prompt_text,
+            memory_text=memory_text,
         )
     except Exception as exc:  # noqa: BLE001 - ATIF is a derived archive artifact
         return None, conversion_manifest(

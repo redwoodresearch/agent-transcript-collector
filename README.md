@@ -220,6 +220,127 @@ S3 object metadata contains:
 | `redaction-version` | Version of the local redaction policy. |
 | `launch-kind` | `human`, `programmatic`, or `unknown` — see below. |
 
+### Storage backend
+
+Uploads go to Redwood's `rr-agent-transcripts` bucket on AWS by default, using
+the SSO profile. The same code drives any S3-compatible store — Google Cloud
+Storage, Cloudflare R2, MinIO — which is useful for keeping a private copy or
+testing without writing to the shared bucket. Point it elsewhere with:
+
+| Variable | Purpose |
+| --- | --- |
+| `CTC_S3_BUCKET` | Bucket name. |
+| `CTC_S3_REGION` | Region. |
+| `CTC_S3_ENDPOINT_URL` | Endpoint for a non-AWS store, e.g. `https://storage.googleapis.com`. |
+| `CTC_S3_ACCESS_KEY_ID` | HMAC access key, for stores that authenticate that way. |
+| `CTC_S3_SECRET_ACCESS_KEY` | HMAC secret. Keep it in a file only you can read, not in a shell profile. |
+| `CTC_STORAGE_PREFIX` | Key prefix archives are stored under (default `mts-trans`). |
+
+When both HMAC variables are set they take precedence over the AWS profile.
+Non-AWS endpoints reject the SDK's default checksum headers, which the client
+accounts for.
+
+A background service does not inherit your shell, so installing the watcher or
+the background UI copies these variables out of the environment that ran the
+install and into the generated launchd/systemd unit. Change one and reinstall
+(`rr-trans watcher install`), or the scheduled run keeps using the target it was
+installed with. The units are written owner-readable only, because the HMAC
+secret is among the values they carry.
+
+### System prompt
+
+An archive records the instructions the session ran under, in
+`manifest.json` under `system_prompt` and as the first step of the packaged
+ATIF trajectory, so it reads as part of the conversation.
+
+Where a source records the prompt itself, the archive already contains it and
+the manifest just identifies it (`status: "in_transcript"`). Otherwise the full
+text is stored as `system_prompt.txt` in every archive that has one, so each
+archive stands alone.
+
+Storing it once and referring to it by hash was tried and removed: prompts
+embed per-session values (a prompt id, the working directory), so identical
+copies are rarer than they look, and an archive that points at text living in
+some other upload is only useful to a reader who can find that upload.
+Deduplicating is better done later across the whole corpus, which is what the
+recorded `sha256` is for. Prompts go through the same redaction as transcripts.
+
+**Codex** writes its instructions into the transcript's `session_meta` header,
+so nothing extra is needed.
+
+**Claude Code** never writes its system prompt to the transcript; it appears
+only on the API request. One command sets that up, once:
+
+```bash
+rr-trans system-prompts install
+```
+
+That adds an `env` block to `~/.claude/settings.json` turning on OpenTelemetry
+raw-body logging, and starts a small background service. Every Claude Code
+session is then covered — interactive, `-p`, IDE, scripts — with no wrapper to
+remember and no change to how you launch anything. Sessions already running
+pick it up on their next request, without restarting. Undo it with `uninstall`.
+
+Enabling automatic uploads does this for you, and disabling removes it: the
+prompt is part of what an upload describes, so it shares the same consent and
+the same lifetime.
+
+`CTC_SYSTEM_PROMPT_DUMP_DIR` overrides where raw bodies are staged. Install
+reads it from your shell and writes it into both the settings block and the
+service unit, which have to name the same directory or bodies collect where
+nothing is reading them. Reinstalling after a change restarts the service onto
+the unit just written and drains whatever the previous directory still held.
+
+The service exists because raw bodies cannot simply be left on disk: each one
+contains the whole conversation so far and is written per turn, so a long
+session dumps hundreds of megabytes. The watcher reads each body once, files
+its system prompt under the session id the body carries in `metadata.user_id`,
+and deletes the body immediately, keeping a few kilobytes per session and no
+conversation content.
+
+For a single session without enabling any of that, set the same three
+variables yourself and collect afterwards:
+
+```bash
+CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_LOGS_EXPORTER=otlp \
+  OTEL_LOG_RAW_API_BODIES=file:/tmp/bodies claude -p "explain this repo"
+CTC_SYSTEM_PROMPT_DUMP_DIR=/tmp/bodies rr-trans system-prompts drain
+```
+
+Sessions run without any of this record `status: "unavailable"`.
+
+### Injected memory
+
+Claude Code injects CLAUDE.md files and the user's auto-memory into the first
+user message and, like the system prompt, does not keep them in the saved
+transcript. The same watcher takes them from the same request bodies, so this
+costs no extra capture and no extra disk.
+
+`manifest.json` records it under `injected_memory`: the hash, the size, and the
+files it quotes (`sources`), so a reader can see what was in scope without
+opening the text. The text is stored as `injected_memory.txt` and appears as a
+step ahead of the conversation.
+
+Note the size: memory runs to roughly the same length as a system prompt (~9 KB
+each here), which on a short session can exceed the conversation itself. The
+trajectory steps are tagged, so a reader that does not need them can skip them.
+
+Codex records its own `AGENTS.md` injection in the transcript, inside the first
+user message, so nothing extra is needed there.
+
+### Permission rules
+
+`manifest.json` records under `agent_settings` what the session was permitted
+to do: the `permissions` blocks from the user settings file and from the
+project's `.claude/settings.json` and `settings.local.json`, plus the count of
+allow rules in force. A transcript shows refusals but not pre-approvals, so
+without this a reader cannot tell an authorised command from one the user was
+asked about.
+
+Environment variables are recorded by name only. A settings file is a plausible
+place for an API key to sit, and the names are enough to know what was
+configured.
+
 ### Launch kind
 
 Each archive records how the run was driven: `human`, `programmatic`, or

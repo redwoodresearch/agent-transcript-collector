@@ -12,6 +12,12 @@ from typing import TypedDict
 
 from .atif import ATIF_FILENAME, derive_atif
 from .launch_kind import session_launch_kind
+from .memory_injection import MEMORY_FILENAME, captured_memory
+from .memory_injection import describe as describe_memory
+from .system_prompt import INCLUDED, SYSTEM_PROMPT_FILENAME
+from .system_prompt import captured_variant_count
+from .system_prompt import describe as describe_system_prompt
+from .system_prompt import resolve as resolve_system_prompt
 from .redactor import (
     REDACTION_VERSION,
     redact_identity,
@@ -90,6 +96,25 @@ def _archive_bytes(
     resolved_launch_kind = session_launch_kind(
         transcript, session.path, session.parent
     )
+    # A captured prompt arrives raw and needs the same redaction as the
+    # transcript; it can carry project-specific instructions. One read out of
+    # the transcript was redacted with it already, and redacting a second time
+    # would re-randomise the credential placeholders — leaving the recorded
+    # sha256 describing text that appears nowhere in this archive.
+    prompt_text, prompt_origin = resolve_system_prompt(
+        source.id, transcript, session.id
+    )
+    if prompt_text and prompt_origin != "session_meta":
+        prompt_text, count = _redact(prompt_text)
+        redaction_count += count
+    system_prompt = describe_system_prompt(
+        prompt_text, prompt_origin, captured_variant_count(source.id, session.id)
+    )
+    memory_text = captured_memory(source.id, session.id)
+    if memory_text:
+        memory_text, count = _redact(memory_text)
+        redaction_count += count
+    memory = describe_memory(memory_text)
     atif, _atif_manifest = derive_atif(
         source.id,
         transcript,
@@ -105,6 +130,12 @@ def _archive_bytes(
             for child_id in session.child_ids
         ],
         launch_kind_label=resolved_launch_kind,
+        # Only a captured prompt needs adding to the trajectory; one the source
+        # recorded is already in the transcript Harbor converts.
+        system_prompt_text=(
+            prompt_text if system_prompt["status"] == INCLUDED else None
+        ),
+        memory_text=memory_text if memory["status"] == INCLUDED else None,
     )
     manifest = {
         "manifest_version": MANIFEST_VERSION,
@@ -124,6 +155,8 @@ def _archive_bytes(
             "count": redaction_count,
         },
         "launch_kind": resolved_launch_kind,
+        "system_prompt": system_prompt,
+        "injected_memory": memory,
     }
     if parent_identity:
         manifest["parent_id"] = parent_identity
@@ -131,6 +164,10 @@ def _archive_bytes(
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
         archive.writestr(transcript_name, transcript)
         archive.writestr("manifest.json", json.dumps(manifest, indent=2))
+        if system_prompt["status"] == INCLUDED and prompt_text:
+            archive.writestr(SYSTEM_PROMPT_FILENAME, prompt_text)
+        if memory["status"] == INCLUDED and memory_text:
+            archive.writestr(MEMORY_FILENAME, memory_text)
         if atif is not None:
             archive.writestr(ATIF_FILENAME, atif)
         for arcname, text in attachment_contents:

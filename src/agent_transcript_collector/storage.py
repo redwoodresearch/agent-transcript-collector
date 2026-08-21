@@ -1,11 +1,12 @@
 """S3 key layout and identities for collected transcripts."""
 
 import hashlib
+import os
 import re
 
 from .sources.base import Session
 
-STORAGE_PREFIX = "mts-trans"
+STORAGE_PREFIX = os.environ.get("CTC_STORAGE_PREFIX") or "mts-trans"
 
 
 def _safe_segment(value: str) -> str:
@@ -34,12 +35,14 @@ def transcript_filename(source_id: str, native_id: str) -> str:
     return f"{_safe_segment(transcript_id(source_id, native_id))}.zip"
 
 
+def contributor_prefix(contributor: str) -> str:
+    """Return the prefix every archive for one contributor is stored under."""
+    return f"{STORAGE_PREFIX}/{_safe_segment(contributor)}/"
+
+
 def transcript_prefix(contributor: str, session: Session) -> str:
     """Return the flat contributor/project prefix for one transcript."""
-    return (
-        f"{STORAGE_PREFIX}/{_safe_segment(contributor)}/"
-        f"{_project_segment(session)}/"
-    )
+    return f"{contributor_prefix(contributor)}{_project_segment(session)}/"
 
 
 def transcript_key(contributor: str, source_id: str, session: Session) -> str:

@@ -121,28 +121,41 @@ def find_parent_transcript(path: Path, parent_id: str) -> Path | None:
     return None
 
 
+def inherited_launch_kind(own: str, parent: str | None) -> str:
+    """Combine a subagent's own reading with its parent's.
+
+    The parent is the thing that was actually launched, so it decides whenever
+    it says anything; the child's own reading is the fallback for a parent that
+    is missing, unreadable, or itself unknown.
+    """
+    return parent if parent and parent != UNKNOWN else own
+
+
 def session_launch_kind(
     transcript: str,
     path: Path | None = None,
     parent_id: str | None = None,
 ) -> str:
-    """Classify a session, letting a subagent inherit its parent's label.
+    """Classify a session, letting a subagent take its parent's label.
 
-    A subagent has no prompts of its own — it is spawned by a tool call — so on
-    its own it always reads "unknown". What matters for analysis is whether the
-    run it belongs to was human-driven, so the parent's label is inherited when
-    the parent transcript can be found.
+    A subagent is spawned by a tool call rather than by a prompt, so its own
+    events describe the process it shares with its parent rather than how the
+    run was started. The parent is the thing that was actually launched, so its
+    label wins whenever it can be read, and the child's own reading is only the
+    fallback. Deciding by the child first would make the answer depend on which
+    fields a version of the agent happens to stamp on subagent events.
     """
     kind = launch_kind(transcript)
-    if kind != UNKNOWN or path is None or not parent_id:
+    if path is None or not parent_id:
         return kind
     parent_path = find_parent_transcript(path, parent_id)
     if parent_path is None:
-        return UNKNOWN
+        return kind
     try:
-        return launch_kind(parent_path.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, ValueError):
-        return UNKNOWN
+        parent = parent_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return kind
+    return inherited_launch_kind(kind, launch_kind(parent))
 
 
 def launch_kind(transcript: str) -> str:

@@ -16,7 +16,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .native_service import replace_launchd_service
+from .native_service import (
+    replace_launchd_service,
+    service_environment,
+    systemd_quote,
+    systemd_user_dir,
+)
 from .paths import (
     log_path,
     watcher_config_path,
@@ -305,6 +310,14 @@ def run_once(
     old_source_env = {name: os.environ.get(name) for name in config.source_env}
     os.environ["CTC_AWS_PROFILE"] = config.aws_profile
     os.environ.update(config.source_env)
+    # Second line of defence: if the prompt watcher is down, raw bodies would
+    # otherwise accumulate unread. Draining here bounds that to one interval.
+    try:
+        from . import system_prompt_service
+
+        system_prompt_service.drain()
+    except Exception:  # noqa: BLE001 - never let cleanup block an upload
+        pass
     try:
         with UploadLock(lock_path):
             client = s3 or make_s3_client()
@@ -436,22 +449,38 @@ def update_cli(
     return {"status": "updated", "revision": revision}
 
 
-def watcher_command(config: WatcherConfig, config_path: Path) -> list[str]:
-    uv = config.uv_path or _find_uv()
+def package_command(
+    package_spec: str,
+    uv_path: str,
+    arguments: list[str],
+    *,
+    refresh: bool = False,
+) -> list[str]:
+    """Build the command a generated unit runs, for any rr-trans subcommand.
+
+    Both background services go through here so they always launch the same
+    package the same way.
+    """
+    uv = uv_path or _find_uv()
     return [
         uv,
         "tool",
         "run",
-        "--refresh-package",
-        "agent-transcript-collector",
+        *(["--refresh-package", PACKAGE_NAME] if refresh else []),
         "--from",
-        config.package_spec,
+        package_spec or PACKAGE_SPEC,
         "rr-trans",
-        "watcher",
-        "run",
-        "--config",
-        str(config_path),
+        *arguments,
     ]
+
+
+def watcher_command(config: WatcherConfig, config_path: Path) -> list[str]:
+    return package_command(
+        config.package_spec,
+        config.uv_path,
+        ["watcher", "run", "--config", str(config_path)],
+        refresh=True,
+    )
 
 
 def launchd_path() -> Path:
@@ -459,18 +488,17 @@ def launchd_path() -> Path:
 
 
 def systemd_paths() -> tuple[Path, Path]:
-    root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    user = root / "systemd" / "user"
+    user = systemd_user_dir()
     return user / f"{SYSTEMD_NAME}.service", user / f"{SYSTEMD_NAME}.timer"
 
 
 def render_launchd(config: WatcherConfig, config_path: Path) -> bytes:
     log = log_path()
     _ensure_private_dir(log.parent)
-    environment = {
-        "HOME": str(Path.home()),
-        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-    }
+    environment = service_environment(
+        HOME=str(Path.home()),
+        PATH=os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+    )
     payload = {
         "Label": LAUNCHD_LABEL,
         "ProgramArguments": watcher_command(config, config_path),
@@ -483,19 +511,13 @@ def render_launchd(config: WatcherConfig, config_path: Path) -> bytes:
     return plistlib.dumps(payload, sort_keys=True)
 
 
-def _systemd_quote(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
 def render_systemd(config: WatcherConfig, config_path: Path) -> tuple[bytes, bytes]:
     command = " ".join(
-        _systemd_quote(arg) for arg in watcher_command(config, config_path)
+        systemd_quote(arg) for arg in watcher_command(config, config_path)
     )
-    environment = {
-        "HOME": str(Path.home()),
-    }
+    environment = service_environment(HOME=str(Path.home()))
     env_lines = "\n".join(
-        f"Environment={_systemd_quote(f'{key}={value}')}"
+        f"Environment={systemd_quote(f'{key}={value}')}"
         for key, value in environment.items()
     )
     service = (
@@ -576,7 +598,43 @@ def install(
         files = [str(service_path), str(timer_path)]
     else:
         raise RuntimeError("the watcher installer supports macOS and Linux")
-    return {"installed": True, "config_path": str(target), "service_files": files}
+    result = {"installed": True, "config_path": str(target), "service_files": files}
+    # Recording system prompts rides along with automatic uploads: it is the
+    # same consent and the same lifetime. A failure here must not stop uploads.
+    if platform.startswith("linux"):
+        from . import system_prompt_service
+
+        try:
+            code = system_prompt_service.install(config.package_spec, config.uv_path)
+        except Exception as exc:  # noqa: BLE001 - best effort, reported not raised
+            result["system_prompt_error"] = f"{type(exc).__name__}: {exc}"
+        else:
+            # install() rolls its own unit back and reports failure by exit
+            # code, not by raising. Without this the caller is told uploads
+            # and prompt recording both came up when only uploads did.
+            if code != 0:
+                result["system_prompt_error"] = (
+                    f"system_prompt_service.install exited {code}; "
+                    "uploads are on but system prompts are not being recorded"
+                )
+    return result
+
+
+def _uninstall_system_prompts(platform: str) -> None:
+    """Stop recording system prompts when automatic uploads are turned off.
+
+    Only where installing it was possible. `uninstall` strips the raw-body keys
+    out of settings.json, and on a platform this never set them up they can
+    only have come from the person using it — removing those is not ours to do.
+    """
+    if not platform.startswith("linux"):
+        return
+    from . import system_prompt_service
+
+    try:
+        system_prompt_service.uninstall()
+    except Exception:  # noqa: BLE001 - never block turning uploads off
+        pass
 
 
 def uninstall(
@@ -586,6 +644,7 @@ def uninstall(
     run_command=subprocess.run,
 ) -> dict:
     platform = platform or sys.platform
+    _uninstall_system_prompts(platform)
     if platform == "darwin":
         domain = f"gui/{os.getuid()}"
         run_command(
@@ -664,6 +723,17 @@ def status(
         "interval_seconds": WATCH_INTERVAL_SECONDS,
         "state": load_state(),
     }
+    if platform.startswith("linux"):
+        from . import system_prompt_service
+
+        try:
+            result["system_prompts"] = system_prompt_service.status()
+        except Exception:  # noqa: BLE001 - a status probe must not break status
+            result["system_prompts"] = {
+                "installed": False,
+                "running": False,
+                "configured": False,
+            }
     if config_path.exists():
         try:
             config = load_config(config_path)
