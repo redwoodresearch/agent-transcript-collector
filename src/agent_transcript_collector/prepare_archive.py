@@ -96,12 +96,15 @@ def _archive_bytes(
     resolved_launch_kind = session_launch_kind(
         transcript, session.path, session.parent
     )
-    # The prompt goes through the same redaction as the transcript; it can carry
-    # project-specific instructions.
+    # A captured prompt arrives raw and needs the same redaction as the
+    # transcript; it can carry project-specific instructions. One read out of
+    # the transcript was redacted with it already, and redacting a second time
+    # would re-randomise the credential placeholders — leaving the recorded
+    # sha256 describing text that appears nowhere in this archive.
     prompt_text, prompt_origin = resolve_system_prompt(
         source.id, transcript, session.id
     )
-    if prompt_text:
+    if prompt_text and prompt_origin != "session_meta":
         prompt_text, count = _redact(prompt_text)
         redaction_count += count
     system_prompt = describe_system_prompt(
