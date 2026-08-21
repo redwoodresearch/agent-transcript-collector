@@ -640,9 +640,13 @@ def get_watcher_status():
     projects = scan.project_dicts if scan else []
     visible_projects = {project["identity"]: project for project in projects}
     saved_config = load_watcher_config()
-    selected_ids = (
-        selected_project_identities(scan, saved_config) if scan else set()
-    )
+    # Report the explicit per-project consent only. Expanding this to every
+    # project while all_projects is on would make the UI check every box, and
+    # the next save would persist them as individual consent that outlives the
+    # machine-wide override.
+    selected_ids = {
+        project.identity for project in saved_config.projects
+    } & visible_projects.keys()
     selected = [
         {"identity": identity, "label": visible_projects[identity]["label"]}
         for identity in selected_ids
@@ -697,6 +701,21 @@ def _put_watcher(body: dict):
                 if project.identity not in discovered_projects
                 and project.identity not in removed_ids
             )
+        all_projects = bool(body.get(
+            "all_projects",
+            existing.all_projects if existing else False,
+        ))
+        # The override already covers every project, so the boxes it checks are
+        # not a choice: freeze the saved selection instead of overwriting it with
+        # them. Unchecking a box turns the override off (see the UI), which
+        # arrives here as all_projects=false and saves the boxes as they stand.
+        # Explicit removals still apply: freezing consent must not resurrect a
+        # selection the user just cleaned up.
+        if all_projects and existing:
+            projects = [
+                project for project in existing.projects
+                if project.identity not in removed_ids
+            ]
         config = WatcherConfig(
             auto_uploader_version=(
                 existing.auto_uploader_version
@@ -705,6 +724,7 @@ def _put_watcher(body: dict):
             ),
             contributor=_safe_name(body.get("contributor_name", "anonymous")),
             aws_profile=existing.aws_profile if existing else selected_profile(),
+            all_projects=all_projects,
             projects=projects,
             source_env=capture_source_env(),
             package_spec=WatcherConfig.package_spec,
