@@ -121,6 +121,16 @@ def find_parent_transcript(path: Path, parent_id: str) -> Path | None:
     return None
 
 
+def inherited_launch_kind(own: str, parent: str | None) -> str:
+    """Combine a subagent's own reading with its parent's.
+
+    The parent is the thing that was actually launched, so it decides whenever
+    it says anything; the child's own reading is the fallback for a parent that
+    is missing, unreadable, or itself unknown.
+    """
+    return parent if parent and parent != UNKNOWN else own
+
+
 def session_launch_kind(
     transcript: str,
     path: Path | None = None,
@@ -145,8 +155,7 @@ def session_launch_kind(
         parent = parent_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return kind
-    parent_kind = launch_kind(parent)
-    return parent_kind if parent_kind != UNKNOWN else kind
+    return inherited_launch_kind(kind, launch_kind(parent))
 
 
 def launch_kind(transcript: str) -> str:
