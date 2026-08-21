@@ -26,7 +26,11 @@ UNKNOWN = "unknown"
 
 _HUMAN_PROMPT_SOURCES = {"typed", "queued"}
 _PROGRAMMATIC_PROMPT_SOURCES = {"sdk"}
-_PROGRAMMATIC_ENTRYPOINTS = {"sdk-cli"}
+# One entrypoint per Claude Agent SDK target. Only the headless CLI stamps
+# promptSource "sdk" on its events, so for the Python and TypeScript SDKs the
+# entrypoint is the only thing separating an SDK run from an interactive one -
+# without them those sessions read as unknown rather than programmatic.
+_PROGRAMMATIC_ENTRYPOINTS = {"sdk-cli", "sdk-py", "sdk-ts"}
 
 # Codex records how a session started once, in its session_meta header, rather
 # than per prompt: an interactive terminal reports originator "codex-tui" with

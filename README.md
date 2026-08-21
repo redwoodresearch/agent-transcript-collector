@@ -236,6 +236,9 @@ questions.
 from: `human` when any prompt was typed into the interactive CLI,
 `programmatic` when every prompt arrived over the SDK (`claude -p`, the Agent
 SDK). Because it is per prompt, a session that mixes both is detectable.
+Only the headless CLI marks its prompts that way, though: the Python and
+TypeScript SDKs are recognised by their session `entrypoint` (`sdk-py`,
+`sdk-ts`), so for those the label is session-wide rather than per message.
 
 **Codex** states only how the process was launched, once, in its `session_meta`
 header: an interactive terminal reports `originator: codex-tui` with
