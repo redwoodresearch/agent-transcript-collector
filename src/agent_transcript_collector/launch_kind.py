@@ -2,11 +2,11 @@
 
 Claude Code stamps each prompt-initiating event with `origin.kind` ("human",
 "task-notification", ...), `promptSource` ("typed" | "queued" | "sdk" |
-"system") and `entrypoint` ("cli" | "sdk-cli"), so its label reflects where
-each message came from. Codex instead states how the process was launched once,
-in its `session_meta` header — "codex-tui"/"cli" for a terminal session,
-"codex_exec"/"exec" for `codex exec` — which is coarser: it says nothing about
-who supplied the prompt text.
+"system") and `entrypoint` ("cli" | one of the "sdk-*" Agent SDK targets), so
+its label reflects where each message came from. Codex instead states how the
+process was launched once, in its `session_meta` header — "codex-tui"/"cli" for
+a terminal session, "codex_exec"/"exec" for `codex exec` — which is coarser: it
+says nothing about who supplied the prompt text.
 
 Neither direction is proof of who was present. A script driving an interactive
 session by sending keystrokes looks exactly like a person, so "human" is
