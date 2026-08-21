@@ -234,6 +234,7 @@ testing without writing to the shared bucket. Point it elsewhere with:
 | `CTC_S3_ENDPOINT_URL` | Endpoint for a non-AWS store, e.g. `https://storage.googleapis.com`. |
 | `CTC_S3_ACCESS_KEY_ID` | HMAC access key, for stores that authenticate that way. |
 | `CTC_S3_SECRET_ACCESS_KEY` | HMAC secret. Keep it in a file only you can read, not in a shell profile. |
+| `CTC_STORAGE_PREFIX` | Key prefix archives are stored under (default `mts-trans`). |
 
 When both HMAC variables are set they take precedence over the AWS profile.
 Non-AWS endpoints reject the SDK's default checksum headers, which the client
