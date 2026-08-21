@@ -376,8 +376,7 @@ The label lands in `manifest.json`, in the packaged ATIF trajectory (with
 per-message origins where the source records them, which today means Claude
 Code), and in the `launch-kind` S3 object metadata so it can be read
 without downloading the archive. Archives uploaded before this existed carry no
-label; `tools/backfill_launch_kind.py <contributor>` adds it to them (dry run by
-default, `--apply` to write).
+label.
 
 The source hash covers the unredacted transcript bundle and its discovered
 direct-child IDs, and is used to detect content or link changes. Anyone who can
