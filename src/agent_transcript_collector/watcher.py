@@ -605,9 +605,18 @@ def install(
         from . import system_prompt_service
 
         try:
-            system_prompt_service.install(config.package_spec, config.uv_path)
+            code = system_prompt_service.install(config.package_spec, config.uv_path)
         except Exception as exc:  # noqa: BLE001 - best effort, reported not raised
             result["system_prompt_error"] = f"{type(exc).__name__}: {exc}"
+        else:
+            # install() rolls its own unit back and reports failure by exit
+            # code, not by raising. Without this the caller is told uploads
+            # and prompt recording both came up when only uploads did.
+            if code != 0:
+                result["system_prompt_error"] = (
+                    f"system_prompt_service.install exited {code}; "
+                    "uploads are on but system prompts are not being recorded"
+                )
     return result
 
 
