@@ -62,16 +62,23 @@ def _event_launch_kind(event: dict) -> str | None:
     codex = _codex_launch_kind(event)
     if codex is not None:
         return codex
-    origin = event.get("origin")
-    if isinstance(origin, dict) and origin.get("kind") == HUMAN:
-        return HUMAN
+    # These fields answer different questions and the order matters. origin.kind
+    # separates a real prompt from a synthetic one (task-notification); it does
+    # not say how the prompt was submitted. promptSource and entrypoint do. A
+    # developer who types `claude -p` is a person submitting over the SDK, and
+    # the label we want for that is programmatic, so the submission channel is
+    # read first. Today no event carries both markers, and this ordering is what
+    # keeps that from being something the classification silently relies on.
     prompt_source = event.get("promptSource")
-    if prompt_source in _HUMAN_PROMPT_SOURCES:
-        return HUMAN
     if prompt_source in _PROGRAMMATIC_PROMPT_SOURCES:
         return PROGRAMMATIC
     if event.get("entrypoint") in _PROGRAMMATIC_ENTRYPOINTS:
         return PROGRAMMATIC
+    origin = event.get("origin")
+    if isinstance(origin, dict) and origin.get("kind") == HUMAN:
+        return HUMAN
+    if prompt_source in _HUMAN_PROMPT_SOURCES:
+        return HUMAN
     return None
 
 
