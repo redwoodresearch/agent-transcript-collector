@@ -263,9 +263,7 @@ embed per-session values (a prompt id, the working directory), so identical
 copies are rarer than they look, and an archive that points at text living in
 some other upload is only useful to a reader who can find that upload.
 Deduplicating is better done later across the whole corpus, which is what the
-recorded `sha256` is for. What has already been
-sent is tracked per contributor in the state directory, and only after an
-upload succeeds. Prompts go through the same redaction as transcripts.
+recorded `sha256` is for. Prompts go through the same redaction as transcripts.
 
 **Codex** writes its instructions into the transcript's `session_meta` header,
 so nothing extra is needed.
@@ -274,7 +272,7 @@ so nothing extra is needed.
 only on the API request. One command sets that up, once:
 
 ```bash
-python tools/system_prompt_watcher.py install
+rr-trans system-prompts install
 ```
 
 That adds an `env` block to `~/.claude/settings.json` turning on OpenTelemetry
@@ -306,7 +304,7 @@ variables yourself and collect afterwards:
 ```bash
 CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_LOGS_EXPORTER=otlp \
   OTEL_LOG_RAW_API_BODIES=file:/tmp/bodies claude -p "explain this repo"
-CTC_SYSTEM_PROMPT_DUMP_DIR=/tmp/bodies python tools/system_prompt_watcher.py drain
+CTC_SYSTEM_PROMPT_DUMP_DIR=/tmp/bodies rr-trans system-prompts drain
 ```
 
 Sessions run without any of this record `status: "unavailable"`.

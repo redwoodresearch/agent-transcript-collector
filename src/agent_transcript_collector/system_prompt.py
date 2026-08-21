@@ -3,8 +3,8 @@
 Sources differ in what they record. Codex writes its full instructions into the
 transcript's ``session_meta`` header, so nothing extra is needed. Claude Code
 never writes its system prompt to the transcript at all; it can only be
-observed on the API request, so ``tools/capture_system_prompt.py`` records one
-alongside the session and this module reads what that left behind.
+observed on the API request, so ``system_prompt_service`` records one alongside
+the session and this module reads what that left behind.
 
 Every archive carries the full text of what it describes. Prompts do repeat
 between sessions, but each one embeds per-session values — a prompt id, the
